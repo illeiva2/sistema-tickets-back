@@ -1,0 +1,203 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  AGENT
+  ADMIN
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(USER)
+  googleId     String?  @unique
+  mustChangePassword Boolean @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  requestedTickets Ticket[]  @relation("Requester")
+  assignedTickets  Ticket[]  @relation("Assignee")
+  comments         Comment[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  notificationPreferences NotificationPreferences[]
+
+  @@map("users")
+}
+
+model Ticket {
+  id          String        @id @default(cuid())
+  ticketNumber Int          @unique @default(autoincrement())
+  title       String
+  description String
+  status      TicketStatus  @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  requesterId String
+  assigneeId  String?
+  closedAt    DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  requester   User         @relation("Requester", fields: [requesterId], references: [id])
+  assignee    User?        @relation("Assignee", fields: [assigneeId], references: [id])
+  comments    Comment[]
+  attachments Attachment[]
+
+  @@map("tickets")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  ticketId  String
+  authorId  String
+  message   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id])
+
+  @@map("comments")
+}
+
+model Attachment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  storageUrl String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  organizations FileOrganization[]
+
+  @@map("attachments")
+}
+
+model AuditLog {
+  id       String   @id @default(cuid())
+  entity   String   // "ticket", "user", etc.
+  entityId String
+  action   String   // "created", "updated", "deleted", etc.
+  actorId  String
+  meta     Json?    // Additional metadata
+  createdAt DateTime @default(now())
+
+  // Relations
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // "ticket_assigned", "status_changed", "comment_added", "priority_changed"
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  ticketId  String?
+  metadata  Json?    // Additional data like old/new values
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model NotificationPreferences {
+  id              String @id @default(cuid())
+  userId          String @unique
+  email           Boolean @default(true)
+  inApp           Boolean @default(true)
+  ticketAssigned  Boolean @default(true)
+  statusChanged   Boolean @default(true)
+  commentAdded    Boolean @default(true)
+  priorityChanged Boolean @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+model FileCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  color       String   @default("#3B82F6")
+  icon        String   @default("📁")
+  parentId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  parent     FileCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children   FileCategory[] @relation("CategoryHierarchy")
+  organizations FileOrganization[]
+
+  @@map("file_categories")
+}
+
+model FileTag {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  color       String   @default("#6B7280")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("file_tags")
+}
+
+model FileOrganization {
+  id           String   @id @default(cuid())
+  attachmentId String   @unique
+  categoryId   String?
+  tags         String[] // Array de IDs de etiquetas
+  customPath   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  attachment Attachment   @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  category   FileCategory? @relation(fields: [categoryId], references: [id])
+
+  @@map("file_organizations")
+}
