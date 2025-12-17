@@ -119,6 +119,15 @@ export class AttachmentsService {
       },
     });
 
+    // Crear entrada de organización de archivo por defecto
+    await prisma.fileOrganization.create({
+      data: {
+        attachmentId: created.id,
+        tags: [],
+        categoryId: null,
+      },
+    });
+
     return created;
   }
 

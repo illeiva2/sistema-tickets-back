@@ -12,12 +12,13 @@ export interface CorsConfig {
 export const createCorsMiddleware = (): (req: Request, res: Response, next: NextFunction) => void => {
   return (req: Request, res: Response, next: NextFunction) => {
     // Obtener orígenes permitidos desde variables de entorno
-    const envOrigins = process.env.FRONTEND_URLS 
+    const envOrigins = process.env.FRONTEND_URLS
       ? process.env.FRONTEND_URLS.split(',').map(url => url.trim())
       : [];
-    
+
     const allowedOrigins = [
       "http://localhost:5173",
+      "http://localhost:5174",
       "http://localhost:3000",
       ...envOrigins
     ];
