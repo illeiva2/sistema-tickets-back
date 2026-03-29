@@ -32,16 +32,10 @@ passport.deserializeUser(async (id: string, done) => {
 
 // Estrategia de Google OAuth
 logger.info("Configurando Google OAuth strategy...");
-logger.info(
-  "Client ID:",
-  oauthConfig.google.clientID ? "Presente" : "FALTANTE",
-);
-logger.info(
-  "Client Secret:",
-  oauthConfig.google.clientSecret ? "Presente" : "FALTANTE",
-);
-logger.info("Callback URL:", oauthConfig.google.callbackURL);
-logger.info("Scope:", oauthConfig.google.scope);
+logger.info(`Client ID: ${oauthConfig.google.clientID ? "Presente" : "FALTANTE"}`);
+logger.info(`Client Secret: ${oauthConfig.google.clientSecret ? "Presente" : "FALTANTE"}`);
+logger.info(`Callback URL: ${oauthConfig.google.callbackURL}`);
+logger.info(`Scope: ${oauthConfig.google.scope}`);
 
 // Solo configurar Google OAuth si las credenciales están disponibles
 if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
@@ -57,9 +51,9 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
         try {
           logger.info("=== GOOGLE OAUTH STRATEGY CALLBACK INICIADO ===");
           logger.info("Google OAuth strategy callback executed");
-          logger.info("Profile:", JSON.stringify(profile, null, 2));
-          logger.info("Access token:", accessToken ? "Present" : "Missing");
-          logger.info("Refresh token:", refreshToken ? "Present" : "Missing");
+          logger.info(`Profile: ${JSON.stringify(profile, null, 2)}`);
+          logger.info(`Access token: ${accessToken ? "Present" : "Missing"}`);
+          logger.info(`Refresh token: ${refreshToken ? "Present" : "Missing"}`);
           logger.info(
             `Google OAuth callback for user: ${profile.emails?.[0]?.value}`,
           );
@@ -69,21 +63,46 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
           }
 
           const email = profile.emails[0].value;
+
+          // Validar el dominio de la empresa
+          if (oauthConfig.google.allowedDomains && oauthConfig.google.allowedDomains.length > 0) {
+            const isAllowed = oauthConfig.google.allowedDomains.some((domain) =>
+              email.endsWith(`@${domain.trim()}`)
+            );
+            
+            if (!isAllowed) {
+              logger.warn(`Intento de login con dominio no permitido: ${email}`);
+              return done(new Error(`Acceso denegado. Solo se permiten los dominios: ${oauthConfig.google.allowedDomains.join(", ")}`), false as any);
+            }
+          }
           const googleId = profile.id;
           const name =
             profile.displayName || profile.name?.givenName || "Usuario";
 
-          // Buscar usuario existente por email
-          const user = await prisma.user.findUnique({
-            where: { email },
+          // Buscar usuario existente por email o googleId
+          const user = await prisma.user.findFirst({
+            where: {
+              OR: [
+                { email },
+                { googleId }
+              ]
+            },
           });
 
           if (user) {
             // Usuario existe, actualizar información de Google si es necesario
+            const updateData: any = {};
             if (!user.googleId) {
+              updateData.googleId = googleId;
+            }
+            if (user.email !== email) {
+              updateData.email = email;
+            }
+
+            if (Object.keys(updateData).length > 0) {
               await prisma.user.update({
                 where: { id: user.id },
-                data: { googleId },
+                data: updateData,
               });
             }
 
@@ -118,7 +137,7 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
           logger.info(`New user created via Google OAuth: ${newUser.email}`);
           return done(null, newUser);
         } catch (error) {
-          logger.error("Error in Google OAuth strategy:", error);
+          logger.error(error, "Error in Google OAuth strategy:");
           return done(error, null);
         }
       },

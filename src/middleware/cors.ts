@@ -16,6 +16,10 @@ export const createCorsMiddleware = (): (req: Request, res: Response, next: Next
       ? process.env.FRONTEND_URLS.split(',').map(url => url.trim())
       : [];
 
+    if (process.env.FRONTEND_URL) {
+      envOrigins.push(process.env.FRONTEND_URL);
+    }
+
     const allowedOrigins = [
       "http://localhost:5173",
       "http://localhost:5174",

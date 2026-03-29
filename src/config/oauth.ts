@@ -1,3 +1,5 @@
+import { config } from "./index";
+
 export const oauthConfig = {
   google: {
     clientID: process.env.GOOGLE_CLIENT_ID || "",
@@ -8,11 +10,12 @@ export const oauthConfig = {
         ? `${process.env.API_URL || "http://localhost:3001"}/api/auth/google/callback`
         : "http://localhost:3001/api/auth/google/callback"),
     scope: ["profile", "email"],
+    allowedDomains: process.env.GOOGLE_WORKSPACE_DOMAINS?.split(",") || [],
   },
   jwt: {
-    secret: process.env.JWT_SECRET || "your-jwt-secret",
-    expiresIn: process.env.JWT_EXPIRES_IN || "15m",
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
+    secret: config.jwt.secret,
+    expiresIn: config.jwt.expiresIn,
+    refreshExpiresIn: config.jwt.refreshExpiresIn,
   },
   session: {
     secret: process.env.SESSION_SECRET || "your-session-secret",

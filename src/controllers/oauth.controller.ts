@@ -23,38 +23,45 @@ export class OAuthController {
   // Callback de Google OAuth
   static googleCallback = (req: Request, res: Response, next: NextFunction) => {
     logger.info("Google OAuth callback initiated");
-    logger.info("Query params:", req.query);
+    logger.info(`Query params: ${JSON.stringify(req.query)}`);
 
     passport.authenticate(
       "google",
       { session: false },
       (err: any, user: any, info: any) => {
         logger.info("Passport authenticate callback executed");
-        logger.info("Error:", err);
-        logger.info("User:", user);
-        logger.info("Info:", info);
+        logger.info(err ? err : "No Error", "Error:");
+        logger.info(`User: ${JSON.stringify(user)}`);
+        logger.info(`Info: ${JSON.stringify(info)}`);
 
-        if (err) {
-          logger.error("Google OAuth error:", err);
-          logger.error("Error stack:", err.stack);
-          return next(
-            new ApiError(
-              "OAUTH_ERROR",
-              "Error en autenticación con Google",
-              500,
-            ),
-          );
-        }
+        if (err || !user) {
+          if (err) {
+            logger.error(err, "Google OAuth error:");
+          } else {
+            logger.error("No user returned from Google OAuth");
+          }
 
-        if (!user) {
-          logger.error("No user returned from Google OAuth");
-          return next(
-            new ApiError("OAUTH_FAILED", "Autenticación con Google falló", 401),
+          const redirectUrl = new URL(
+            process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" 
+              ? process.env.FRONTEND_URLS?.split(',')[0] || "http://localhost:5173"
+              : "http://localhost:5173"),
           );
+          
+          let errorMsg = "auth_failed";
+          if (err && err.message) {
+            if (err.message.includes("Acceso denegado")) {
+              errorMsg = "domain_not_allowed";
+            } else {
+              errorMsg = err.message;
+            }
+          }
+          
+          redirectUrl.searchParams.set("error", errorMsg);
+          return res.status(302).redirect(redirectUrl.toString());
         }
 
         try {
-          logger.info("Generando JWT tokens para usuario:", user.email);
+          logger.info(`Generando JWT tokens para usuario: ${user.email}`);
           
           // Generar JWT tokens
           // @ts-ignore - JWT sign type compatibility issue
@@ -87,6 +94,8 @@ export class OAuthController {
               : "http://localhost:5173"),
           );
           
+          redirectUrl.pathname = '/oauth/callback';
+          
           redirectUrl.searchParams.set("accessToken", accessToken);
           redirectUrl.searchParams.set("refreshToken", refreshToken);
           redirectUrl.searchParams.set(
@@ -105,8 +114,7 @@ export class OAuthController {
           // Asegurar que la respuesta se envíe correctamente
           res.status(302).redirect(redirectUrl.toString());
         } catch (error) {
-          logger.error("Error generating JWT tokens:", error);
-          logger.error("Error stack:", error.stack);
+          logger.error(error, "Error generating JWT tokens:");
           return next(
             new ApiError(
               "TOKEN_GENERATION_FAILED",
@@ -156,7 +164,7 @@ export class OAuthController {
         );
       }
 
-      logger.error("Token verification error:", error);
+      logger.error(error, "Token verification error:");
       return next(
         new ApiError(
           "TOKEN_VERIFICATION_FAILED",
@@ -244,7 +252,7 @@ export class OAuthController {
         );
       }
 
-      logger.error("Token refresh error:", error);
+      logger.error(error, "Token refresh error:");
       return next(
         new ApiError("TOKEN_REFRESH_FAILED", "Error refrescando token", 500),
       );
