@@ -114,7 +114,7 @@ export class OAuthController {
           // Asegurar que la respuesta se envíe correctamente
           res.status(302).redirect(redirectUrl.toString());
         } catch (error) {
-          logger.error(error, "Error generating JWT tokens:");
+          logger.error({ err: error }, "Error generating JWT tokens:");
           return next(
             new ApiError(
               "TOKEN_GENERATION_FAILED",
@@ -164,7 +164,7 @@ export class OAuthController {
         );
       }
 
-      logger.error(error, "Token verification error:");
+      logger.error({ err: error }, "Token verification error:");
       return next(
         new ApiError(
           "TOKEN_VERIFICATION_FAILED",
@@ -252,7 +252,7 @@ export class OAuthController {
         );
       }
 
-      logger.error(error, "Token refresh error:");
+      logger.error({ err: error }, "Token refresh error:");
       return next(
         new ApiError("TOKEN_REFRESH_FAILED", "Error refrescando token", 500),
       );

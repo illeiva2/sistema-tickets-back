@@ -38,7 +38,7 @@ export class NotificationsService {
       logger.info(`Email sent successfully to ${emailData.to}`);
       return true;
     } catch (error) {
-      logger.error("Failed to send email notification", error);
+      logger.error({ err: error }, "Failed to send email notification");
       return false;
     }
   }
@@ -91,7 +91,7 @@ export class NotificationsService {
       );
       return true;
     } catch (error) {
-      logger.error("Failed to create notification", error);
+      logger.error({ err: error }, "Failed to create notification");
       return false;
     }
   }
@@ -112,7 +112,7 @@ export class NotificationsService {
 
       return notifications;
     } catch (error) {
-      logger.error("Failed to get user notifications", error);
+      logger.error({ err: error }, "Failed to get user notifications");
       throw error;
     }
   }
@@ -135,7 +135,7 @@ export class NotificationsService {
 
       return true;
     } catch (error) {
-      logger.error("Failed to mark notification as read", error);
+      logger.error({ err: error }, "Failed to mark notification as read");
       return false;
     }
   }
@@ -152,7 +152,7 @@ export class NotificationsService {
 
       return true;
     } catch (error) {
-      logger.error("Failed to mark all notifications as read", error);
+      logger.error({ err: error }, "Failed to mark all notifications as read");
       return false;
     }
   }
@@ -175,7 +175,7 @@ export class NotificationsService {
 
       return preferences;
     } catch (error) {
-      logger.error("Failed to get user notification preferences", error);
+      logger.error({ err: error }, "Failed to get user notification preferences");
       throw error;
     }
   }
@@ -196,7 +196,7 @@ export class NotificationsService {
 
       return true;
     } catch (error) {
-      logger.error("Failed to update user notification preferences", error);
+      logger.error({ err: error }, "Failed to update user notification preferences");
       return false;
     }
   }

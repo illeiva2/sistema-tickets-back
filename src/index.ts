@@ -60,12 +60,12 @@ if (config.server.nodeEnv === "development") {
         validateOAuthConfig();
         logger.info("✅ OAuth configuration validated successfully");
       } catch (error) {
-        logger.error("❌ OAuth configuration validation failed:", error);
+        logger.error({ err: error }, "❌ OAuth configuration validation failed:");
         logger.warn("OAuth features will not work properly");
       }
     })
     .catch((error) => {
-      logger.error("❌ Failed to load OAuth configuration:", error);
+      logger.error({ err: error }, "❌ Failed to load OAuth configuration:");
       logger.warn("OAuth features will not work properly");
     });
 } else {
@@ -97,7 +97,7 @@ app.get("/debug/db-connection", async (req, res) => {
       ssl: "enabled"
     });
   } catch (error) {
-    logger.error("❌ Database connection failed:", error);
+    logger.error({ err: error }, "❌ Database connection failed:");
     res.status(500).json({
       success: false,
       message: "❌ Database connection failed",

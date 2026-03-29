@@ -149,7 +149,7 @@ export class AuthService {
       if (error instanceof ApiError) {
         throw error;
       }
-      logger.error("Error during user registration:", error);
+      logger.error({ err: error }, "Error during user registration:");
       throw new ApiError("REGISTRATION_FAILED", "Error durante el registro", 500);
     }
   }
@@ -187,7 +187,7 @@ export class AuthService {
         picture: tokenInfo.picture,
       };
     } catch (error) {
-      logger.error("Error verifying Google token:", error);
+      logger.error({ err: error }, "Error verifying Google token:");
       return null;
     }
   }
@@ -273,7 +273,7 @@ export class AuthService {
       if (error instanceof jwt.JsonWebTokenError) {
         throw new ApiError("INVALID_TOKEN", "Token inválido o expirado", 401);
       }
-      logger.error("Error during password setup:", error);
+      logger.error({ err: error }, "Error during password setup:");
       throw new ApiError("PASSWORD_SETUP_FAILED", "Error configurando contraseña", 500);
     }
   }
