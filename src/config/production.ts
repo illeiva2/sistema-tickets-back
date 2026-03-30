@@ -7,7 +7,7 @@ export const productionConfig = {
   // Configuración de CORS para producción
   cors: {
     origin: process.env.ALLOWED_ORIGINS?.split(',') || [
-      process.env.FRONTEND_URLS?.split(',')[0] || 'https://yourdomain.com'
+      process.env.FRONTEND_URLS?.split(',')[0] || 'https://sistema-tickets-grf.vercel.app'
     ],
     credentials: true,
     optionsSuccessStatus: 200
@@ -83,7 +83,7 @@ export const productionConfig = {
   // Configuración de OAuth para producción
   oauth: {
     google: {
-      callbackURL: process.env.GOOGLE_CALLBACK_URL || `${process.env.API_URL || 'https://api.yourdomain.com'}/auth/google/callback`,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL || `${process.env.API_URL || 'https://sistema-tickets-back.onrender.com'}/api/auth/google/callback`,
       scope: ['profile', 'email']
     }
   },

@@ -7,7 +7,7 @@ export const oauthConfig = {
     callbackURL:
       process.env.GOOGLE_CALLBACK_URL ||
       (process.env.NODE_ENV === "production" 
-        ? `${process.env.API_URL || "http://localhost:3001"}/api/auth/google/callback`
+        ? `${process.env.API_URL || "https://sistema-tickets-back.onrender.com"}/api/auth/google/callback`
         : "http://localhost:3001/api/auth/google/callback"),
     scope: ["profile", "email"],
     allowedDomains: process.env.GOOGLE_WORKSPACE_DOMAINS?.split(",") || [],
