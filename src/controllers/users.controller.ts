@@ -264,31 +264,71 @@ export class UsersController {
     next: NextFunction,
   ) => {
     try {
-      const { id } = req.params;
+      let { id } = req.params;
       const { currentPassword, newPassword } = req.body;
       const { user } = req;
 
-      // Solo el usuario puede cambiar su propia contraseña
-      if (user?.id !== id) {
-        throw new ApiError(
-          "FORBIDDEN",
-          "Solo puedes cambiar tu propia contraseña",
-          403,
-        );
+      if (!user) {
+        throw new ApiError("UNAUTHORIZED", "Usuario no autenticado", 401);
       }
 
+      // Si el ID es 'me', usar el ID del usuario autenticado
+      if (id === "me") {
+        id = user.id;
+      }
+
+      // Buscar el usuario objetivo
       const dbUser = await prisma.user.findUnique({ where: { id } });
       if (!dbUser) {
         throw new ApiError("USER_NOT_FOUND", "Usuario no encontrado", 404);
       }
 
-      // Verificar contraseña actual
-      const isValidPassword = await bcrypt.compare(
-        currentPassword,
-        dbUser.passwordHash,
-      );
-      if (!isValidPassword) {
-        throw new ApiError("INVALID_PASSWORD", "Contraseña actual incorrecta", 400);
+      // Caso 1: El usuario cambia su propia contraseña
+      if (user.id === id) {
+        // Verificar contraseña actual
+        const isValidPassword = await bcrypt.compare(
+          currentPassword,
+          dbUser.passwordHash,
+        );
+        if (!isValidPassword) {
+          throw new ApiError(
+            "INVALID_PASSWORD",
+            "Contraseña actual incorrecta",
+            400,
+          );
+        }
+      }
+      // Caso 2: Un ADMIN cambia la contraseña de otro usuario
+      else if (user.role === "ADMIN") {
+        // Para mayor seguridad, el admin debe proporcionar SU PROPIA contraseña actual
+        const adminUser = await prisma.user.findUnique({
+          where: { id: user.id },
+        });
+
+        if (!adminUser) {
+          throw new ApiError("USER_NOT_FOUND", "Administrador no encontrado", 404);
+        }
+
+        const isAdminPasswordValid = await bcrypt.compare(
+          currentPassword,
+          adminUser.passwordHash,
+        );
+
+        if (!isAdminPasswordValid) {
+          throw new ApiError(
+            "INVALID_PASSWORD",
+            "Tu contraseña de administrador es incorrecta",
+            400,
+          );
+        }
+      }
+      // Caso 3: No tiene permisos
+      else {
+        throw new ApiError(
+          "FORBIDDEN",
+          "No tienes permisos para cambiar esta contraseña",
+          403,
+        );
       }
 
       // Hashear nueva contraseña
@@ -298,10 +338,16 @@ export class UsersController {
       // Actualizar contraseña
       await prisma.user.update({
         where: { id },
-        data: { passwordHash: newPasswordHash },
+        data: {
+          passwordHash: newPasswordHash,
+          mustChangePassword: false, // Se asume que si se cambia manualmente ya no debe cambiarla
+        },
       });
 
-      res.json({ success: true, message: "Contraseña actualizada correctamente" });
+      res.json({
+        success: true,
+        message: "Contraseña actualizada correctamente",
+      });
     } catch (err) {
       next(err);
     }
