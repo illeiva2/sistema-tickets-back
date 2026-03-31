@@ -4,6 +4,8 @@ import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import FileValidationService from "./fileValidation.service";
 import FilePreviewService from "./filePreview.service";
+import cloudinary from "../lib/cloudinary";
+import streamifier from "streamifier";
 
 export class AttachmentsService {
   static async listByTicket(ticketId: string) {
@@ -20,16 +22,29 @@ export class AttachmentsService {
     const enrichedAttachments = await Promise.all(
       attachments.map(async (attachment) => {
         try {
-          const filePath = path.join(
-            process.cwd(),
-            attachment.storageUrl.replace(/^\/uploads\//, "uploads/"),
-          );
-
-          const previewInfo = await FilePreviewService.getFilePreviewInfo(
-            filePath,
-            attachment.mimeType,
-            attachment.fileName,
-          );
+          const isCloudinary = attachment.storageUrl.startsWith("http");
+          
+          let previewInfo;
+          if (isCloudinary) {
+            // Para Cloudinary, usamos la URL directamente
+            previewInfo = await FilePreviewService.getFilePreviewInfo(
+              attachment.storageUrl,
+              attachment.mimeType,
+              attachment.fileName,
+              true // remote
+            );
+          } else {
+            const filePath = path.join(
+              process.cwd(),
+              attachment.storageUrl.replace(/^\/uploads\//, "uploads/"),
+            );
+            previewInfo = await FilePreviewService.getFilePreviewInfo(
+              filePath,
+              attachment.mimeType,
+              attachment.fileName,
+              false // local
+            );
+          }
 
           const displayInfo = FilePreviewService.getFileDisplayInfo(
             attachment.fileName,
@@ -71,42 +86,33 @@ export class AttachmentsService {
       );
     }
 
-    // Crear directorio de uploads si no existe
-    const uploadsDir = path.join(process.cwd(), "uploads");
-    await fs.mkdir(uploadsDir, { recursive: true });
+    // Subir a Cloudinary usando un stream
+    const uploadToCloudinary = (): Promise<any> => {
+      return new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          {
+            folder: "tickets",
+            resource_type: "auto",
+            public_id: `${Date.now()}-${this.sanitizeFileName(file.originalname).split(".")[0]}`,
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result);
+          }
+        );
+        streamifier.createReadStream(file.buffer).pipe(uploadStream);
+      });
+    };
 
-    // Generar nombre único y seguro
-    const timestamp = Date.now();
-    const randomId = Math.random().toString(16).slice(2);
-    const sanitizedName = this.sanitizeFileName(file.originalname);
-    const uniqueName = `${timestamp}-${randomId}-${sanitizedName}`;
-
-    const targetPath = path.join(uploadsDir, uniqueName);
-
+    let result;
     try {
-      // Escribir archivo
-      await fs.writeFile(targetPath, file.buffer);
-
-      // Verificar que el archivo se escribió correctamente
-      const stats = await fs.stat(targetPath);
-      if (stats.size !== file.size) {
-        throw new Error("File size mismatch after write");
-      }
+      result = await uploadToCloudinary();
     } catch (error) {
-      // Limpiar archivo parcial si hay error
-      try {
-        await fs.unlink(targetPath);
-      } catch (_e) {
-        // Ignorar error de limpieza
-      }
-      throw new ApiError(
-        "FILE_WRITE_ERROR",
-        "Error al guardar el archivo",
-        500,
-      );
+      console.error("Cloudinary upload error:", error);
+      throw new ApiError("FILE_UPLOAD_ERROR", "Error al subir archivo a la nube", 500);
     }
 
-    const storageUrl = `/uploads/${uniqueName}`;
+    const storageUrl = result.secure_url;
 
     // Crear registro en base de datos
     const created = await prisma.attachment.create({
@@ -136,16 +142,28 @@ export class AttachmentsService {
     if (!attachment)
       throw new ApiError("ATTACHMENT_NOT_FOUND", "Adjunto no encontrado", 404);
 
-    // Eliminar archivo físico
+    // Eliminar archivo
     try {
-      const filePath = path.join(
-        process.cwd(),
-        attachment.storageUrl.replace(/^\/uploads\//, "uploads/"),
-      );
-      await fs.unlink(filePath);
+      if (attachment.storageUrl.startsWith("http")) {
+        // Eliminar de Cloudinary
+        // La URL tiene formato: https://res.cloudinary.com/cloud_name/image/upload/v12345/folder/public_id.ext
+        const publicId = attachment.storageUrl
+          .split("/")
+          .slice(-2)
+          .join("/")
+          .split(".")[0];
+        
+        await cloudinary.uploader.destroy(publicId);
+      } else {
+        // Eliminar archivo físico local (retrocompatibilidad)
+        const filePath = path.join(
+          process.cwd(),
+          attachment.storageUrl.replace(/^\/uploads\//, "uploads/"),
+        );
+        await fs.unlink(filePath);
+      }
     } catch (error) {
       console.error("Error deleting file:", error);
-      // No fallar si el archivo físico no existe
     }
 
     // Eliminar registro de la base de datos
@@ -210,6 +228,12 @@ export class AttachmentsService {
     try {
       const attachment = await prisma.attachment.findUnique({ where: { id } });
       if (!attachment) return false;
+
+      if (attachment.storageUrl.startsWith("http")) {
+        // Para archivos remotos, asumimos que existen si están en la BD
+        // Opcional: Podríamos hacer una petición HEAD a Cloudinary
+        return true;
+      }
 
       const filePath = path.join(
         process.cwd(),

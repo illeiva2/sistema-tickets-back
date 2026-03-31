@@ -46,7 +46,14 @@ export class TicketsService {
     if (status) where.status = status;
     if (priority) where.priority = priority;
     if (requesterId) where.requesterId = requesterId;
-    if (assigneeId) where.assigneeId = assigneeId;
+
+    if (assigneeId) {
+      if (assigneeId === "null") {
+        where.assigneeId = null;
+      } else {
+        where.assigneeId = assigneeId;
+      }
+    }
 
     if (dateFrom || dateTo) {
       where.createdAt = {};
@@ -577,5 +584,61 @@ export class TicketsService {
     }
 
     return validTransitions;
+  }
+
+  static async claimTicket(id: string, userId: string) {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      include: { requester: true },
+    });
+
+    if (!ticket) {
+      throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+    }
+
+    if (ticket.assigneeId) {
+      throw new ApiError(
+        "TICKET_ALREADY_ASSIGNED",
+        "Este ticket ya está asignado a otro técnico",
+        400,
+      );
+    }
+
+    // Actualizar ticket
+    const updatedTicket = await prisma.ticket.update({
+      where: { id },
+      data: {
+        assigneeId: userId,
+        status: ticket.status === "OPEN" ? "IN_PROGRESS" : ticket.status,
+      },
+      include: {
+        requester: {
+          select: { id: true, name: true, email: true },
+        },
+        assignee: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        entity: "ticket",
+        entityId: id,
+        action: "ticket_claimed",
+        actorId: userId,
+      },
+    });
+
+    // Notificar al solicitante
+    try {
+      await NotificationsService.notifyTicketAssigned(id, userId);
+    } catch (error) {
+      logger.error({ err: error }, "Error sending notification for ticket claim");
+    }
+
+    logger.info(`Ticket claimed: ${id} by agent: ${userId}`);
+    return updatedTicket;
   }
 }

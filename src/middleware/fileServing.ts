@@ -168,21 +168,21 @@ export const secureFileServing = async (
       ticketAssigneeId: ticket?.assigneeId,
     });
 
-    // Los admins pueden acceder a todos los archivos
-    if (userRole === "ADMIN") {
-      console.log(`✅ Admin - acceso permitido`);
-      return next();
+    // Lógica de acceso por rol
+    let hasAccess = false;
+    if (userRole === "ADMIN" || userRole === "AGENT") {
+      hasAccess = true;
+      console.log(`✅ Staff - acceso permitido`);
+    } else if (userRole === "USER" && ticket?.requesterId === userId) {
+      hasAccess = true;
+      console.log(`✅ Usuario - acceso permitido (solicitante)`);
     }
 
-    // Los agentes también pueden acceder a todos los archivos
-    if (userRole === "AGENT") {
-      console.log(`✅ Agente - acceso permitido (acceso completo)`);
-      return next();
-    }
-
-    // Los usuarios solo pueden acceder a archivos de sus propios tickets
-    if (userRole === "USER" && ticket?.requesterId === userId) {
-      console.log(`✅ Usuario - acceso permitido (es el solicitante)`);
+    if (hasAccess) {
+      if (attachment.storageUrl.startsWith("http")) {
+        console.log(`➡️ Redirigiendo a Cloudinary: ${attachment.storageUrl}`);
+        return res.redirect(attachment.storageUrl);
+      }
       return next();
     }
 

@@ -192,6 +192,31 @@ export class TicketsController {
     },
   ];
 
+  static claimTicket = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+
+      const { id } = req.params;
+      const ticket = await TicketsService.claimTicket(id, req.user.id);
+
+      res.json({
+        success: true,
+        data: ticket,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   static deleteTicket = async (
     req: AuthenticatedRequest,
     res: Response,

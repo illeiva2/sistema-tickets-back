@@ -82,9 +82,10 @@ export class FilePreviewService {
    * Obtiene información de vista previa para un archivo
    */
   static async getFilePreviewInfo(
-    filePath: string,
+    filePathOrUrl: string,
     mimeType: string,
     fileName: string,
+    isRemote: boolean = false,
   ): Promise<FilePreviewInfo> {
     try {
       const fileType = this.getFileType(mimeType, fileName);
@@ -99,39 +100,60 @@ export class FilePreviewService {
 
       // Extraer metadatos reales usando el servicio de procesamiento
       try {
-        const metadata = await FileProcessingService.extractMetadata(
-          filePath,
-          mimeType,
-          fileName,
-        );
-        baseInfo.metadata = metadata;
+        if (isRemote) {
+          // Para archivos remotos de Cloudinary, usamos metadatos simplificados por ahora
+          // Opcional: Podríamos obtener metadatos reales de Cloudinary API
+          baseInfo.metadata = {
+            size: 0, // El tamaño ya viene en el registro de la BD
+            lastModified: new Date(),
+          };
+        } else {
+          const metadata = await FileProcessingService.extractMetadata(
+            filePathOrUrl,
+            mimeType,
+            fileName,
+          );
+          baseInfo.metadata = metadata;
+        }
       } catch (error) {
         console.error("Error extracting metadata:", error);
         // Fallback a metadatos básicos
-        const stats = await fs.stat(filePath);
-        baseInfo.metadata = {
-          size: stats.size,
-          lastModified: stats.mtime,
-        };
+        if (!isRemote) {
+          const stats = await fs.stat(filePathOrUrl);
+          baseInfo.metadata = {
+            size: stats.size,
+            lastModified: stats.mtime,
+          };
+        }
       }
 
       // Generar thumbnail para imágenes
       if (fileType === "image" && this.canPreviewFile(fileType, mimeType)) {
         try {
-          // Primero verificar si ya existe un thumbnail
-          let thumbnail =
-            await FileProcessingService.getThumbnailInfo(fileName);
+          if (isRemote) {
+            // Para Cloudinary, generamos una URL de transformación
+            // Formato: .../upload/v123.../tickets/public_id.jpg -> .../upload/w_200,h_200,c_fit/v123.../tickets/public_id.jpg
+            baseInfo.thumbnail = {
+              path: filePathOrUrl,
+              size: { width: 200, height: 200 },
+              url: filePathOrUrl.replace("/upload/", "/upload/w_200,h_200,c_fit/"),
+            };
+          } else {
+            // Primero verificar si ya existe un thumbnail local
+            let thumbnail =
+              await FileProcessingService.getThumbnailInfo(fileName);
 
-          // Si no existe, generarlo
-          if (!thumbnail) {
-            thumbnail = await FileProcessingService.generateImageThumbnail(
-              filePath,
-              fileName,
-            );
-          }
+            // Si no existe, generarlo
+            if (!thumbnail) {
+              thumbnail = await FileProcessingService.generateImageThumbnail(
+                filePathOrUrl,
+                fileName,
+              );
+            }
 
-          if (thumbnail) {
-            baseInfo.thumbnail = thumbnail;
+            if (thumbnail) {
+              baseInfo.thumbnail = thumbnail;
+            }
           }
         } catch (error) {
           console.error("Error generating thumbnail:", error);
@@ -141,15 +163,22 @@ export class FilePreviewService {
       return baseInfo;
     } catch (error) {
       console.error("Error getting file preview info:", error);
-      const stats = await fs.stat(filePath);
+      if (!isRemote) {
+         const stats = await fs.stat(filePathOrUrl);
+         return {
+           type: "other",
+           canPreview: false,
+           icon: this.iconMap.other,
+           metadata: {
+             size: stats.size,
+             lastModified: stats.mtime,
+           },
+         };
+      }
       return {
         type: "other",
         canPreview: false,
         icon: this.iconMap.other,
-        metadata: {
-          size: stats.size,
-          lastModified: stats.mtime,
-        },
       };
     }
   }
