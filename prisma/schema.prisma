@@ -59,6 +59,7 @@ model Ticket {
   description String
   status      TicketStatus  @default(OPEN)
   priority    TicketPriority @default(MEDIUM)
+  isRead      Boolean       @default(false)
   requesterId String
   assigneeId  String?
   closedAt    DateTime?

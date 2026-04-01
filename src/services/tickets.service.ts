@@ -74,6 +74,9 @@ export class TicketsService {
           assignee: {
             select: { id: true, name: true, email: true },
           },
+          _count: {
+            select: { comments: true },
+          },
         },
         orderBy,
         skip,
@@ -128,6 +131,15 @@ export class TicketsService {
         "No tienes permisos para ver este ticket",
         403,
       );
+    }
+
+    // Marcar como leído si lo abre un AGENT o ADMIN
+    if (!ticket.isRead && (userRole === UserRole.AGENT || userRole === UserRole.ADMIN)) {
+      await prisma.ticket.update({
+        where: { id },
+        data: { isRead: true },
+      });
+      ticket.isRead = true;
     }
 
     // Enriquecer attachments con información de vista previa
