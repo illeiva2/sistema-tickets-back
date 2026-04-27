@@ -2,6 +2,7 @@ import { Router } from "express";
 import AttachmentsController from "../controllers/attachments.controller";
 import FileOrganizationController from "../controllers/fileOrganization.controller";
 import { authMiddleware } from "../middleware/auth";
+import { fixFilenameEncoding } from "../middleware/fixFilenameEncoding";
 import multer from "multer";
 
 const router = Router();
@@ -16,6 +17,7 @@ router.post(
     "/:ticketId",
     authMiddleware,
     upload.single("file"),
+    fixFilenameEncoding,
     AttachmentsController.upload as any
 );
 router.delete("/:id", authMiddleware, AttachmentsController.remove as any);
