@@ -11,7 +11,8 @@ router.get("/:id", authMiddleware, TicketsController.getTicketById as any);
 router.post("/", authMiddleware, TicketsController.createTicket as any);
 router.patch("/:id", authMiddleware, TicketsController.updateTicket as any);
 router.post("/:id/close", authMiddleware, TicketsController.closeTicket as any);
-router.post("/:id/reopen", authMiddleware, TicketsController.reopenTicket as any);
+router.post("/:id/resolve", authMiddleware, requireRole([UserRole.AGENT, UserRole.ADMIN]), TicketsController.resolveTicket as any);
+router.post("/:id/reopen", authMiddleware, requireRole([UserRole.AGENT, UserRole.ADMIN]), TicketsController.reopenTicket as any);
 router.patch("/:id/claim", authMiddleware, requireRole([UserRole.AGENT, UserRole.ADMIN]), TicketsController.claimTicket as any);
 router.delete(
     "/:id",

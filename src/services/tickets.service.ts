@@ -522,11 +522,14 @@ export class TicketsService {
       },
     });
 
-    // Update ticket status to OPEN
+    // Si el ticket tiene asignado, vuelve a IN_PROGRESS (preserva contexto).
+    // Si no, queda en OPEN para que alguien lo tome.
+    const newStatus: StatusLiteral = ticket.assigneeId ? "IN_PROGRESS" : "OPEN";
+
     const updatedTicket = await prisma.ticket.update({
       where: { id },
       data: {
-        status: "OPEN",
+        status: newStatus,
         closedAt: null,
       },
       include: {
@@ -547,15 +550,86 @@ export class TicketsService {
       },
     });
 
-    // Send notification about ticket reopening
     await NotificationsService.notifyStatusChanged(
       id,
       ticket.status,
-      "OPEN",
+      newStatus,
       userId,
     );
 
-    logger.info(`Ticket reopened: ${id} by user: ${userId}`);
+    logger.info(`Ticket reopened: ${id} by user: ${userId} (-> ${newStatus})`);
+    return updatedTicket;
+  }
+
+  static async resolveTicket(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+    comment?: string,
+  ) {
+    if (userRole === UserRole.USER) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "Solo los agentes y administradores pueden resolver tickets",
+        403,
+      );
+    }
+
+    const ticket = await prisma.ticket.findUnique({ where: { id } });
+    if (!ticket) {
+      throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+    }
+
+    if (ticket.status === "RESOLVED" || ticket.status === "CLOSED") {
+      throw new ApiError(
+        "INVALID_STATUS",
+        "El ticket ya está resuelto o cerrado",
+        400,
+      );
+    }
+
+    if (comment && comment.trim().length > 0) {
+      await prisma.comment.create({
+        data: {
+          ticketId: id,
+          authorId: userId,
+          message: `[TICKET RESUELTO] ${comment.trim()}`,
+        },
+      });
+    }
+
+    const updatedTicket = await prisma.ticket.update({
+      where: { id },
+      data: { status: "RESOLVED" },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        assignee: { select: { id: true, name: true, email: true } },
+        comments: {
+          include: {
+            author: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        entity: "ticket",
+        entityId: id,
+        action: "ticket_resolved",
+        actorId: userId,
+      },
+    });
+
+    await NotificationsService.notifyStatusChanged(
+      id,
+      ticket.status,
+      "RESOLVED",
+      userId,
+    );
+
+    logger.info(`Ticket resolved: ${id} by user: ${userId}`);
     return updatedTicket;
   }
 
