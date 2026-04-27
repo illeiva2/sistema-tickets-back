@@ -13,7 +13,7 @@ export const config = {
   },
   jwt: {
     secret: process.env.JWT_SECRET || "changeme-in-production",
-    expiresIn: process.env.JWT_EXPIRES_IN || "15m",
+    expiresIn: process.env.JWT_EXPIRES_IN || "8h",
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
   },
   server: {
