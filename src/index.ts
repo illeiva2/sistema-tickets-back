@@ -29,20 +29,44 @@ app.use(corsMiddleware);
 
 // Rate limiting (solo en producción)
 if (config.server.nodeEnv === "production") {
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
+  const tooManyRequests = {
+    success: false,
+    error: {
+      code: "RATE_LIMIT_EXCEEDED",
+      message: "Demasiadas solicitudes, intenta de nuevo más tarde",
+    },
+  };
+
+  // Limiter específico para login: protege contra brute force.
+  const loginLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
     standardHeaders: true,
     legacyHeaders: false,
-    message: {
-      success: false,
-      error: {
-        code: "RATE_LIMIT_EXCEEDED",
-        message: "Demasiadas solicitudes, intenta de nuevo más tarde",
-      },
+    message: tooManyRequests,
+  });
+  app.use("/api/auth/login", loginLimiter);
+
+  // Limiter global: cubre el resto de la API. Skipea endpoints de bajo riesgo
+  // y alta frecuencia (health, /me, archivos estáticos) para no romper la SPA
+  // con polling y sesiones largas.
+  const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: tooManyRequests,
+    skip: (req) => {
+      const p = req.path;
+      return (
+        p === "/health" ||
+        p === "/api/auth/me" ||
+        p.startsWith("/uploads") ||
+        p.startsWith("/thumbnails")
+      );
     },
   });
-  app.use(limiter);
+  app.use(globalLimiter);
 }
 
 // Request parsing
