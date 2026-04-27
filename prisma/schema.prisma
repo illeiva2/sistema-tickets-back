@@ -38,6 +38,8 @@ model User {
   role         UserRole @default(USER)
   googleId     String?  @unique
   mustChangePassword Boolean @default(false)
+  isActive     Boolean  @default(true)
+  deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

@@ -15,6 +15,14 @@ export class AuthService {
       throw new ApiError("INVALID_CREDENTIALS", "Credenciales inválidas", 401);
     }
 
+    if (!user.isActive) {
+      throw new ApiError(
+        "ACCOUNT_DISABLED",
+        "Tu cuenta fue desactivada. Contactá a un administrador.",
+        403,
+      );
+    }
+
     // Verificar si es un usuario de Google OAuth que aún no configuró contraseña
     if (user.googleId && (user as any).mustChangePassword) {
       throw new ApiError(
@@ -295,6 +303,14 @@ export class AuthService {
 
       if (!user) {
         throw new ApiError("USER_NOT_FOUND", "Usuario no encontrado", 404);
+      }
+
+      if (!user.isActive) {
+        throw new ApiError(
+          "ACCOUNT_DISABLED",
+          "Tu cuenta fue desactivada. Contactá a un administrador.",
+          403,
+        );
       }
 
       const newAccessToken = jwt.sign(
