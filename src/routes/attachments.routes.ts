@@ -1,8 +1,9 @@
 import { Router } from "express";
 import AttachmentsController from "../controllers/attachments.controller";
 import FileOrganizationController from "../controllers/fileOrganization.controller";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, requireRole } from "../middleware/auth";
 import { fixFilenameEncoding } from "../middleware/fixFilenameEncoding";
+import { UserRole } from "@prisma/client";
 import multer from "multer";
 
 const router = Router();
@@ -20,7 +21,12 @@ router.post(
     fixFilenameEncoding,
     AttachmentsController.upload as any
 );
-router.delete("/:id", authMiddleware, AttachmentsController.remove as any);
+router.delete(
+    "/:id",
+    authMiddleware,
+    requireRole([UserRole.ADMIN]),
+    AttachmentsController.remove as any
+);
 router.get("/:id/info", authMiddleware, AttachmentsController.getInfo as any);
 router.get("/:id/exists", authMiddleware, AttachmentsController.checkExists as any);
 router.get(
