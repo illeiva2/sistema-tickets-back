@@ -93,7 +93,7 @@ export class AttachmentsService {
           {
             folder: "tickets",
             resource_type: "auto",
-            public_id: `${Date.now()}-${this.sanitizeFileName(file.originalname).split(".")[0]}`,
+            public_id: this.buildCloudinaryPublicId(file.originalname),
           },
           (error, result) => {
             if (error) return reject(error);
@@ -170,6 +170,29 @@ export class AttachmentsService {
     await prisma.attachment.delete({ where: { id } });
 
     return { message: "Adjunto eliminado correctamente" };
+  }
+
+  /**
+   * Construye un public_id seguro para Cloudinary. Cloudinary solo acepta
+   * [a-zA-Z0-9_-] (y "/" para folders) en public_ids; cualquier otro caracter
+   * (espacios, ñ, tildes, parentesis, comas, etc.) hace fallar la subida.
+   * Mantenemos el fileName original sin tocar para guardarlo en DB.
+   */
+  private static buildCloudinaryPublicId(fileName: string): string {
+    const lastDot = fileName.lastIndexOf(".");
+    const base = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
+
+    // Normaliza Unicode (NFD) y descarta diacriticos: "ñ" -> "n", "á" -> "a".
+    const decomposed = base.normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+    // Reemplaza cualquier caracter no seguro por "_" y colapsa repeticiones.
+    let slug = decomposed.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/_+/g, "_");
+    slug = slug.replace(/^_+|_+$/g, "");
+
+    if (!slug) slug = "archivo";
+    if (slug.length > 80) slug = slug.substring(0, 80);
+
+    return `${Date.now()}-${slug}`;
   }
 
   /**
