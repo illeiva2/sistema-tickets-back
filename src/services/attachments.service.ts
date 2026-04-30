@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs/promises";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
+import { logger } from "../lib/logger";
 import FileValidationService from "./fileValidation.service";
 import FilePreviewService from "./filePreview.service";
 import cloudinary from "../lib/cloudinary";
@@ -108,8 +109,31 @@ export class AttachmentsService {
     try {
       result = await uploadToCloudinary();
     } catch (error) {
-      console.error("Cloudinary upload error:", error);
-      throw new ApiError("FILE_UPLOAD_ERROR", "Error al subir archivo a la nube", 500);
+      const cloudinaryMessage =
+        (error as Error)?.message ?? String(error);
+      const cloudinaryCode =
+        (error as { http_code?: number; name?: string })?.http_code ??
+        (error as Error)?.name ??
+        "unknown";
+
+      logger.error(
+        {
+          err: error,
+          cloudinaryMessage,
+          cloudinaryCode,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          sizeBytes: file.size,
+        },
+        "Cloudinary upload failed",
+      );
+
+      throw new ApiError(
+        "FILE_UPLOAD_ERROR",
+        `Error al subir archivo a la nube: ${cloudinaryMessage}`,
+        500,
+        { cloudinaryCode, cloudinaryMessage },
+      );
     }
 
     const storageUrl = result.secure_url;
