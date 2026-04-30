@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import { logger } from "./logger";
 import { v4 as uuidv4 } from "uuid";
 
@@ -21,7 +21,13 @@ export class ApiError extends Error {
   }
 }
 
-export const errorHandler = (error: Error, req: Request, res: Response) => {
+export const errorHandler = (
+  error: Error,
+  req: Request,
+  res: Response,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _next: NextFunction,
+) => {
   const requestId = (req.headers["x-request-id"] as string) || uuidv4();
 
   if (error instanceof ApiError) {
@@ -45,7 +51,38 @@ export const errorHandler = (error: Error, req: Request, res: Response) => {
     });
   }
 
-  // Log unexpected errors
+  // Errores de multer: tratarlos como 400 con mensaje legible.
+  // Detectamos por nombre de clase para no acoplar el import fuerte.
+  if (error.name === "MulterError") {
+    const multerCode = (error as Error & { code?: string }).code ?? "MULTER_ERROR";
+    let message = "Error procesando el archivo";
+    if (multerCode === "LIMIT_FILE_SIZE") {
+      message = "El archivo excede el tamaño máximo permitido";
+    } else if (multerCode === "LIMIT_FILE_COUNT") {
+      message = "Demasiados archivos en una sola subida";
+    } else if (multerCode === "LIMIT_UNEXPECTED_FILE") {
+      message = "Campo de archivo inesperado";
+    }
+
+    logger.warn({
+      requestId,
+      error: multerCode,
+      message,
+      url: req.url,
+      method: req.method,
+    });
+
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: multerCode,
+        message,
+        requestId,
+      },
+    });
+  }
+
+  // Log unexpected errors.
   logger.error({
     requestId,
     error: error.name,
