@@ -194,6 +194,33 @@ export class TicketsService {
     return ticket;
   }
 
+  static async getTicketAudit(id: string, userId: string, userRole: UserRole) {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { id: true, requesterId: true },
+    });
+    if (!ticket) {
+      throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+    }
+    if (userRole === UserRole.USER && ticket.requesterId !== userId) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "No tienes permisos para ver el historial de este ticket",
+        403,
+      );
+    }
+
+    const logs = await prisma.auditLog.findMany({
+      where: { entity: "ticket", entityId: id },
+      include: {
+        actor: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return logs;
+  }
+
   static async createTicket(data: any, userId: string) {
     const ticket = await prisma.ticket.create({
       data: {

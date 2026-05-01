@@ -8,6 +8,7 @@ const router = Router();
 
 router.get("/", authMiddleware, TicketsController.getTickets as any);
 router.get("/:id", authMiddleware, TicketsController.getTicketById as any);
+router.get("/:id/audit", authMiddleware, TicketsController.getTicketAudit as any);
 router.post("/", authMiddleware, TicketsController.createTicket as any);
 router.patch("/:id", authMiddleware, TicketsController.updateTicket as any);
 router.post("/:id/close", authMiddleware, TicketsController.closeTicket as any);

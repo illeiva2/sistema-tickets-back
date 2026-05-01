@@ -66,6 +66,30 @@ export class TicketsController {
     }
   };
 
+  static getTicketAudit = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const { id } = req.params;
+      const data = await TicketsService.getTicketAudit(
+        id,
+        req.user.id,
+        req.user.role,
+      );
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   static createTicket = [
     validate(z.object({ body: createTicketSchema })),
     async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
