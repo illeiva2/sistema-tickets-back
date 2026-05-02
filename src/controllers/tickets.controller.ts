@@ -22,7 +22,7 @@ export class TicketsController {
         }
 
         const result = await TicketsService.getTickets(
-          req.query as any,
+          req.query,
           req.user.id,
           req.user.role,
         );

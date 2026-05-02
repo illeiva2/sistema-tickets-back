@@ -6,15 +6,15 @@ import { authMiddleware } from "../middleware/auth";
 const router = Router();
 
 // Standard Auth
-router.post("/login", AuthController.login as any);
-router.post("/register", AuthController.register as any);
-router.post("/setup-password", AuthController.setupPassword as any);
-router.post("/refresh", AuthController.refreshToken as any);
-router.get("/me", authMiddleware, AuthController.me as any);
+router.post("/login", AuthController.login);
+router.post("/register", AuthController.register);
+router.post("/setup-password", AuthController.setupPassword);
+router.post("/refresh", AuthController.refreshToken);
+router.get("/me", authMiddleware, AuthController.me);
 
 // OAuth
-router.get("/google", OAuthController.initiateGoogleAuth as any);
-router.get("/google/callback", OAuthController.googleCallback as any);
+router.get("/google", OAuthController.initiateGoogleAuth);
+router.get("/google/callback", OAuthController.googleCallback);
 // Note: /refresh is duplicated in original index.ts (one for AuthController, one for OAuthController).
 // The OAuthController.refreshToken seems to be mapped to /api/auth/refresh in index.ts
 // while AuthController.refreshToken is mapped to /api/auth/refresh inside the router.
@@ -25,6 +25,6 @@ router.get("/google/callback", OAuthController.googleCallback as any);
 // 2. app.post("/api/auth/refresh", OAuthController.refreshToken)
 // So AuthController.refreshToken would take precedence for POST /api/auth/refresh.
 // I will keep AuthController.refreshToken here.
-router.post("/logout", OAuthController.logout as any);
+router.post("/logout", OAuthController.logout);
 
 export default router;

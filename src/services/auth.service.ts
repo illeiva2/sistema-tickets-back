@@ -4,6 +4,7 @@ import { prisma } from "../lib/database";
 import { config } from "../config";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { UserRole } from "@prisma/client";
 
 export class AuthService {
   static async login(email: string, password: string) {
@@ -24,7 +25,7 @@ export class AuthService {
     }
 
     // Verificar si es un usuario de Google OAuth que aún no configuró contraseña
-    if (user.googleId && (user as any).mustChangePassword) {
+    if (user.googleId && user.mustChangePassword) {
       throw new ApiError(
         "GOOGLE_OAUTH_USER",
         "Este usuario se registró con Google. Por favor, inicia sesión con Google o configura tu contraseña personal primero.",
@@ -42,7 +43,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
-        mustChangePassword: (user as any).mustChangePassword ?? false,
+        mustChangePassword: user.mustChangePassword ?? false,
       },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as SignOptions,
@@ -64,7 +65,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
-        mustChangePassword: (user as any).mustChangePassword ?? false,
+        mustChangePassword: user.mustChangePassword ?? false,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -113,7 +114,7 @@ export class AuthService {
         data: {
           name,
           email,
-          role: role as any,
+          role: role as UserRole,
           googleId: googleUserInfo.sub, // ID único de Google
           mustChangePassword: true, // Debe configurar contraseña
           passwordHash: "", // Contraseña vacía hasta que la configure

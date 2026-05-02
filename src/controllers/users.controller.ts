@@ -84,7 +84,7 @@ export class UsersController {
   ) => {
     try {
       const agents = await prisma.user.findMany({
-        where: { role: "AGENT" as any, isActive: true },
+        where: { role: UserRole.AGENT, isActive: true },
         select: { id: true, name: true, email: true },
         orderBy: { name: "asc" },
       });

@@ -13,26 +13,26 @@ const upload = multer({
 });
 
 // Attachments
-router.get("/:ticketId", authMiddleware, AttachmentsController.list as any);
+router.get("/:ticketId", authMiddleware, AttachmentsController.list);
 router.post(
     "/:ticketId",
     authMiddleware,
     upload.single("file"),
     fixFilenameEncoding,
-    AttachmentsController.upload as any
+    AttachmentsController.upload
 );
 router.delete(
     "/:id",
     authMiddleware,
     requireRole([UserRole.ADMIN]),
-    AttachmentsController.remove as any
+    AttachmentsController.remove
 );
-router.get("/:id/info", authMiddleware, AttachmentsController.getInfo as any);
-router.get("/:id/exists", authMiddleware, AttachmentsController.checkExists as any);
+router.get("/:id/info", authMiddleware, AttachmentsController.getInfo);
+router.get("/:id/exists", authMiddleware, AttachmentsController.checkExists);
 router.get(
     "/validation/config",
     authMiddleware,
-    AttachmentsController.getValidationConfig as any
+    AttachmentsController.getValidationConfig
 );
 
 export default router;

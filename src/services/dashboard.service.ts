@@ -275,9 +275,9 @@ export async function getAdminDashboard(period: DashboardPeriod) {
     prisma.auditLog.count({
       where: {
         entity: "ticket",
-        action: { contains: "reopen" },
+        action: "ticket_reopened",
         createdAt: { gte: since },
-      } as any,
+      },
     }),
     prisma.user.findMany({
       where: { role: "AGENT", isActive: true },

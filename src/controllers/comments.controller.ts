@@ -30,12 +30,13 @@ export class CommentsController {
             error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
           });
         }
-        const { ticketId } = req.params as any;
-        const { page = 1, pageSize = 20 } = req.query as any;
+        const { ticketId } = req.params;
+        const page = Number(req.query.page ?? 1);
+        const pageSize = Number(req.query.pageSize ?? 20);
         const result = await CommentsService.listByTicket(
           ticketId,
-          page,
-          pageSize,
+          Number.isFinite(page) ? page : 1,
+          Number.isFinite(pageSize) ? pageSize : 20,
         );
         res.json({ success: true, data: result });
       } catch (err) {
@@ -54,8 +55,8 @@ export class CommentsController {
             error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
           });
         }
-        const { ticketId } = req.params as any;
-        const { message } = req.body as any;
+        const { ticketId } = req.params;
+        const { message } = req.body;
         const comment = await CommentsService.create(
           ticketId,
           req.user.id,

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import passport from "passport";
-import jwt from "jsonwebtoken";
+import jwt, { type JwtPayload } from "jsonwebtoken";
+import type { UserRole } from "@prisma/client";
 import { oauthConfig } from "../config/oauth";
 import { logger } from "../lib/logger";
 import { ApiError } from "../lib/errors";
@@ -139,14 +140,17 @@ export class OAuthController {
       const decoded = jwt.verify(
         token,
         oauthConfig.jwt.secret || config.jwt.secret,
-      ) as any;
+      ) as JwtPayload & {
+        userId?: string;
+        email?: string;
+        role?: UserRole;
+      };
 
-      if (!decoded.userId) {
+      if (!decoded.userId || !decoded.email || !decoded.role) {
         throw new ApiError("INVALID_TOKEN", "Token inválido", 401);
       }
 
-      // Agregar información del usuario al request
-      (req as any).user = {
+      req.user = {
         id: decoded.userId,
         email: decoded.email,
         role: decoded.role,
@@ -192,7 +196,10 @@ export class OAuthController {
         );
       }
 
-      const decoded = jwt.verify(refreshToken, oauthConfig.jwt.secret) as any;
+      const decoded = jwt.verify(
+        refreshToken,
+        oauthConfig.jwt.secret,
+      ) as JwtPayload & { userId?: string; type?: string };
 
       if (!decoded.userId || decoded.type !== "refresh") {
         throw new ApiError(

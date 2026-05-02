@@ -29,7 +29,7 @@ export class TicketsService {
       pageSize = 20,
       sortBy = "createdAt",
       sortDir = "desc",
-    } = filters as any;
+    } = filters;
 
     const where: any = {};
 

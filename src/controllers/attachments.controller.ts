@@ -29,7 +29,7 @@ export class AttachmentsController {
             },
           });
         }
-        const { ticketId } = req.params as any;
+        const { ticketId } = req.params;
         const data = await AttachmentsService.listByTicket(ticketId);
         res.json({ success: true, data });
       } catch (err) {
@@ -51,7 +51,7 @@ export class AttachmentsController {
         });
       }
 
-      const { ticketId } = req.params as any;
+      const { ticketId } = req.params;
       const file = req.file as Express.Multer.File | undefined;
 
       if (!file) {
@@ -93,7 +93,7 @@ export class AttachmentsController {
           });
         }
 
-        const { id } = req.params as any;
+        const { id } = req.params;
         const result = await AttachmentsService.delete(id);
         res.json({ success: true, data: result });
       } catch (err) {
@@ -118,7 +118,7 @@ export class AttachmentsController {
         });
       }
 
-      const { fileName } = req.params as any;
+      const { fileName } = req.params;
 
       // Buscar el archivo en la base de datos
       const attachment = await AttachmentsService.findByFileName(fileName);
@@ -188,7 +188,7 @@ export class AttachmentsController {
         });
       }
 
-      const { fileName } = req.params as any;
+      const { fileName } = req.params;
 
       // Buscar el archivo original en la base de datos para verificar permisos
       const attachment = await AttachmentsService.findByThumbnailName(fileName);
@@ -256,7 +256,7 @@ export class AttachmentsController {
           });
         }
 
-        const { id } = req.params as any;
+        const { id } = req.params;
         const data = await AttachmentsService.getFileInfo(id);
         res.json({ success: true, data });
       } catch (err) {
@@ -276,7 +276,7 @@ export class AttachmentsController {
           });
         }
 
-        const { id } = req.params as any;
+        const { id } = req.params;
         const exists = await AttachmentsService.fileExists(id);
         res.json({ success: true, data: { exists } });
       } catch (err) {
