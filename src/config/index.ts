@@ -40,4 +40,7 @@ export const config = {
     apiKey: process.env.CLOUDINARY_API_KEY || "",
     apiSecret: process.env.CLOUDINARY_API_SECRET || "",
   },
+  // URL pública del frontend, usada en links de emails de notificación.
+  // Si no está seteada los emails se mandan sin link clickeable.
+  frontendUrl: process.env.FRONTEND_URL || "",
 } as const;

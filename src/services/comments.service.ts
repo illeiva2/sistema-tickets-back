@@ -51,17 +51,16 @@ export class CommentsService {
       },
     });
 
-    // Send notification to assignee if ticket is assigned and comment is not from assignee
-    if (ticket.assignee && ticket.assignee.id !== authorId) {
-      // Send notification asynchronously (don't block the response)
-      NotificationsService.notifyCommentAdded(
-        ticketId,
-        comment.id,
-        authorId,
-      ).catch((error) => {
-        console.error("Failed to send comment notification:", error);
-      });
-    }
+    // El service decide a quien notificar (requester si no es nota interna,
+    // assignee si lo hay y no es el autor). Disparamos siempre y dejamos que
+    // notifyCommentAdded haga el filtro correcto.
+    NotificationsService.notifyCommentAdded(
+      ticketId,
+      comment.id,
+      authorId,
+    ).catch((error) => {
+      console.error("Failed to send comment notification:", error);
+    });
 
     return comment;
   }
