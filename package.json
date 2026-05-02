@@ -18,6 +18,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/scripts/seed.ts",
     "db:studio": "prisma studio",
+    "script:backfill-due-at": "tsx src/scripts/backfill-due-at.ts",
+    "script:cleanup-seed": "tsx src/scripts/cleanup-seed.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
