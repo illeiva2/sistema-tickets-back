@@ -49,7 +49,7 @@ const average = (xs: number[]): number | null =>
 export async function getUserDashboard(userId: string, period: DashboardPeriod) {
   const since = periodStart(period);
 
-  const [activeTickets, resolvedPending, recent, resolvedInPeriod] =
+  const [activeTickets, resolvedPending, recent, resolvedInPeriod, allMine] =
     await Promise.all([
       prisma.ticket.findMany({
         where: {
@@ -77,6 +77,10 @@ export async function getUserDashboard(userId: string, period: DashboardPeriod) 
         },
         select: { id: true, createdAt: true, updatedAt: true },
       }),
+      prisma.ticket.findMany({
+        where: { requesterId: userId },
+        select: { status: true },
+      }),
     ]);
 
   const myActiveByPriority = { LOW: 0, MEDIUM: 0, HIGH: 0, URGENT: 0 };
@@ -84,8 +88,18 @@ export async function getUserDashboard(userId: string, period: DashboardPeriod) 
     myActiveByPriority[t.priority as keyof typeof myActiveByPriority]++;
   }
 
+  const myStatusBreakdown = { OPEN: 0, IN_PROGRESS: 0, RESOLVED: 0, CLOSED: 0 };
+  for (const t of allMine) {
+    myStatusBreakdown[t.status as keyof typeof myStatusBreakdown]++;
+  }
+
   const avgResolutionHours = average(
     resolvedInPeriod.map((t) => hoursBetween(t.updatedAt, t.createdAt)),
+  );
+
+  const myResolutionTrend = buildDailyResolved(
+    resolvedInPeriod.map((t) => t.updatedAt),
+    since,
   );
 
   return {
@@ -93,9 +107,11 @@ export async function getUserDashboard(userId: string, period: DashboardPeriod) 
     period,
     myActiveCount: activeTickets.length,
     myActiveByPriority,
+    myStatusBreakdown,
     myResolvedPendingClose: resolvedPending,
     myRecentTickets: recent,
     avgResolutionHours,
+    myResolutionTrend,
   };
 }
 
@@ -140,6 +156,11 @@ export async function getAgentDashboard(userId: string, period: DashboardPeriod)
     resolvedInPeriod.map((t) => hoursBetween(t.updatedAt, t.createdAt)),
   );
 
+  const myResolutionTrend = buildDailyResolved(
+    resolvedInPeriod.map((t) => t.updatedAt),
+    since,
+  );
+
   return {
     role: "AGENT" as const,
     period,
@@ -149,6 +170,7 @@ export async function getAgentDashboard(userId: string, period: DashboardPeriod)
     myActiveTickets: [...inProgress, ...resolvedActive],
     unassignedTickets: unassigned,
     avgResolutionHours,
+    myResolutionTrend,
   };
 }
 
@@ -418,6 +440,30 @@ export async function getAdminDashboard(period: DashboardPeriod) {
     topRequesters,
   };
 }
+
+const buildDailyResolved = (
+  resolvedDates: Date[],
+  since: Date,
+): Array<{ date: string; resolved: number }> => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const result: Array<{ date: string; resolved: number }> = [];
+  const cursor = new Date(since);
+  while (cursor <= today) {
+    result.push({ date: cursor.toISOString().slice(0, 10), resolved: 0 });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  const indexByDate = new Map(result.map((r, i) => [r.date, i]));
+
+  for (const d of resolvedDates) {
+    const key = d.toISOString().slice(0, 10);
+    const i = indexByDate.get(key);
+    if (i !== undefined) result[i].resolved++;
+  }
+
+  return result;
+};
 
 const buildDailyTrend = (
   createdDates: Date[],
