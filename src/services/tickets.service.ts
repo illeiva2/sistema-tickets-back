@@ -19,6 +19,7 @@ export class TicketsService {
       q,
       status,
       priority,
+      category,
       requesterId,
       assigneeId,
       dateFrom,
@@ -27,7 +28,7 @@ export class TicketsService {
       pageSize = 20,
       sortBy = "createdAt",
       sortDir = "desc",
-    } = filters;
+    } = filters as any;
 
     const where: any = {};
 
@@ -45,6 +46,7 @@ export class TicketsService {
 
     if (status) where.status = status;
     if (priority) where.priority = priority;
+    if (category) where.category = category;
     if (requesterId) where.requesterId = requesterId;
 
     if (assigneeId) {
@@ -227,6 +229,7 @@ export class TicketsService {
         title: data.title,
         description: data.description,
         priority: data.priority,
+        category: data.category ?? null,
         requesterId: userId,
       },
       include: {

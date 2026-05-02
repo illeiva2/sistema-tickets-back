@@ -30,6 +30,14 @@ enum TicketPriority {
   URGENT
 }
 
+enum TicketCategory {
+  SOFTWARE
+  HARDWARE
+  RED
+  ERP
+  OTRO
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -55,18 +63,19 @@ model User {
 }
 
 model Ticket {
-  id          String        @id @default(cuid())
-  ticketNumber Int          @unique @default(autoincrement())
+  id          String         @id @default(cuid())
+  ticketNumber Int           @unique @default(autoincrement())
   title       String
   description String
-  status      TicketStatus  @default(OPEN)
+  status      TicketStatus   @default(OPEN)
   priority    TicketPriority @default(MEDIUM)
-  isRead      Boolean       @default(false)
+  category    TicketCategory?
+  isRead      Boolean        @default(false)
   requesterId String
   assigneeId  String?
   closedAt    DateTime?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   // Relations
   requester   User         @relation("Requester", fields: [requesterId], references: [id])
