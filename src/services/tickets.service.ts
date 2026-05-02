@@ -1,6 +1,7 @@
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { calculateDueAt } from "../lib/sla";
 import { UserRole } from "@prisma/client";
 import { TicketFilters } from "../validations/tickets";
 import { NotificationsService } from "./notifications.service";
@@ -224,6 +225,7 @@ export class TicketsService {
   }
 
   static async createTicket(data: any, userId: string) {
+    const now = new Date();
     const ticket = await prisma.ticket.create({
       data: {
         title: data.title,
@@ -231,6 +233,7 @@ export class TicketsService {
         priority: data.priority,
         category: data.category ?? null,
         requesterId: userId,
+        dueAt: calculateDueAt(data.priority, now),
       },
       include: {
         requester: {
@@ -324,6 +327,11 @@ export class TicketsService {
       } else if (ticket.status === "CLOSED" && data.status !== "CLOSED") {
         data.closedAt = null;
       }
+    }
+
+    // Si cambia la prioridad, recalcular dueAt sobre el createdAt original.
+    if (data.priority && data.priority !== ticket.priority) {
+      data.dueAt = calculateDueAt(data.priority, ticket.createdAt);
     }
 
     const updatedTicket = await prisma.ticket.update({

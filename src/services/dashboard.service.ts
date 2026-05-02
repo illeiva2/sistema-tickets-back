@@ -31,7 +31,9 @@ const ticketListSelect = {
   title: true,
   status: true,
   priority: true,
+  category: true,
   isRead: true,
+  dueAt: true,
   createdAt: true,
   updatedAt: true,
   requester: { select: { id: true, name: true, email: true } },
@@ -179,11 +181,15 @@ export async function getAgentDashboard(userId: string, period: DashboardPeriod)
 export async function getAdminDashboard(period: DashboardPeriod) {
   const since = periodStart(period);
 
+  const now = new Date();
+
   const [
     statusCounts,
     priorityCounts,
     unassignedCount,
     urgentActiveCount,
+    overdueCount,
+    overdueTickets,
     unassignedTickets,
     ticketsCreatedInPeriod,
     ticketsResolvedInPeriod,
@@ -210,6 +216,21 @@ export async function getAdminDashboard(period: DashboardPeriod) {
         priority: "URGENT",
         status: { in: ["OPEN", "IN_PROGRESS"] },
       },
+    }),
+    prisma.ticket.count({
+      where: {
+        status: { in: ["OPEN", "IN_PROGRESS"] },
+        dueAt: { lt: now },
+      },
+    }),
+    prisma.ticket.findMany({
+      where: {
+        status: { in: ["OPEN", "IN_PROGRESS"] },
+        dueAt: { lt: now },
+      },
+      select: ticketListSelect,
+      orderBy: { dueAt: "asc" },
+      take: 10,
     }),
     prisma.ticket.findMany({
       where: { assigneeId: null, status: "OPEN" },
@@ -431,6 +452,8 @@ export async function getAdminDashboard(period: DashboardPeriod) {
     byPriority,
     unassignedCount,
     urgentActiveCount,
+    overdueCount,
+    overdueTickets,
     unassignedTickets,
     avgResponseHours,
     avgResolutionHours,
