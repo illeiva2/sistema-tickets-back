@@ -37,6 +37,28 @@ export class TicketsController {
     },
   ];
 
+  static getTriageCounts = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const counts = await TicketsService.getTriageCounts(
+        req.user.id,
+        req.user.role,
+      );
+      res.json({ success: true, data: counts });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   static getTicketById = async (
     req: AuthenticatedRequest,
     res: Response,

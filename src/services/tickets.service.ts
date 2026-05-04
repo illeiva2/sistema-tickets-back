@@ -29,6 +29,7 @@ export class TicketsService {
       pageSize = 20,
       sortBy = "createdAt",
       sortDir = "desc",
+      filter,
     } = filters;
 
     const where: any = {};
@@ -64,6 +65,26 @@ export class TicketsService {
       if (dateTo) where.createdAt.lte = new Date(dateTo);
     }
 
+    // Triage filters: solo para AGENT/ADMIN. Limitan a tickets activos.
+    const isStaff = userRole === UserRole.AGENT || userRole === UserRole.ADMIN;
+    if (filter && isStaff) {
+      const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
+      if (filter === "unassigned") {
+        where.assigneeId = null;
+        where.status = activeStatus;
+      } else if (filter === "unread") {
+        where.reads = { none: { userId } };
+        where.status = activeStatus;
+      } else if (filter === "fresh") {
+        where.assigneeId = null;
+        where.reads = { none: { userId } };
+        where.status = activeStatus;
+      } else if (filter === "mine") {
+        where.assigneeId = userId;
+        where.status = activeStatus;
+      }
+    }
+
     const skip = (page - 1) * pageSize;
     const orderBy = { [sortBy]: sortDir };
 
@@ -80,6 +101,16 @@ export class TicketsService {
           _count: {
             select: { comments: true },
           },
+          // Para staff incluimos si yo lei este ticket; para USER no aplica.
+          ...(isStaff
+            ? {
+                reads: {
+                  where: { userId },
+                  select: { id: true },
+                  take: 1,
+                },
+              }
+            : {}),
         },
         orderBy,
         skip,
@@ -88,8 +119,17 @@ export class TicketsService {
       prisma.ticket.count({ where }),
     ]);
 
+    // Enriquecer cada ticket con `isRead` per-user (sobreescribe el campo
+    // legacy global). Para USER mantenemos el `isRead` del schema.
+    const enriched = tickets.map((t: any) => {
+      if (!isStaff) return t;
+      const myReads = (t.reads ?? []) as Array<{ id: string }>;
+      const { reads: _omit, ...rest } = t;
+      return { ...rest, isRead: myReads.length > 0 };
+    });
+
     return {
-      data: tickets,
+      data: enriched,
       pagination: {
         page,
         pageSize,
@@ -97,6 +137,39 @@ export class TicketsService {
         totalPages: Math.ceil(total / pageSize),
       },
     };
+  }
+
+  // Contadores para el panel de triage en el dashboard de AGENT/ADMIN.
+  static async getTriageCounts(userId: string, userRole: UserRole) {
+    if (userRole !== UserRole.AGENT && userRole !== UserRole.ADMIN) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "Solo agentes y administradores pueden ver el triage",
+        403,
+      );
+    }
+
+    const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
+    const [fresh, unassigned, unread, mine] = await Promise.all([
+      prisma.ticket.count({
+        where: {
+          status: activeStatus,
+          assigneeId: null,
+          reads: { none: { userId } },
+        },
+      }),
+      prisma.ticket.count({
+        where: { status: activeStatus, assigneeId: null },
+      }),
+      prisma.ticket.count({
+        where: { status: activeStatus, reads: { none: { userId } } },
+      }),
+      prisma.ticket.count({
+        where: { status: activeStatus, assigneeId: userId },
+      }),
+    ]);
+
+    return { fresh, unassigned, unread, mine };
   }
 
   static async getTicketById(id: string, userId: string, userRole: UserRole) {
@@ -136,12 +209,21 @@ export class TicketsService {
       );
     }
 
-    // Marcar como leído si lo abre un AGENT o ADMIN
-    if (!ticket.isRead && (userRole === UserRole.AGENT || userRole === UserRole.ADMIN)) {
-      await prisma.ticket.update({
-        where: { id },
-        data: { isRead: true },
-      });
+    // Marcar como leido per-user si lo abre un AGENT o ADMIN.
+    // El campo legacy Ticket.isRead se ignora; usamos TicketRead para
+    // tracking individual.
+    if (userRole === UserRole.AGENT || userRole === UserRole.ADMIN) {
+      try {
+        const now = new Date();
+        await prisma.ticketRead.upsert({
+          where: { userId_ticketId: { userId, ticketId: id } },
+          update: { lastReadAt: now },
+          create: { userId, ticketId: id, lastReadAt: now },
+        });
+      } catch (err) {
+        logger.warn({ err }, "No se pudo registrar TicketRead");
+      }
+      // Reflejamos en el payload que para mi este ticket esta leido.
       ticket.isRead = true;
     }
 

@@ -64,6 +64,12 @@ export const ticketFiltersSchema = z.object({
     .enum(["createdAt", "updatedAt", "title", "priority", "status"])
     .optional(),
   sortDir: z.enum(["asc", "desc"]).optional(),
+  // Triage filters (solo aplican para AGENT/ADMIN; el service los ignora si USER).
+  // - fresh: sin asignar y nunca abierto por mi
+  // - unassigned: sin asignar
+  // - unread: nunca abierto por mi
+  // - mine: asignado a mi
+  filter: z.enum(["fresh", "unassigned", "unread", "mine"]).optional(),
 });
 
 export type CreateTicketRequest = z.infer<typeof createTicketSchema>;
