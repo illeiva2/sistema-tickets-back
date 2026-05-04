@@ -362,15 +362,30 @@ export class TicketsService {
           403,
         );
       }
-      // Users can only update title and description
+      // USER puede editar title, description y category de su ticket.
+      // El cambio de category solo se permite mientras el ticket este
+      // activo (OPEN o IN_PROGRESS): no queremos reclasificar tickets
+      // ya resueltos/cerrados.
       const rest = { ...data } as Record<string, unknown>;
       delete rest.title;
       delete rest.description;
+      delete rest.category;
       if (Object.keys(rest).length > 0) {
         throw new ApiError(
           "FORBIDDEN",
           "No tienes permisos para modificar estos campos",
           403,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(data, "category") &&
+        ticket.status !== "OPEN" &&
+        ticket.status !== "IN_PROGRESS"
+      ) {
+        throw new ApiError(
+          "INVALID_STATUS",
+          "No se puede cambiar la categoría de un ticket resuelto o cerrado",
+          400,
         );
       }
     }
