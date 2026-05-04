@@ -1,5 +1,6 @@
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
+import { UserRole } from "@prisma/client";
 import { NotificationsService } from "./notifications.service";
 
 export class CommentsService {
@@ -33,7 +34,12 @@ export class CommentsService {
     };
   }
 
-  static async create(ticketId: string, authorId: string, message: string) {
+  static async create(
+    ticketId: string,
+    authorId: string,
+    message: string,
+    authorRole?: UserRole,
+  ) {
     const ticket = await prisma.ticket.findUnique({
       where: { id: ticketId },
       include: {
@@ -43,6 +49,40 @@ export class CommentsService {
     });
     if (!ticket)
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+
+    // Verificar visibilidad: el author necesita poder VER el ticket para
+    // poder comentar. Replicamos la logica de getTicketById.
+    if (authorRole === UserRole.USER) {
+      if (ticket.requesterId !== authorId) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "No tenés permisos para comentar en este ticket",
+          403,
+        );
+      }
+    } else if (authorRole === UserRole.AGENT) {
+      const isMine = ticket.assigneeId === authorId;
+      const isUnassigned = ticket.assigneeId === null;
+      if (!isMine && !isUnassigned) {
+        const share = await prisma.ticketShare.findUnique({
+          where: {
+            ticketId_sharedWithId: {
+              ticketId,
+              sharedWithId: authorId,
+            },
+          },
+          select: { id: true },
+        });
+        if (!share) {
+          throw new ApiError(
+            "FORBIDDEN",
+            "Este ticket está asignado a otro técnico",
+            403,
+          );
+        }
+      }
+    }
+    // ADMIN siempre puede.
 
     const comment = await prisma.comment.create({
       data: { ticketId, authorId, message },

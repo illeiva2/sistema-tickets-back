@@ -140,7 +140,7 @@ describe("GET /api/tickets — listar con filtros", () => {
     );
   });
 
-  it("AGENT solo ve sus tickets + sin asignar (visibilidad restringida)", async () => {
+  it("AGENT solo ve sus tickets + sin asignar + compartidos (visibilidad restringida)", async () => {
     prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
     prismaMock.ticket.count.mockResolvedValueOnce(0);
 
@@ -148,10 +148,16 @@ describe("GET /api/tickets — listar con filtros", () => {
     await request(app).get("/api/tickets").set(auth(token));
 
     const call = prismaMock.ticket.findMany.mock.calls[0][0] as any;
-    // AGENT no puede ver assignados a otros: AND incluye OR(self, null).
+    // AGENT ve: assignee=self OR assignee=null OR compartido conmigo.
     expect(call.where.AND).toEqual(
       expect.arrayContaining([
-        { OR: [{ assigneeId: "agent-1" }, { assigneeId: null }] },
+        {
+          OR: [
+            { assigneeId: "agent-1" },
+            { assigneeId: null },
+            { shares: { some: { sharedWithId: "agent-1" } } },
+          ],
+        },
       ]),
     );
   });
@@ -1035,6 +1041,309 @@ describe("GET /api/tickets/:id — upsert TicketRead per-user", () => {
 
     expect(res.status).toBe(200);
     expect(prismaMock.ticketRead.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/tickets/:id/share — compartir con otro agente", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("USER no puede compartir tickets", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({ sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa" });
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT que es assignee comparte con otro agente", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "agent-1",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      id: "cmh111aaaaaaaaaaaaaaaaaaa",
+      role: "AGENT",
+      isActive: true,
+      name: "Pedro",
+      email: "pedro@x.com",
+    } as any);
+    prismaMock.ticketShare.upsert.mockResolvedValueOnce({
+      id: "ts-1",
+      ticketId: "cmh000aaaaaaaaaaaaaaaaaaa",
+      sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa",
+      sharedById: "agent-1",
+      message: "mira esto",
+      createdAt: new Date(),
+      sharedWith: {
+        id: "cmh111aaaaaaaaaaaaaaaaaaa",
+        name: "Pedro",
+        email: "pedro@x.com",
+      },
+      sharedBy: { id: "agent-1", name: "Test Agent", email: "agent@test.local" },
+    } as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({
+        sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa",
+        message: "mira esto",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.message).toBe("mira esto");
+  });
+
+  it("AGENT que NO es assignee no puede compartir", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "other-agent",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({ sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("ADMIN puede compartir aunque no sea assignee", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "agent-1",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      id: "cmh111aaaaaaaaaaaaaaaaaaa",
+      role: "AGENT",
+      isActive: true,
+      name: "Pedro",
+      email: "pedro@x.com",
+    } as any);
+    prismaMock.ticketShare.upsert.mockResolvedValueOnce({
+      id: "ts-1",
+      ticketId: "cmh000aaaaaaaaaaaaaaaaaaa",
+      sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa",
+      sharedById: "admin-1",
+      message: null,
+      createdAt: new Date(),
+      sharedWith: {
+        id: "cmh111aaaaaaaaaaaaaaaaaaa",
+        name: "Pedro",
+        email: "pedro@x.com",
+      },
+      sharedBy: { id: "admin-1", name: "Admin", email: "admin@test.local" },
+    } as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({ sharedWithId: "cmh111aaaaaaaaaaaaaaaaaaa" });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("rechaza compartirse a sí mismo", async () => {
+    const agentId = "cmhagentaaaaaaaaaaaaaaaaa";
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: agentId,
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: agentId, role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({ sharedWithId: agentId });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_TARGET");
+  });
+
+  it("rechaza compartir con USER", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "agent-1",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      id: "user-2",
+      role: "USER",
+      isActive: true,
+      name: "Cliente",
+      email: "cliente@x.com",
+    } as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share")
+      .set(auth(token))
+      .send({ sharedWithId: "cmh222aaaaaaaaaaaaaaaaaaa" });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /api/tickets/:id/share/:userId — quitar share", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("AGENT que es assignee puede quitar share", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "agent-1",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketShare.delete.mockResolvedValueOnce({} as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .delete(
+        "/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share/cmh111aaaaaaaaaaaaaaaaaaa",
+      )
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("El propio agente compartido puede salirse del share", async () => {
+    const agentId = "cmhagentaaaaaaaaaaaaaaaaa";
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "cmhotheraaaaaaaaaaaaaaaaa",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketShare.delete.mockResolvedValueOnce({} as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    // El agente (no assignee) se quita a sí mismo del share
+    const token = signAccessToken({ id: agentId, role: "AGENT" });
+    const res = await request(app)
+      .delete(
+        `/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share/${agentId}`,
+      )
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("AGENT que ni es assignee ni el destinatario no puede quitar share", async () => {
+    const ticket = makeTicket({
+      id: "cmh000aaaaaaaaaaaaaaaaaaa",
+      assigneeId: "other-agent",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .delete(
+        "/api/tickets/cmh000aaaaaaaaaaaaaaaaaaa/share/cmh333aaaaaaaaaaaaaaaaaaa",
+      )
+      .set(auth(token));
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("Visibilidad compartida — AGENT con share puede ver/comentar", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("AGENT compartido puede VER el detalle aunque no sea assignee", async () => {
+    const ticket = {
+      ...makeTicket({
+        id: "t-1",
+        assigneeId: "other-agent",
+        isRead: true,
+      }),
+      attachments: [],
+      comments: [],
+      reads: [],
+      shares: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    // existe un share para agent-1
+    prismaMock.ticketShare.findUnique.mockResolvedValueOnce({
+      id: "ts-1",
+    } as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("AGENT compartido NO puede modificar el ticket via PATCH", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      assigneeId: "other-agent",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ priority: "URGENT" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT compartido SI puede comentar", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      assigneeId: "other-agent",
+      requesterId: "user-1",
+      requester: makeUser(),
+      assignee: { id: "other-agent", name: "Otro", email: "otro@x.com" },
+      isRead: true,
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketShare.findUnique.mockResolvedValueOnce({
+      id: "ts-1",
+    } as any);
+    prismaMock.comment.create.mockResolvedValueOnce({
+      id: "c-1",
+      ticketId: "t-1",
+      authorId: "agent-1",
+      message: "yo vi este caso antes",
+      author: {
+        id: "agent-1",
+        name: "Test Agent",
+        email: "agent@test.local",
+        role: "AGENT",
+      },
+    } as any);
+    prismaMock.notificationPreferences.findUnique.mockResolvedValue({
+      commentAdded: true,
+      email: false,
+    } as any);
+    prismaMock.notification.create.mockResolvedValue({} as any);
+    prismaMock.auditLog.create.mockResolvedValue({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/t-1/comments")
+      .set(auth(token))
+      .send({ message: "yo vi este caso antes" });
+
+    expect(res.status).toBe(201);
   });
 });
 

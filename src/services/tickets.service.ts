@@ -39,14 +39,18 @@ export class TicketsService {
 
     // Reglas de visibilidad por rol:
     // - USER: solo sus tickets (donde es requester).
-    // - AGENT: tickets asignados a el + tickets sin asignar. (Los compartidos
-    //   se suman en PR-B via TicketShare.)
+    // - AGENT: tickets asignados a el + tickets sin asignar + tickets
+    //   compartidos con el via TicketShare.
     // - ADMIN: todos.
     if (userRole === UserRole.USER) {
       andConditions.push({ requesterId: userId });
     } else if (userRole === UserRole.AGENT) {
       andConditions.push({
-        OR: [{ assigneeId: userId }, { assigneeId: null }],
+        OR: [
+          { assigneeId: userId },
+          { assigneeId: null },
+          { shares: { some: { sharedWithId: userId } } },
+        ],
       });
     }
 
@@ -215,6 +219,14 @@ export class TicketsService {
           },
           orderBy: { lastReadAt: "desc" },
         },
+        // Lista de shares activos (con quien fue compartido el ticket).
+        shares: {
+          include: {
+            sharedWith: { select: { id: true, name: true, email: true } },
+            sharedBy: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        },
       },
     });
 
@@ -237,7 +249,17 @@ export class TicketsService {
     } else if (userRole === UserRole.AGENT) {
       const isMine = ticket.assigneeId === userId;
       const isUnassigned = ticket.assigneeId === null;
+      let isSharedWithMe = false;
       if (!isMine && !isUnassigned) {
+        const share = await prisma.ticketShare.findUnique({
+          where: {
+            ticketId_sharedWithId: { ticketId: id, sharedWithId: userId },
+          },
+          select: { id: true },
+        });
+        isSharedWithMe = !!share;
+      }
+      if (!isMine && !isUnassigned && !isSharedWithMe) {
         throw new ApiError(
           "FORBIDDEN",
           "Este ticket está asignado a otro técnico",
@@ -444,7 +466,23 @@ export class TicketsService {
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
     }
 
-    // Check permissions
+    // Check permissions:
+    // - AGENT puede modificar si es assignee O el ticket está sin asignar.
+    //   (Si esta solo compartido, no puede tocar nada por PATCH; solo
+    //   comentar via /comments.)
+    // - ADMIN siempre puede.
+    if (userRole === UserRole.AGENT) {
+      const isAssignee = ticket.assigneeId === userId;
+      const isUnassigned = ticket.assigneeId === null;
+      if (!isAssignee && !isUnassigned) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Solo el asignado puede modificar este ticket",
+          403,
+        );
+      }
+    }
+
     if (userRole === UserRole.USER) {
       if (ticket.requesterId !== userId) {
         throw new ApiError(

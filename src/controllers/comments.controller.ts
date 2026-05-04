@@ -61,6 +61,7 @@ export class CommentsController {
           ticketId,
           req.user.id,
           message,
+          req.user.role,
         );
         // Audit log para actividad reciente
         const { prisma } = await import("../lib/database");
