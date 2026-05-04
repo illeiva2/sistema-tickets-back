@@ -1,0 +1,309 @@
+import { vi, describe, it, beforeEach, expect } from "vitest";
+
+vi.mock("../src/lib/database", async () => {
+  const { mockDeep } = await import("vitest-mock-extended");
+  return { prisma: mockDeep() };
+});
+
+vi.mock("nodemailer", () => ({
+  default: {
+    createTransport: () => ({
+      sendMail: vi.fn().mockResolvedValue({ messageId: "test" }),
+      verify: vi.fn().mockResolvedValue(true),
+    }),
+  },
+}));
+
+import request from "supertest";
+import { createApp } from "../src/app";
+import { prisma } from "../src/lib/database";
+import type { DeepMockProxy } from "vitest-mock-extended";
+import type { PrismaClient } from "@prisma/client";
+import { signAccessToken } from "./helpers";
+
+const prismaMock = prisma as unknown as DeepMockProxy<PrismaClient>;
+const app = createApp();
+const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+const makeResource = (overrides: Partial<any> = {}) => ({
+  id: "r-1",
+  slug: "como-configurar-vpn",
+  title: "Cómo configurar el VPN",
+  content: "Pasos para configurar el VPN…",
+  excerpt: "Tutorial breve",
+  category: "HOW_TO",
+  tags: ["vpn", "red"],
+  isPublished: true,
+  viewCount: 0,
+  authorId: "admin-1",
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  author: { id: "admin-1", name: "Admin", email: "admin@test.local" },
+  ...overrides,
+});
+
+describe("GET /api/resources", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("USER ve solo publicados", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([makeResource()] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(1);
+
+    const token = signAccessToken({ role: "USER" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.isPublished).toBe(true);
+  });
+
+  it("ADMIN sin includeDrafts también filtra publicados", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.isPublished).toBe(true);
+  });
+
+  it("ADMIN con includeDrafts=true ve borradores", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    await request(app)
+      .get("/api/resources?includeDrafts=true")
+      .set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.isPublished).toBeUndefined();
+  });
+
+  it("filtra por category", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+
+    const token = signAccessToken({ role: "USER" });
+    await request(app)
+      .get("/api/resources?category=POLICY")
+      .set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.category).toBe("POLICY");
+  });
+
+  it("rechaza category inválida", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources?category=INVENTADA")
+      .set(auth(token));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/resources/:idOrSlug", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("acepta slug y devuelve el recurso publicado", async () => {
+    prismaMock.resource.findFirst.mockResolvedValueOnce(makeResource() as any);
+    prismaMock.resource.update.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/como-configurar-vpn")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.title).toBe("Cómo configurar el VPN");
+  });
+
+  it("404 para borrador cuando el user no es ADMIN", async () => {
+    prismaMock.resource.findFirst.mockResolvedValueOnce(
+      makeResource({ isPublished: false }) as any,
+    );
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/como-configurar-vpn")
+      .set(auth(token));
+    expect(res.status).toBe(404);
+  });
+
+  it("ADMIN puede leer borradores", async () => {
+    prismaMock.resource.findFirst.mockResolvedValueOnce(
+      makeResource({ isPublished: false }) as any,
+    );
+    prismaMock.resource.update.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .get("/api/resources/r-1")
+      .set(auth(token));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("POST /api/resources", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("USER no puede crear", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .post("/api/resources")
+      .set(auth(token))
+      .send({ title: "Test", content: "x", category: "HOW_TO" });
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT no puede crear", async () => {
+    const token = signAccessToken({ role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources")
+      .set(auth(token))
+      .send({ title: "Test", content: "x", category: "HOW_TO" });
+    expect(res.status).toBe(403);
+  });
+
+  it("ADMIN crea con slug derivado del título", async () => {
+    prismaMock.resource.findUnique.mockResolvedValue(null);
+    prismaMock.resource.create.mockResolvedValueOnce(
+      makeResource({
+        slug: "como-configurar-el-vpn",
+        title: "Cómo configurar el VPN",
+      }) as any,
+    );
+
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources")
+      .set(auth(token))
+      .send({
+        title: "Cómo configurar el VPN",
+        content: "Pasos: 1) abrir, 2) clickear...",
+        category: "HOW_TO",
+      });
+
+    expect(res.status).toBe(201);
+    const call = prismaMock.resource.create.mock.calls[0][0] as any;
+    expect(call.data.slug).toBe("como-configurar-el-vpn");
+    expect(call.data.authorId).toBe("admin-1");
+  });
+
+  it("rechaza título muy corto", async () => {
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources")
+      .set(auth(token))
+      .send({ title: "x", content: "y", category: "HOW_TO" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("PATCH /api/resources/:id", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ADMIN edita", async () => {
+    prismaMock.resource.findUnique.mockResolvedValueOnce(makeResource() as any);
+    prismaMock.resource.update.mockResolvedValueOnce(
+      makeResource({ title: "Nuevo título" }) as any,
+    );
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ title: "Nuevo título" });
+    expect(res.status).toBe(200);
+  });
+
+  it("USER no puede editar", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ title: "Hack" });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("DELETE /api/resources/:id", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ADMIN elimina", async () => {
+    prismaMock.resource.findUnique.mockResolvedValueOnce(makeResource() as any);
+    prismaMock.resource.delete.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .delete("/api/resources/r-1")
+      .set(auth(token));
+    expect(res.status).toBe(200);
+  });
+
+  it("USER no puede eliminar", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .delete("/api/resources/r-1")
+      .set(auth(token));
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("GET /api/resources/suggest", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rechaza query muy corto", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/suggest?q=a")
+      .set(auth(token));
+    expect(res.status).toBe(400);
+  });
+
+  it("ordena resultados por relevancia (matches en title pesan más)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([
+      {
+        id: "r-1",
+        slug: "vpn",
+        title: "Cómo configurar el VPN",
+        excerpt: "Tutorial",
+        category: "HOW_TO",
+        tags: ["red"],
+        content: "Pasos...",
+      },
+      {
+        id: "r-2",
+        slug: "outlook",
+        title: "Outlook no sincroniza",
+        excerpt: "FAQ común",
+        category: "FAQ",
+        tags: ["mail"],
+        content: "Vpn problemas...", // matchea "vpn" pero solo en content
+      },
+    ] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/suggest?q=vpn")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    // r-1 tiene "vpn" en title (peso 3), r-2 solo en content (peso 1).
+    expect(res.body.data[0].id).toBe("r-1");
+    expect(res.body.data[1].id).toBe("r-2");
+  });
+
+  it("filtra los que no matchean nada", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/suggest?q=algoraro")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+  });
+});

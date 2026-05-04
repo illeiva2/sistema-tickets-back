@@ -38,6 +38,16 @@ enum TicketCategory {
   OTRO
 }
 
+enum ResourceCategory {
+  HOW_TO          // tutoriales y cómo-hacer
+  POLICY          // políticas y normas internas
+  FAQ             // preguntas frecuentes
+  ANNOUNCEMENT    // avisos / anuncios
+  GLOSSARY        // glosario / definiciones
+  LINK            // links externos útiles
+  OTHER
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -58,8 +68,31 @@ model User {
   auditLogs        AuditLog[]
   notifications    Notification[]
   notificationPreferences NotificationPreferences[]
+  authoredResources Resource[] @relation("ResourceAuthor")
 
   @@map("users")
+}
+
+model Resource {
+  id          String           @id @default(cuid())
+  slug        String           @unique
+  title       String
+  content     String           @db.Text   // markdown
+  excerpt     String?                       // resumen corto opcional
+  category    ResourceCategory @default(OTHER)
+  tags        String[]
+  isPublished Boolean          @default(false)
+  viewCount   Int              @default(0)
+  authorId    String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // Relations
+  author User @relation("ResourceAuthor", fields: [authorId], references: [id])
+
+  @@index([isPublished, category])
+  @@index([slug])
+  @@map("resources")
 }
 
 model Ticket {
