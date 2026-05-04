@@ -217,6 +217,132 @@ describe("GET /api/tickets/:id — permisos", () => {
   });
 });
 
+describe("PATCH /api/tickets/:id — USER edita category", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("USER puede cambiar la categoría de su ticket OPEN", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      status: "OPEN",
+      category: "SOFTWARE",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({
+      ...ticket,
+      category: "HARDWARE",
+      requester: makeUser(),
+      assignee: null,
+    } as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ category: "HARDWARE" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.category).toBe("HARDWARE");
+  });
+
+  it("USER puede cambiar category de IN_PROGRESS", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      status: "IN_PROGRESS",
+      category: "OTRO",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({
+      ...ticket,
+      category: "ERP",
+      requester: makeUser(),
+      assignee: null,
+    } as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ category: "ERP" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.category).toBe("ERP");
+  });
+
+  it("USER NO puede cambiar category si el ticket está RESOLVED", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      status: "RESOLVED",
+      category: "SOFTWARE",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ category: "HARDWARE" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_STATUS");
+  });
+
+  it("USER NO puede cambiar category si el ticket está CLOSED", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      status: "CLOSED",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ category: "ERP" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("USER NO puede cambiar category de un ticket de otro user", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "other-user",
+      status: "OPEN",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ category: "HARDWARE" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("USER sigue sin poder modificar priority", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      status: "OPEN",
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .patch("/api/tickets/t-1")
+      .set(auth(token))
+      .send({ priority: "URGENT" });
+
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("POST /api/tickets/:id/claim — tomar ticket", () => {
   beforeEach(() => {
     vi.clearAllMocks();
