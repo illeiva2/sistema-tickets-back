@@ -70,6 +70,8 @@ model User {
   notificationPreferences NotificationPreferences[]
   authoredResources Resource[] @relation("ResourceAuthor")
   ticketReads      TicketRead[]
+  ticketSharesReceived TicketShare[] @relation("ShareRecipient")
+  ticketSharesGiven    TicketShare[] @relation("ShareGiver")
 
   @@map("users")
 }
@@ -113,13 +115,35 @@ model Ticket {
   updatedAt   DateTime       @updatedAt
 
   // Relations
-  requester   User         @relation("Requester", fields: [requesterId], references: [id])
-  assignee    User?        @relation("Assignee", fields: [assigneeId], references: [id])
+  requester   User          @relation("Requester", fields: [requesterId], references: [id])
+  assignee    User?         @relation("Assignee", fields: [assigneeId], references: [id])
   comments    Comment[]
   attachments Attachment[]
   reads       TicketRead[]
+  shares      TicketShare[]
 
   @@map("tickets")
+}
+
+// Comparte un ticket con otro AGENT/ADMIN para que pueda verlo y comentar
+// sin ser el assignee. NO es asignacion: el assignee sigue siendo quien
+// trabaja el ticket. Solo da acceso de lectura + comentario.
+model TicketShare {
+  id             String   @id @default(cuid())
+  ticketId       String
+  sharedWithId   String
+  sharedById     String
+  message        String?  // Nota opcional al compartir ("mira esto, lo viste antes?")
+  createdAt      DateTime @default(now())
+
+  ticket       Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sharedWith   User   @relation("ShareRecipient", fields: [sharedWithId], references: [id], onDelete: Cascade)
+  sharedBy     User   @relation("ShareGiver", fields: [sharedById], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, sharedWithId])
+  @@index([sharedWithId])
+  @@index([ticketId])
+  @@map("ticket_shares")
 }
 
 // Tracking per-usuario de "tickets vistos" para AGENT/ADMIN.

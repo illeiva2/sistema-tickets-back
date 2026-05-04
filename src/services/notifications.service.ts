@@ -392,6 +392,44 @@ export class NotificationsService {
   }
 
   /**
+   * Notificar a un agente que un ticket fue compartido con el.
+   */
+  static async notifyTicketShared(
+    ticketId: string,
+    sharedWithId: string,
+    sharedById: string,
+    message?: string,
+  ): Promise<void> {
+    const [ticket, sharedBy] = await Promise.all([
+      prisma.ticket.findUnique({
+        where: { id: ticketId },
+        select: { id: true, title: true, ticketNumber: true },
+      }),
+      prisma.user.findUnique({
+        where: { id: sharedById },
+        select: { name: true },
+      }),
+    ]);
+    if (!ticket || !sharedBy) return;
+
+    const num = ticket.ticketNumber.toString().padStart(5, "0");
+    await this.createNotification({
+      userId: sharedWithId,
+      type: "ticket_shared",
+      title: "Te compartieron un ticket",
+      message:
+        `${sharedBy.name} te compartió el ticket #${num} "${ticket.title}"` +
+        (message ? `: "${message}"` : "."),
+      ticketId,
+      metadata: {
+        ticketTitle: ticket.title,
+        sharedById,
+        note: message ?? null,
+      },
+    });
+  }
+
+  /**
    * Notificar cambio de estado
    */
   static async notifyStatusChanged(

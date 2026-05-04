@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { TicketsController } from "../controllers/tickets.controller";
 import { CommentsController } from "../controllers/comments.controller";
+import { TicketSharesController } from "../controllers/ticketShares.controller";
 import { authMiddleware, requireRole } from "../middleware/auth";
 import { UserRole } from "@prisma/client";
 
@@ -31,5 +32,19 @@ router.delete(
 // Comments routes nested in tickets
 router.get("/:ticketId/comments", authMiddleware, CommentsController.list);
 router.post("/:ticketId/comments", authMiddleware, CommentsController.create);
+
+// Share routes (solo staff: AGENT/ADMIN). Compartir con otro agente.
+router.post(
+  "/:id/share",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  TicketSharesController.share,
+);
+router.delete(
+  "/:id/share/:userId",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  TicketSharesController.unshare,
+);
 
 export default router;
