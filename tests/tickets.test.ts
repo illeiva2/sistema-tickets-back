@@ -127,21 +127,20 @@ describe("GET /api/tickets — listar con filtros", () => {
     vi.clearAllMocks();
   });
 
-  it("USER solo ve sus propios tickets", async () => {
+  it("USER solo ve sus propios tickets (via AND requesterId)", async () => {
     prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
     prismaMock.ticket.count.mockResolvedValueOnce(0);
 
     const token = signAccessToken({ id: "user-1", role: "USER" });
     await request(app).get("/api/tickets").set(auth(token));
 
-    expect(prismaMock.ticket.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ requesterId: "user-1" }),
-      }),
+    const call = prismaMock.ticket.findMany.mock.calls[0][0] as any;
+    expect(call.where.AND).toEqual(
+      expect.arrayContaining([{ requesterId: "user-1" }]),
     );
   });
 
-  it("AGENT ve todos los tickets sin filtro de requesterId", async () => {
+  it("AGENT solo ve sus tickets + sin asignar (visibilidad restringida)", async () => {
     prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
     prismaMock.ticket.count.mockResolvedValueOnce(0);
 
@@ -149,7 +148,24 @@ describe("GET /api/tickets — listar con filtros", () => {
     await request(app).get("/api/tickets").set(auth(token));
 
     const call = prismaMock.ticket.findMany.mock.calls[0][0] as any;
-    expect(call.where.requesterId).toBeUndefined();
+    // AGENT no puede ver assignados a otros: AND incluye OR(self, null).
+    expect(call.where.AND).toEqual(
+      expect.arrayContaining([
+        { OR: [{ assigneeId: "agent-1" }, { assigneeId: null }] },
+      ]),
+    );
+  });
+
+  it("ADMIN ve todos los tickets sin filtro de visibilidad", async () => {
+    prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(0);
+
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    await request(app).get("/api/tickets").set(auth(token));
+
+    const call = prismaMock.ticket.findMany.mock.calls[0][0] as any;
+    // ADMIN no agrega visibilidad. Si no hay filtros, no debe haber AND.
+    expect(call.where.AND).toBeUndefined();
   });
 
   it("filtra por category=ERP cuando viene en query", async () => {
@@ -214,6 +230,342 @@ describe("GET /api/tickets/:id — permisos", () => {
       .get("/api/tickets/missing")
       .set(auth(token));
     expect(res.status).toBe(404);
+  });
+
+  it("AGENT no puede ver ticket asignado a otro agente", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      assigneeId: "other-agent",
+      attachments: [],
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT puede ver ticket sin asignar", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", assigneeId: null, isRead: false }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("AGENT puede ver ticket asignado a sí mismo", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", assigneeId: "agent-1", isRead: true }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("GET /api/tickets/:id — isRead global, viewers, auto-progress", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("AGENT al abrir marca isRead=true global y registra TicketRead", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", isRead: false, assigneeId: null }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isRead).toBe(true);
+    expect(prismaMock.ticketRead.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId_ticketId: { userId: "agent-1", ticketId: "t-1" } },
+      }),
+    );
+    expect(prismaMock.ticket.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "t-1" },
+        data: { isRead: true },
+      }),
+    );
+  });
+
+  it("AGENT no dispara update isRead si ya estaba en true", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", isRead: true, assigneeId: null }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    // Solo el upsert de TicketRead se llama; ticket.update no, salvo
+    // que dispare auto-progress (no aplica acá: no es assignee).
+    expect(prismaMock.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it("Auto-progress OPEN -> IN_PROGRESS cuando assignee abre el ticket", async () => {
+    const ticket = {
+      ...makeTicket({
+        id: "t-1",
+        status: "OPEN",
+        assigneeId: "agent-1",
+        isRead: true,
+      }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({} as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("IN_PROGRESS");
+    expect(prismaMock.ticket.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "t-1" },
+        data: { status: "IN_PROGRESS" },
+      }),
+    );
+    expect(prismaMock.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: "ticket_auto_progressed",
+          actorId: "agent-1",
+        }),
+      }),
+    );
+  });
+
+  it("NO auto-progress si quien abre no es el assignee", async () => {
+    const ticket = {
+      ...makeTicket({
+        id: "t-1",
+        status: "OPEN",
+        assigneeId: "other-agent",
+        isRead: true,
+      }),
+      attachments: [],
+      comments: [],
+      reads: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    // ADMIN abre un ticket asignado a otro agente
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    // No debe haber update de status.
+    const updateCalls = prismaMock.ticket.update.mock.calls;
+    const statusUpdates = updateCalls.filter(
+      (c: any) => c[0]?.data?.status,
+    );
+    expect(statusUpdates).toHaveLength(0);
+  });
+
+  it("Devuelve viewers (lista de quienes vieron) para staff", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", isRead: true, assigneeId: null }),
+      attachments: [],
+      comments: [],
+      reads: [
+        {
+          id: "tr-1",
+          userId: "agent-2",
+          ticketId: "t-1",
+          lastReadAt: new Date("2026-01-01T10:00:00Z"),
+          user: {
+            id: "agent-2",
+            name: "Pedro Agente",
+            email: "pedro@x.com",
+          },
+        },
+      ],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.viewers).toHaveLength(1);
+    expect(res.body.data.viewers[0].user.name).toBe("Pedro Agente");
+    expect(res.body.data.reads).toBeUndefined();
+  });
+
+  it("Para USER no incluye viewers", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", requesterId: "user-1" }),
+      attachments: [],
+      comments: [],
+      reads: [
+        {
+          id: "tr-1",
+          userId: "agent-1",
+          ticketId: "t-1",
+          lastReadAt: new Date(),
+          user: { id: "agent-1", name: "x", email: "x@x.com" },
+        },
+      ],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.viewers).toBeUndefined();
+    expect(res.body.data.reads).toBeUndefined();
+  });
+});
+
+describe("POST /api/tickets/:id/comments — comentario invalida isRead", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("Comentario del REQUESTER vuelve a isRead=false si estaba true", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      isRead: true,
+      assignee: null,
+      requester: makeUser(),
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.comment.create.mockResolvedValueOnce({
+      id: "c-1",
+      ticketId: "t-1",
+      authorId: "user-1",
+      message: "tengo info nueva",
+      author: { id: "user-1", name: "Test User", email: "user@test.local", role: "USER" },
+    } as any);
+    prismaMock.ticket.update.mockResolvedValueOnce({} as any);
+    prismaMock.notificationPreferences.findUnique.mockResolvedValue({
+      commentAdded: true,
+      email: false,
+    } as any);
+    prismaMock.notification.create.mockResolvedValue({} as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .post("/api/tickets/t-1/comments")
+      .set(auth(token))
+      .send({ message: "tengo info nueva" });
+
+    expect(res.status).toBe(201);
+    expect(prismaMock.ticket.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "t-1" },
+        data: { isRead: false },
+      }),
+    );
+  });
+
+  it("Comentario del REQUESTER no dispara update si ya estaba isRead=false", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      isRead: false,
+      assignee: null,
+      requester: makeUser(),
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.comment.create.mockResolvedValueOnce({
+      id: "c-1",
+      ticketId: "t-1",
+      authorId: "user-1",
+      message: "otro",
+      author: { id: "user-1", name: "x", email: "x@x.com", role: "USER" },
+    } as any);
+    prismaMock.notificationPreferences.findUnique.mockResolvedValue({
+      commentAdded: true,
+      email: false,
+    } as any);
+    prismaMock.notification.create.mockResolvedValue({} as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .post("/api/tickets/t-1/comments")
+      .set(auth(token))
+      .send({ message: "otro" });
+
+    expect(res.status).toBe(201);
+    expect(prismaMock.ticket.update).not.toHaveBeenCalled();
+  });
+
+  it("Comentario del AGENT (no requester) NO invalida isRead", async () => {
+    const ticket = makeTicket({
+      id: "t-1",
+      requesterId: "user-1",
+      assigneeId: "agent-1",
+      isRead: true,
+      assignee: makeAgent(),
+      requester: makeUser(),
+    });
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.comment.create.mockResolvedValueOnce({
+      id: "c-1",
+      ticketId: "t-1",
+      authorId: "agent-1",
+      message: "ya estoy en eso",
+      author: {
+        id: "agent-1",
+        name: "Test Agent",
+        email: "agent@test.local",
+        role: "AGENT",
+      },
+    } as any);
+    prismaMock.notificationPreferences.findUnique.mockResolvedValue({
+      commentAdded: true,
+      email: false,
+    } as any);
+    prismaMock.notification.create.mockResolvedValue({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/tickets/t-1/comments")
+      .set(auth(token))
+      .send({ message: "ya estoy en eso" });
+
+    expect(res.status).toBe(201);
+    expect(prismaMock.ticket.update).not.toHaveBeenCalled();
   });
 });
 
@@ -587,12 +939,12 @@ describe("GET /api/tickets/triage-counts — triage AGENT/ADMIN", () => {
   });
 });
 
-describe("GET /api/tickets — filtros de triage e isRead per-user", () => {
+describe("GET /api/tickets — filtros de triage con isRead global", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("AGENT con filter=fresh aplica where assigneeId:null + reads:none", async () => {
+  it("AGENT con filter=fresh aplica assigneeId:null + isRead:false", async () => {
     prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
     prismaMock.ticket.count.mockResolvedValueOnce(0 as any);
 
@@ -604,39 +956,24 @@ describe("GET /api/tickets — filtros de triage e isRead per-user", () => {
     expect(res.status).toBe(200);
     const callArgs = prismaMock.ticket.findMany.mock.calls[0][0] as any;
     expect(callArgs.where.assigneeId).toBeNull();
-    expect(callArgs.where.reads).toEqual({ none: { userId: "agent-1" } });
+    expect(callArgs.where.isRead).toBe(false);
     expect(callArgs.where.status).toEqual({
       in: ["OPEN", "IN_PROGRESS"],
     });
   });
 
-  it("AGENT recibe isRead=true cuando hay TicketRead suyo", async () => {
-    const ticketRead = makeTicket({ id: "t-1", isRead: false });
-    prismaMock.ticket.findMany.mockResolvedValueOnce([
-      { ...ticketRead, reads: [{ id: "tr-1" }], _count: { comments: 0 } },
-    ] as any);
-    prismaMock.ticket.count.mockResolvedValueOnce(1 as any);
+  it("AGENT con filter=unread aplica isRead:false (global)", async () => {
+    prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(0 as any);
 
     const token = signAccessToken({ id: "agent-1", role: "AGENT" });
-    const res = await request(app).get("/api/tickets").set(auth(token));
+    const res = await request(app)
+      .get("/api/tickets?filter=unread")
+      .set(auth(token));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.data[0].isRead).toBe(true);
-    expect(res.body.data.data[0].reads).toBeUndefined();
-  });
-
-  it("AGENT recibe isRead=false cuando no hay TicketRead suyo", async () => {
-    const ticketRead = makeTicket({ id: "t-1", isRead: true });
-    prismaMock.ticket.findMany.mockResolvedValueOnce([
-      { ...ticketRead, reads: [], _count: { comments: 0 } },
-    ] as any);
-    prismaMock.ticket.count.mockResolvedValueOnce(1 as any);
-
-    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
-    const res = await request(app).get("/api/tickets").set(auth(token));
-
-    expect(res.status).toBe(200);
-    expect(res.body.data.data[0].isRead).toBe(false);
+    const callArgs = prismaMock.ticket.findMany.mock.calls[0][0] as any;
+    expect(callArgs.where.isRead).toBe(false);
   });
 
   it("USER no aplica filtros de triage (filter=fresh ignorado)", async () => {
@@ -650,10 +987,12 @@ describe("GET /api/tickets — filtros de triage e isRead per-user", () => {
 
     expect(res.status).toBe(200);
     const callArgs = prismaMock.ticket.findMany.mock.calls[0][0] as any;
-    // No hay where.reads para USER
-    expect(callArgs.where.reads).toBeUndefined();
-    // requesterId aplicado por la regla de visibilidad de USER
-    expect(callArgs.where.requesterId).toBe("user-1");
+    // USER no participa del triage: isRead no aplica.
+    expect(callArgs.where.isRead).toBeUndefined();
+    // requesterId aplicado por la regla de visibilidad de USER (en AND).
+    expect(callArgs.where.AND).toEqual(
+      expect.arrayContaining([{ requesterId: "user-1" }]),
+    );
   });
 });
 
