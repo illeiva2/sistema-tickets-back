@@ -87,13 +87,19 @@ export class AttachmentsService {
       );
     }
 
-    // Subir a Cloudinary usando un stream
+    // Subir a Cloudinary usando un stream.
+    // IMPORTANTE: para PDFs y ZIPs forzamos resource_type: "raw" en lugar de
+    // "auto". Cloudinary, por defecto, detecta PDFs como "image" y los entrega
+    // via /image/upload/, pero bloquea esa entrega con "deny or ACL failure"
+    // por su politica "Restricted media types" (PDF/ZIP). Subiendo como "raw"
+    // las URLs quedan en /raw/upload/ y no estan sujetas a esa restriccion.
+    const resourceType = AttachmentsService.pickResourceType(file.mimetype);
     const uploadToCloudinary = (): Promise<any> => {
       return new Promise((resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
           {
             folder: "tickets",
-            resource_type: "auto",
+            resource_type: resourceType,
             public_id: this.buildCloudinaryPublicId(file.originalname),
           },
           (error, result) => {
@@ -169,15 +175,22 @@ export class AttachmentsService {
     // Eliminar archivo
     try {
       if (attachment.storageUrl.startsWith("http")) {
-        // Eliminar de Cloudinary
-        // La URL tiene formato: https://res.cloudinary.com/cloud_name/image/upload/v12345/folder/public_id.ext
-        const publicId = attachment.storageUrl
-          .split("/")
-          .slice(-2)
-          .join("/")
-          .split(".")[0];
-        
-        await cloudinary.uploader.destroy(publicId);
+        // Eliminar de Cloudinary.
+        // Formato URL: https://res.cloudinary.com/<cloud>/<resource_type>/upload/v<ts>/<folder>/<publicId>[.ext]
+        // - Para resource_type "image" y "video": el public_id NO incluye la extension.
+        // - Para resource_type "raw": el public_id SI incluye la extension.
+        const resourceType = AttachmentsService.parseResourceTypeFromUrl(
+          attachment.storageUrl,
+        );
+        const tail = attachment.storageUrl.split("/").slice(-2).join("/");
+        const publicId =
+          resourceType === "raw"
+            ? tail // raw mantiene la extension en el public_id
+            : tail.replace(/\.[^/.]+$/, ""); // image/video la pierden
+
+        await cloudinary.uploader.destroy(publicId, {
+          resource_type: resourceType,
+        });
       } else {
         // Eliminar archivo físico local (retrocompatibilidad)
         const filePath = path.join(
@@ -194,6 +207,37 @@ export class AttachmentsService {
     await prisma.attachment.delete({ where: { id } });
 
     return { message: "Adjunto eliminado correctamente" };
+  }
+
+  /**
+   * Decide el resource_type de Cloudinary segun mimetype.
+   * - "image": fotos (jpg, png, webp, gif, etc.) - permite transformaciones.
+   * - "video": videos y audio.
+   * - "raw": todo lo demas (PDF, ZIP, docs, txt, csv, etc.). Evita la
+   *   restriccion de Cloudinary que bloquea entrega de PDF/ZIP via image/upload.
+   */
+  private static pickResourceType(
+    mimeType: string,
+  ): "image" | "video" | "raw" {
+    if (!mimeType) return "raw";
+    const m = mimeType.toLowerCase();
+    if (m.startsWith("image/")) return "image";
+    if (m.startsWith("video/") || m.startsWith("audio/")) return "video";
+    return "raw";
+  }
+
+  /**
+   * A partir de un storageUrl de Cloudinary, extrae el resource_type para
+   * pasarlo al destroy(). Si no detecta uno conocido devuelve "image" (default
+   * historico).
+   */
+  private static parseResourceTypeFromUrl(
+    url: string,
+  ): "image" | "video" | "raw" {
+    if (!url) return "image";
+    if (/\/raw\/upload\//.test(url)) return "raw";
+    if (/\/video\/upload\//.test(url)) return "video";
+    return "image";
   }
 
   /**
