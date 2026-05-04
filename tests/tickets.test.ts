@@ -404,5 +404,174 @@ describe("POST /api/tickets/:id/close — cerrar", () => {
   });
 });
 
+describe("GET /api/tickets/triage-counts — triage AGENT/ADMIN", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("USER no tiene acceso al triage", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/tickets/triage-counts")
+      .set(auth(token));
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT recibe contadores fresh/unassigned/unread/mine", async () => {
+    // Las 4 llamadas a count en orden: fresh, unassigned, unread, mine.
+    prismaMock.ticket.count
+      .mockResolvedValueOnce(2 as any)
+      .mockResolvedValueOnce(5 as any)
+      .mockResolvedValueOnce(3 as any)
+      .mockResolvedValueOnce(7 as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .get("/api/tickets/triage-counts")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      fresh: 2,
+      unassigned: 5,
+      unread: 3,
+      mine: 7,
+    });
+  });
+
+  it("ADMIN recibe contadores", async () => {
+    prismaMock.ticket.count
+      .mockResolvedValueOnce(0 as any)
+      .mockResolvedValueOnce(0 as any)
+      .mockResolvedValueOnce(0 as any)
+      .mockResolvedValueOnce(0 as any);
+
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    const res = await request(app)
+      .get("/api/tickets/triage-counts")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      fresh: 0,
+      unassigned: 0,
+      unread: 0,
+      mine: 0,
+    });
+  });
+});
+
+describe("GET /api/tickets — filtros de triage e isRead per-user", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("AGENT con filter=fresh aplica where assigneeId:null + reads:none", async () => {
+    prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(0 as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .get("/api/tickets?filter=fresh")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    const callArgs = prismaMock.ticket.findMany.mock.calls[0][0] as any;
+    expect(callArgs.where.assigneeId).toBeNull();
+    expect(callArgs.where.reads).toEqual({ none: { userId: "agent-1" } });
+    expect(callArgs.where.status).toEqual({
+      in: ["OPEN", "IN_PROGRESS"],
+    });
+  });
+
+  it("AGENT recibe isRead=true cuando hay TicketRead suyo", async () => {
+    const ticketRead = makeTicket({ id: "t-1", isRead: false });
+    prismaMock.ticket.findMany.mockResolvedValueOnce([
+      { ...ticketRead, reads: [{ id: "tr-1" }], _count: { comments: 0 } },
+    ] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(1 as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].isRead).toBe(true);
+    expect(res.body.data.data[0].reads).toBeUndefined();
+  });
+
+  it("AGENT recibe isRead=false cuando no hay TicketRead suyo", async () => {
+    const ticketRead = makeTicket({ id: "t-1", isRead: true });
+    prismaMock.ticket.findMany.mockResolvedValueOnce([
+      { ...ticketRead, reads: [], _count: { comments: 0 } },
+    ] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(1 as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].isRead).toBe(false);
+  });
+
+  it("USER no aplica filtros de triage (filter=fresh ignorado)", async () => {
+    prismaMock.ticket.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.ticket.count.mockResolvedValueOnce(0 as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app)
+      .get("/api/tickets?filter=fresh")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    const callArgs = prismaMock.ticket.findMany.mock.calls[0][0] as any;
+    // No hay where.reads para USER
+    expect(callArgs.where.reads).toBeUndefined();
+    // requesterId aplicado por la regla de visibilidad de USER
+    expect(callArgs.where.requesterId).toBe("user-1");
+  });
+});
+
+describe("GET /api/tickets/:id — upsert TicketRead per-user", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("AGENT al abrir ticket dispara upsert en TicketRead", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1" }),
+      comments: [],
+      attachments: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    prismaMock.ticketRead.upsert.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(prismaMock.ticketRead.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId_ticketId: { userId: "agent-1", ticketId: "t-1" } },
+      }),
+    );
+    expect(res.body.data.isRead).toBe(true);
+  });
+
+  it("USER al abrir su propio ticket NO dispara upsert", async () => {
+    const ticket = {
+      ...makeTicket({ id: "t-1", requesterId: "user-1" }),
+      comments: [],
+      attachments: [],
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "user-1", role: "USER" });
+    const res = await request(app).get("/api/tickets/t-1").set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(prismaMock.ticketRead.upsert).not.toHaveBeenCalled();
+  });
+});
+
 // Suppress unused-import warnings — los helpers se usan a futuro.
 void makeAdmin;

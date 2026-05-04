@@ -69,6 +69,7 @@ model User {
   notifications    Notification[]
   notificationPreferences NotificationPreferences[]
   authoredResources Resource[] @relation("ResourceAuthor")
+  ticketReads      TicketRead[]
 
   @@map("users")
 }
@@ -116,8 +117,27 @@ model Ticket {
   assignee    User?        @relation("Assignee", fields: [assigneeId], references: [id])
   comments    Comment[]
   attachments Attachment[]
+  reads       TicketRead[]
 
   @@map("tickets")
+}
+
+// Tracking per-usuario de "tickets vistos" para AGENT/ADMIN.
+// Una fila significa "este user ya abrio este ticket al menos una vez".
+// Lo usamos para el triage: tickets sin asignar y/o sin leer por mi.
+model TicketRead {
+  id         String   @id @default(cuid())
+  userId     String
+  ticketId   String
+  lastReadAt DateTime @default(now()) @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ticketId])
+  @@index([userId])
+  @@index([ticketId])
+  @@map("ticket_reads")
 }
 
 model Comment {

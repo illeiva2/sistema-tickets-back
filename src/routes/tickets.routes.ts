@@ -7,6 +7,12 @@ import { UserRole } from "@prisma/client";
 const router = Router();
 
 router.get("/", authMiddleware, TicketsController.getTickets);
+router.get(
+  "/triage-counts",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  TicketsController.getTriageCounts,
+);
 router.get("/:id", authMiddleware, TicketsController.getTicketById);
 router.get("/:id/audit", authMiddleware, TicketsController.getTicketAudit);
 router.post("/", authMiddleware, TicketsController.createTicket);
