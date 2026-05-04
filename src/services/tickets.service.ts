@@ -33,56 +33,74 @@ export class TicketsService {
     } = filters;
 
     const where: any = {};
+    // Construimos la lista de condiciones AND para no pisar `where.OR`
+    // entre visibilidad y busqueda.
+    const andConditions: any[] = [];
 
-    // Apply filters based on user role
+    // Reglas de visibilidad por rol:
+    // - USER: solo sus tickets (donde es requester).
+    // - AGENT: tickets asignados a el + tickets sin asignar. (Los compartidos
+    //   se suman en PR-B via TicketShare.)
+    // - ADMIN: todos.
     if (userRole === UserRole.USER) {
-      where.requesterId = userId;
+      andConditions.push({ requesterId: userId });
+    } else if (userRole === UserRole.AGENT) {
+      andConditions.push({
+        OR: [{ assigneeId: userId }, { assigneeId: null }],
+      });
     }
 
     if (q) {
-      where.OR = [
-        { title: { contains: q, mode: "insensitive" } },
-        { description: { contains: q, mode: "insensitive" } },
-      ];
+      andConditions.push({
+        OR: [
+          { title: { contains: q, mode: "insensitive" } },
+          { description: { contains: q, mode: "insensitive" } },
+        ],
+      });
     }
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (category) where.category = category;
-    if (requesterId) where.requesterId = requesterId;
+    if (status) (where as any).status = status;
+    if (priority) (where as any).priority = priority;
+    if (category) (where as any).category = category;
+    if (requesterId) (where as any).requesterId = requesterId;
 
     if (assigneeId) {
       if (assigneeId === "null") {
-        where.assigneeId = null;
+        (where as any).assigneeId = null;
       } else {
-        where.assigneeId = assigneeId;
+        (where as any).assigneeId = assigneeId;
       }
     }
 
     if (dateFrom || dateTo) {
-      where.createdAt = {};
-      if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-      if (dateTo) where.createdAt.lte = new Date(dateTo);
+      (where as any).createdAt = {};
+      if (dateFrom) (where as any).createdAt.gte = new Date(dateFrom);
+      if (dateTo) (where as any).createdAt.lte = new Date(dateTo);
     }
 
     // Triage filters: solo para AGENT/ADMIN. Limitan a tickets activos.
+    // `unread` usa el isRead GLOBAL del ticket (no per-user).
     const isStaff = userRole === UserRole.AGENT || userRole === UserRole.ADMIN;
     if (filter && isStaff) {
       const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
       if (filter === "unassigned") {
-        where.assigneeId = null;
-        where.status = activeStatus;
+        (where as any).assigneeId = null;
+        (where as any).status = activeStatus;
       } else if (filter === "unread") {
-        where.reads = { none: { userId } };
-        where.status = activeStatus;
+        (where as any).isRead = false;
+        (where as any).status = activeStatus;
       } else if (filter === "fresh") {
-        where.assigneeId = null;
-        where.reads = { none: { userId } };
-        where.status = activeStatus;
+        (where as any).assigneeId = null;
+        (where as any).isRead = false;
+        (where as any).status = activeStatus;
       } else if (filter === "mine") {
-        where.assigneeId = userId;
-        where.status = activeStatus;
+        (where as any).assigneeId = userId;
+        (where as any).status = activeStatus;
       }
+    }
+
+    if (andConditions.length > 0) {
+      (where as any).AND = andConditions;
     }
 
     const skip = (page - 1) * pageSize;
@@ -101,16 +119,6 @@ export class TicketsService {
           _count: {
             select: { comments: true },
           },
-          // Para staff incluimos si yo lei este ticket; para USER no aplica.
-          ...(isStaff
-            ? {
-                reads: {
-                  where: { userId },
-                  select: { id: true },
-                  take: 1,
-                },
-              }
-            : {}),
         },
         orderBy,
         skip,
@@ -119,17 +127,8 @@ export class TicketsService {
       prisma.ticket.count({ where }),
     ]);
 
-    // Enriquecer cada ticket con `isRead` per-user (sobreescribe el campo
-    // legacy global). Para USER mantenemos el `isRead` del schema.
-    const enriched = tickets.map((t: any) => {
-      if (!isStaff) return t;
-      const myReads = (t.reads ?? []) as Array<{ id: string }>;
-      const { reads: _omit, ...rest } = t;
-      return { ...rest, isRead: myReads.length > 0 };
-    });
-
     return {
-      data: enriched,
+      data: tickets,
       pagination: {
         page,
         pageSize,
@@ -140,6 +139,8 @@ export class TicketsService {
   }
 
   // Contadores para el panel de triage en el dashboard de AGENT/ADMIN.
+  // Respeta la visibilidad del rol: AGENT solo cuenta sobre lo que ve
+  // (sus tickets + sin asignar); ADMIN cuenta todo el sistema.
   static async getTriageCounts(userId: string, userRole: UserRole) {
     if (userRole !== UserRole.AGENT && userRole !== UserRole.ADMIN) {
       throw new ApiError(
@@ -150,19 +151,32 @@ export class TicketsService {
     }
 
     const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
+    // Visibilidad per-rol como condicion adicional (AND) en cada count.
+    const visibilityFor = (extra: any): any => {
+      if (userRole === UserRole.AGENT) {
+        return {
+          AND: [
+            { OR: [{ assigneeId: userId }, { assigneeId: null }] },
+            extra,
+          ],
+        };
+      }
+      return extra;
+    };
+
     const [fresh, unassigned, unread, mine] = await Promise.all([
       prisma.ticket.count({
-        where: {
+        where: visibilityFor({
           status: activeStatus,
           assigneeId: null,
-          reads: { none: { userId } },
-        },
+          isRead: false,
+        }),
       }),
       prisma.ticket.count({
-        where: { status: activeStatus, assigneeId: null },
+        where: visibilityFor({ status: activeStatus, assigneeId: null }),
       }),
       prisma.ticket.count({
-        where: { status: activeStatus, reads: { none: { userId } } },
+        where: visibilityFor({ status: activeStatus, isRead: false }),
       }),
       prisma.ticket.count({
         where: { status: activeStatus, assigneeId: userId },
@@ -193,6 +207,14 @@ export class TicketsService {
         attachments: {
           orderBy: { createdAt: "desc" },
         },
+        // Lista de quienes vieron el ticket (staff). Solo se usa cuando
+        // el viewer es staff; para USER se descarta antes de devolver.
+        reads: {
+          include: {
+            user: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { lastReadAt: "desc" },
+        },
       },
     });
 
@@ -200,21 +222,35 @@ export class TicketsService {
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
     }
 
-    // Check permissions
-    if (userRole === UserRole.USER && ticket.requesterId !== userId) {
-      throw new ApiError(
-        "FORBIDDEN",
-        "No tienes permisos para ver este ticket",
-        403,
-      );
+    // Visibilidad:
+    // - USER: solo si es requester.
+    // - AGENT: solo si es assignee, sin asignar, o (en PR-B) compartido.
+    // - ADMIN: todos.
+    if (userRole === UserRole.USER) {
+      if (ticket.requesterId !== userId) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "No tienes permisos para ver este ticket",
+          403,
+        );
+      }
+    } else if (userRole === UserRole.AGENT) {
+      const isMine = ticket.assigneeId === userId;
+      const isUnassigned = ticket.assigneeId === null;
+      if (!isMine && !isUnassigned) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Este ticket está asignado a otro técnico",
+          403,
+        );
+      }
     }
 
-    // Marcar como leido per-user si lo abre un AGENT o ADMIN.
-    // El campo legacy Ticket.isRead se ignora; usamos TicketRead para
-    // tracking individual.
+    // Marcar globalmente como leido y registrar quien fue.
     if (userRole === UserRole.AGENT || userRole === UserRole.ADMIN) {
+      const now = new Date();
+
       try {
-        const now = new Date();
         await prisma.ticketRead.upsert({
           where: { userId_ticketId: { userId, ticketId: id } },
           update: { lastReadAt: now },
@@ -223,8 +259,63 @@ export class TicketsService {
       } catch (err) {
         logger.warn({ err }, "No se pudo registrar TicketRead");
       }
-      // Reflejamos en el payload que para mi este ticket esta leido.
-      ticket.isRead = true;
+
+      // isRead global: si nadie del staff lo habia visto antes, marcamos true.
+      if (!ticket.isRead) {
+        try {
+          await prisma.ticket.update({
+            where: { id },
+            data: { isRead: true },
+          });
+        } catch (err) {
+          logger.warn({ err }, "No se pudo marcar isRead");
+        }
+        ticket.isRead = true;
+      }
+
+      // Auto-transicion OPEN -> IN_PROGRESS cuando el ASSIGNEE abre el
+      // ticket. La idea: si el assignee ya lo esta mirando, hay trabajo
+      // empezado; refleja eso en el estado.
+      if (
+        ticket.status === "OPEN" &&
+        ticket.assigneeId === userId
+      ) {
+        try {
+          await prisma.ticket.update({
+            where: { id },
+            data: { status: "IN_PROGRESS" },
+          });
+          await prisma.auditLog.create({
+            data: {
+              entity: "ticket",
+              entityId: id,
+              action: "ticket_auto_progressed",
+              actorId: userId,
+            },
+          });
+          ticket.status = "IN_PROGRESS";
+        } catch (err) {
+          logger.warn(
+            { err },
+            "No se pudo auto-progresar OPEN -> IN_PROGRESS",
+          );
+        }
+      }
+    }
+
+    // Para USER no devolvemos la lista de viewers (son staff).
+    if (userRole === UserRole.USER) {
+      (ticket as any).reads = undefined;
+    } else {
+      // Renombramos `reads` a `viewers` para que el front no se confunda
+      // con el TicketRead per-user (que ya no se usa para isRead).
+      (ticket as any).viewers = ((ticket as any).reads ?? []).map(
+        (r: any) => ({
+          user: r.user,
+          lastReadAt: r.lastReadAt,
+        }),
+      );
+      (ticket as any).reads = undefined;
     }
 
     // Enriquecer attachments con información de vista previa

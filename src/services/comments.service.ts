@@ -51,6 +51,21 @@ export class CommentsService {
       },
     });
 
+    // Si el comentario lo hace el REQUESTER (el usuario que creo el ticket),
+    // invalidamos isRead global: hay info nueva del cliente que el staff
+    // necesita ver en su bandeja "sin leer". Si lo hace el assignee u otro
+    // staff, no tocamos isRead (ellos ya estan en el caso).
+    if (authorId === ticket.requesterId && ticket.isRead) {
+      try {
+        await prisma.ticket.update({
+          where: { id: ticketId },
+          data: { isRead: false },
+        });
+      } catch (error) {
+        console.error("No se pudo invalidar isRead tras comentario:", error);
+      }
+    }
+
     // El service decide a quien notificar (requester si no es nota interna,
     // assignee si lo hay y no es el autor). Disparamos siempre y dejamos que
     // notifyCommentAdded haga el filtro correcto.
