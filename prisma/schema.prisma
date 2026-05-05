@@ -85,6 +85,7 @@ model Resource {
   category    ResourceCategory @default(OTHER)
   tags        String[]
   isPublished Boolean          @default(false)
+  isPinned    Boolean          @default(false)  // destacado / fijado
   viewCount   Int              @default(0)
   authorId    String
   createdAt   DateTime         @default(now())
@@ -94,6 +95,7 @@ model Resource {
   author User @relation("ResourceAuthor", fields: [authorId], references: [id])
 
   @@index([isPublished, category])
+  @@index([isPinned, isPublished])
   @@index([slug])
   @@map("resources")
 }

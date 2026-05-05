@@ -17,6 +17,7 @@ const listSelect = {
   category: true,
   tags: true,
   isPublished: true,
+  isPinned: true,
   viewCount: true,
   authorId: true,
   createdAt: true,
@@ -54,7 +55,8 @@ export class ResourcesService {
       prisma.resource.findMany({
         where,
         select: listSelect,
-        orderBy: [{ updatedAt: "desc" }],
+        // Pinned arriba, despues por ultima actualizacion.
+        orderBy: [{ isPinned: "desc" }, { updatedAt: "desc" }],
         skip,
         take: pageSize,
       }),
@@ -127,6 +129,7 @@ export class ResourcesService {
         category: data.category,
         tags: data.tags,
         isPublished: data.isPublished,
+        isPinned: data.isPinned,
         authorId,
       },
       include: {
@@ -183,6 +186,24 @@ export class ResourcesService {
     }
     await prisma.resource.delete({ where: { id } });
     logger.info({ resourceId: id }, "Resource deleted");
+  }
+
+  /**
+   * Devuelve los recursos publicados y "pineados". Pensado para mostrar
+   * destacados arriba del listado y/o un banner de aviso en el dashboard.
+   * Si se pasa `category`, filtra (ej: solo ANNOUNCEMENT). Acepta `limit`.
+   */
+  static async getPinned(category: string | undefined, limit: number) {
+    return prisma.resource.findMany({
+      where: {
+        isPinned: true,
+        isPublished: true,
+        ...(category ? { category: category as any } : {}),
+      },
+      select: listSelect,
+      orderBy: [{ updatedAt: "desc" }],
+      take: limit,
+    });
   }
 
   /**

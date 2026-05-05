@@ -8,6 +8,7 @@ const router = Router();
 // Endpoints de lectura (todos los autenticados):
 router.get("/", authMiddleware, ResourcesController.list);
 router.get("/suggest", authMiddleware, ResourcesController.suggest);
+router.get("/pinned", authMiddleware, ResourcesController.getPinned);
 router.get("/:idOrSlug", authMiddleware, ResourcesController.getOne);
 
 // Mutaciones (solo ADMIN por ahora; AGENT puede sumarse en el futuro):
