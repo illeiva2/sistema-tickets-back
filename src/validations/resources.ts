@@ -24,6 +24,7 @@ export const createResourceSchema = z.object({
     .default("OTHER"),
   tags: z.array(z.string().min(1).max(40)).max(20).default([]),
   isPublished: z.boolean().default(false),
+  isPinned: z.boolean().default(false),
 });
 
 export const updateResourceSchema = z.object({
@@ -33,6 +34,12 @@ export const updateResourceSchema = z.object({
   category: z.enum(RESOURCE_CATEGORIES).optional(),
   tags: z.array(z.string().min(1).max(40)).max(20).optional(),
   isPublished: z.boolean().optional(),
+  isPinned: z.boolean().optional(),
+});
+
+export const pinnedFiltersSchema = z.object({
+  category: z.enum(RESOURCE_CATEGORIES).optional(),
+  limit: z.coerce.number().min(1).max(20).default(5),
 });
 
 export const resourceFiltersSchema = z.object({

@@ -307,3 +307,98 @@ describe("GET /api/resources/suggest", () => {
     expect(res.body.data).toEqual([]);
   });
 });
+
+describe("GET /api/resources — orden y pinned", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("listado ordena por isPinned DESC, updatedAt DESC", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+
+    const token = signAccessToken({ role: "USER" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.orderBy).toEqual([
+      { isPinned: "desc" },
+      { updatedAt: "desc" },
+    ]);
+  });
+});
+
+describe("GET /api/resources/pinned", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("Devuelve recursos pinned publicados (default limit 5)", async () => {
+    const pinned = makeResource({ id: "r-pin-1", isPinned: true });
+    prismaMock.resource.findMany.mockResolvedValueOnce([pinned] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/pinned")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].id).toBe("r-pin-1");
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.isPinned).toBe(true);
+    expect(call.where.isPublished).toBe(true);
+    expect(call.take).toBe(5);
+  });
+
+  it("Filtra por categoria cuando viene en query", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    await request(app)
+      .get("/api/resources/pinned?category=ANNOUNCEMENT&limit=3")
+      .set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.category).toBe("ANNOUNCEMENT");
+    expect(call.take).toBe(3);
+  });
+
+  it("Rechaza categoria invalida", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/pinned?category=NOPE")
+      .set(auth(token));
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("PATCH /api/resources/:id — togglear isPinned", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ADMIN puede pinear un recurso", async () => {
+    const existing = makeResource({ id: "r-1", isPinned: false });
+    prismaMock.resource.findUnique.mockResolvedValueOnce(existing as any);
+    prismaMock.resource.update.mockResolvedValueOnce({
+      ...existing,
+      isPinned: true,
+    } as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ isPinned: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isPinned).toBe(true);
+  });
+
+  it("USER no puede modificar pinned", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ isPinned: true });
+
+    expect(res.status).toBe(403);
+  });
+});

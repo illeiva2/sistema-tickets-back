@@ -7,6 +7,7 @@ import {
   resourceFiltersSchema,
   suggestSchema,
   updateResourceSchema,
+  pinnedFiltersSchema,
 } from "../validations/resources";
 
 export class ResourcesController {
@@ -50,6 +51,26 @@ export class ResourcesController {
       next(err);
     }
   };
+
+  static getPinned = [
+    validate(z.object({ query: pinnedFiltersSchema })),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({
+            success: false,
+            error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+          });
+        }
+        const category = req.query.category as string | undefined;
+        const limit = Number(req.query.limit ?? 5);
+        const items = await ResourcesService.getPinned(category, limit);
+        res.json({ success: true, data: items });
+      } catch (err) {
+        next(err);
+      }
+    },
+  ];
 
   static suggest = [
     validate(z.object({ query: suggestSchema })),
