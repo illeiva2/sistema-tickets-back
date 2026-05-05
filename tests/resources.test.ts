@@ -371,6 +371,110 @@ describe("GET /api/resources/pinned", () => {
   });
 });
 
+describe("GET /api/resources/pinned — filtros showAsModal y pinExpiresAt", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("Excluye recursos con showAsModal=true (esos van al modal)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    const token = signAccessToken({ role: "USER" });
+    await request(app).get("/api/resources/pinned").set(auth(token));
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.showAsModal).toBe(false);
+  });
+
+  it("Filtra pin expirado (pinExpiresAt > now O null)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    const token = signAccessToken({ role: "USER" });
+    await request(app).get("/api/resources/pinned").set(auth(token));
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.OR).toEqual([
+      { pinExpiresAt: null },
+      { pinExpiresAt: { gt: expect.any(Date) } },
+    ]);
+  });
+});
+
+describe("GET /api/resources/modal-pinned", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("Devuelve solo pinned + showAsModal=true + no expirados", async () => {
+    const r = makeResource({
+      id: "r-modal",
+      isPinned: true,
+      showAsModal: true,
+    });
+    prismaMock.resource.findMany.mockResolvedValueOnce([r] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/modal-pinned")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].id).toBe("r-modal");
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.showAsModal).toBe(true);
+    expect(call.where.isPinned).toBe(true);
+    expect(call.where.isPublished).toBe(true);
+    expect(call.where.OR).toEqual([
+      { pinExpiresAt: null },
+      { pinExpiresAt: { gt: expect.any(Date) } },
+    ]);
+  });
+
+  it("Requiere autenticacion", async () => {
+    const res = await request(app).get("/api/resources/modal-pinned");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("PATCH /api/resources/:id — campos modal-pinned", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ADMIN puede setear showAsModal y pinExpiresAt", async () => {
+    const existing = makeResource({ id: "r-1" });
+    prismaMock.resource.findUnique.mockResolvedValueOnce(existing as any);
+    prismaMock.resource.update.mockResolvedValueOnce({
+      ...existing,
+      isPinned: true,
+      showAsModal: true,
+      pinExpiresAt: new Date("2026-06-01T00:00:00Z"),
+    } as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({
+        isPinned: true,
+        showAsModal: true,
+        pinExpiresAt: "2026-06-01T00:00:00Z",
+      });
+
+    expect(res.status).toBe(200);
+    const call = prismaMock.resource.update.mock.calls[0][0] as any;
+    expect(call.data.showAsModal).toBe(true);
+    expect(call.data.pinExpiresAt).toBeInstanceOf(Date);
+  });
+
+  it("ADMIN puede limpiar pinExpiresAt mandando null", async () => {
+    const existing = makeResource({ id: "r-1" });
+    prismaMock.resource.findUnique.mockResolvedValueOnce(existing as any);
+    prismaMock.resource.update.mockResolvedValueOnce(existing as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ pinExpiresAt: null });
+
+    const call = prismaMock.resource.update.mock.calls[0][0] as any;
+    expect(call.data.pinExpiresAt).toBeNull();
+  });
+});
+
 describe("PATCH /api/resources/:id — togglear isPinned", () => {
   beforeEach(() => vi.clearAllMocks());
 

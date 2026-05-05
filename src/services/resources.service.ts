@@ -18,12 +18,26 @@ const listSelect = {
   tags: true,
   isPublished: true,
   isPinned: true,
+  showAsModal: true,
+  pinExpiresAt: true,
   viewCount: true,
   authorId: true,
   createdAt: true,
   updatedAt: true,
   author: { select: { id: true, name: true, email: true } },
 } as const;
+
+// Helper: parsea un valor del payload a Date | null para pinExpiresAt.
+// Acepta ISO string, "" o null para "sin vencimiento".
+const parsePinExpiresAt = (value: unknown): Date | null | undefined => {
+  if (value === undefined) return undefined; // no se toca
+  if (value === null || value === "") return null;
+  if (typeof value === "string") {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return undefined;
+};
 
 export class ResourcesService {
   static async list(filters: ResourceFilters, userRole: UserRole) {
@@ -130,6 +144,8 @@ export class ResourcesService {
         tags: data.tags,
         isPublished: data.isPublished,
         isPinned: data.isPinned,
+        showAsModal: data.showAsModal ?? false,
+        pinExpiresAt: parsePinExpiresAt(data.pinExpiresAt) ?? null,
         authorId,
       },
       include: {
@@ -164,10 +180,17 @@ export class ResourcesService {
       });
     }
 
+    // Normalizar pinExpiresAt si vino en el payload.
+    const updateData: any = { ...data };
+    if (Object.prototype.hasOwnProperty.call(data, "pinExpiresAt")) {
+      const parsed = parsePinExpiresAt(data.pinExpiresAt);
+      if (parsed !== undefined) updateData.pinExpiresAt = parsed;
+    }
+
     const resource = await prisma.resource.update({
       where: { id },
       data: {
-        ...data,
+        ...updateData,
         ...(nextSlug ? { slug: nextSlug } : {}),
       },
       include: {
@@ -189,16 +212,40 @@ export class ResourcesService {
   }
 
   /**
-   * Devuelve los recursos publicados y "pineados". Pensado para mostrar
-   * destacados arriba del listado y/o un banner de aviso en el dashboard.
+   * Devuelve los recursos publicados y pineados que NO son modal y cuyo
+   * pin no esta vencido. Pensado para el banner del dashboard.
    * Si se pasa `category`, filtra (ej: solo ANNOUNCEMENT). Acepta `limit`.
    */
   static async getPinned(category: string | undefined, limit: number) {
+    const now = new Date();
     return prisma.resource.findMany({
       where: {
         isPinned: true,
         isPublished: true,
+        showAsModal: false,
+        // pinExpiresAt = null (no vence) o > ahora (todavia activo)
+        OR: [{ pinExpiresAt: null }, { pinExpiresAt: { gt: now } }],
         ...(category ? { category: category as any } : {}),
+      },
+      select: listSelect,
+      orderBy: [{ updatedAt: "desc" }],
+      take: limit,
+    });
+  }
+
+  /**
+   * Devuelve los recursos pineados que deben mostrarse como modal flotante
+   * al entrar a la app. Filtra publicados, pinned activos (no vencidos) y
+   * con showAsModal=true. Orden: mas recientes primero.
+   */
+  static async getModalPinned(limit: number = 10) {
+    const now = new Date();
+    return prisma.resource.findMany({
+      where: {
+        isPinned: true,
+        isPublished: true,
+        showAsModal: true,
+        OR: [{ pinExpiresAt: null }, { pinExpiresAt: { gt: now } }],
       },
       select: listSelect,
       orderBy: [{ updatedAt: "desc" }],
