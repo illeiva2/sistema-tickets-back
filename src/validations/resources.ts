@@ -25,6 +25,11 @@ export const createResourceSchema = z.object({
   tags: z.array(z.string().min(1).max(40)).max(20).default([]),
   isPublished: z.boolean().default(false),
   isPinned: z.boolean().default(false),
+  showAsModal: z.boolean().default(false),
+  pinExpiresAt: z
+    .union([z.string().datetime(), z.literal(""), z.null()])
+    .optional()
+    .nullable(),
 });
 
 export const updateResourceSchema = z.object({
@@ -35,6 +40,11 @@ export const updateResourceSchema = z.object({
   tags: z.array(z.string().min(1).max(40)).max(20).optional(),
   isPublished: z.boolean().optional(),
   isPinned: z.boolean().optional(),
+  showAsModal: z.boolean().optional(),
+  pinExpiresAt: z
+    .union([z.string().datetime(), z.literal(""), z.null()])
+    .optional()
+    .nullable(),
 });
 
 export const pinnedFiltersSchema = z.object({

@@ -52,6 +52,25 @@ export class ResourcesController {
     }
   };
 
+  static getModalPinned = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const items = await ResourcesService.getModalPinned(10);
+      res.json({ success: true, data: items });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   static getPinned = [
     validate(z.object({ query: pinnedFiltersSchema })),
     async (req: Request, res: Response, next: NextFunction) => {

@@ -84,9 +84,15 @@ model Resource {
   excerpt     String?                       // resumen corto opcional
   category    ResourceCategory @default(OTHER)
   tags        String[]
-  isPublished Boolean          @default(false)
-  isPinned    Boolean          @default(false)  // destacado / fijado
-  viewCount   Int              @default(0)
+  isPublished   Boolean          @default(false)
+  isPinned      Boolean          @default(false)  // destacado / fijado
+  // Si esta pinned y showAsModal=true, se muestra como modal flotante
+  // al entrar a la app (no en el banner del dashboard).
+  showAsModal   Boolean          @default(false)
+  // Si pinExpiresAt no es null, el pin se considera vencido a partir de
+  // esa fecha y deja de aparecer en banner / modal. null = no expira.
+  pinExpiresAt  DateTime?
+  viewCount     Int              @default(0)
   authorId    String
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
