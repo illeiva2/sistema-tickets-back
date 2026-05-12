@@ -14,6 +14,16 @@ vi.mock("nodemailer", () => ({
   },
 }));
 
+// Mock del cliente de Anthropic para no llamar a la API real en tests.
+const mockMessagesCreate = vi.fn();
+vi.mock("../src/lib/anthropic", () => ({
+  isAnthropicConfigured: () => true,
+  getAnthropicClient: () => ({
+    messages: { create: mockMessagesCreate },
+  }),
+  RESOURCE_DRAFT_MODEL: "claude-opus-4-7",
+}));
+
 import request from "supertest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/lib/database";
@@ -472,6 +482,164 @@ describe("PATCH /api/resources/:id — campos modal-pinned", () => {
 
     const call = prismaMock.resource.update.mock.calls[0][0] as any;
     expect(call.data.pinExpiresAt).toBeNull();
+  });
+});
+
+describe("POST /api/resources/draft-from-ticket/:ticketId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockMessagesCreate.mockReset();
+  });
+
+  const draftResponse = {
+    title: "Cómo configurar VPN desde casa",
+    excerpt: "Pasos para conectarse a la red corporativa por VPN desde fuera de la oficina.",
+    category: "HOW_TO",
+    content:
+      "# Cómo configurar VPN\n\nEl usuario necesita acceso remoto...\n\n## Pasos para resolver\n1. Bajar el cliente VPN\n2. Importar el perfil...",
+    tags: ["vpn", "red", "configuracion"],
+  };
+
+  it("USER no puede generar borradores", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/t-1")
+      .set(auth(token));
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT genera draft de un ticket RESOLVED", async () => {
+    const ticket = {
+      id: "t-1",
+      ticketNumber: 42,
+      title: "No me conecta el VPN",
+      description: "Cuando intento entrar tira error",
+      status: "RESOLVED",
+      priority: "MEDIUM",
+      category: "RED",
+      comments: [
+        {
+          message: "Probá actualizar el cliente",
+          author: { role: "AGENT", name: "Agente" },
+        },
+        {
+          message: "[TICKET RESUELTO] Listo, andaba el cliente desactualizado.",
+          author: { role: "AGENT", name: "Agente" },
+        },
+      ],
+      requester: { id: "u-1", name: "User" },
+      assignee: { id: "agent-1", name: "Agente" },
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify(draftResponse) }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/t-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.title).toBe("Cómo configurar VPN desde casa");
+    expect(res.body.data.category).toBe("HOW_TO");
+    expect(res.body.data.tags).toEqual(["vpn", "red", "configuracion"]);
+    expect(mockMessagesCreate).toHaveBeenCalledOnce();
+  });
+
+  it("Rechaza tickets que no están resueltos ni cerrados", async () => {
+    const ticket = {
+      id: "t-1",
+      ticketNumber: 42,
+      title: "x",
+      description: "y",
+      status: "OPEN",
+      priority: "MEDIUM",
+      comments: [],
+      requester: { id: "u-1", name: "User" },
+      assignee: null,
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/t-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_STATUS");
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("404 si el ticket no existe", async () => {
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(null);
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/missing")
+      .set(auth(token));
+
+    expect(res.status).toBe(404);
+  });
+
+  it("Sanitiza tags: lowercase y max 5", async () => {
+    const ticket = {
+      id: "t-1",
+      ticketNumber: 1,
+      title: "x",
+      description: "y",
+      status: "RESOLVED",
+      priority: "LOW",
+      comments: [],
+      requester: { id: "u-1", name: "User" },
+      assignee: null,
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ...draftResponse,
+            tags: ["VPN", "Red", "Config", "  ", "tag4", "tag5", "tag6"],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+
+    const token = signAccessToken({ id: "agent-1", role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/t-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tags).toEqual(["vpn", "red", "config", "tag4", "tag5"]);
+  });
+
+  it("Maneja errores de Anthropic con respuesta clara", async () => {
+    const ticket = {
+      id: "t-1",
+      ticketNumber: 1,
+      title: "x",
+      description: "y",
+      status: "CLOSED",
+      priority: "LOW",
+      comments: [],
+      requester: { id: "u-1", name: "User" },
+      assignee: null,
+    };
+    prismaMock.ticket.findUnique.mockResolvedValueOnce(ticket as any);
+    mockMessagesCreate.mockRejectedValueOnce({ status: 429, message: "rate limit" });
+
+    const token = signAccessToken({ id: "agent-1", role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources/draft-from-ticket/t-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("AI_RATE_LIMIT");
   });
 });
 
