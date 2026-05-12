@@ -150,6 +150,41 @@ export class ResourcesController {
     },
   ];
 
+  // POST /api/resources/upload-image — sube una imagen a Cloudinary para
+  // referenciarla desde el markdown de un recurso. multer ya valido el
+  // size (10MB) y proceso el multipart; el service valida el MIME.
+  static uploadImage = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "MISSING_FILE",
+            message: "Falta el archivo en el campo 'file'",
+          },
+        });
+      }
+      const result = await ResourcesService.uploadImage(
+        req.file.buffer,
+        req.file.mimetype,
+        req.file.originalname,
+      );
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   static draftFromTicket = async (
     req: AuthenticatedRequest,
     res: Response,
