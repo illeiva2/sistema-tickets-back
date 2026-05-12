@@ -3,11 +3,20 @@ import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import { slugify, ensureUniqueSlug } from "../lib/slug";
 import { UserRole } from "@prisma/client";
+import cloudinary from "../lib/cloudinary";
+import streamifier from "streamifier";
 import type {
   CreateResourceRequest,
   UpdateResourceRequest,
   ResourceFilters,
 } from "../validations/resources";
+
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
 
 const listSelect = {
   id: true,
@@ -212,6 +221,65 @@ export class ResourcesService {
   }
 
   /**
+   * Sube una imagen a Cloudinary para que sea referenciada desde el markdown
+   * de un recurso. No persistimos nada en DB en este MVP — la imagen vive
+   * solo en Cloudinary y se referencia por URL desde el contenido.
+   *
+   * Valida MIME estricto (jpeg/png/webp/gif). El size limit lo hace multer.
+   */
+  static async uploadImage(
+    buffer: Buffer,
+    mimetype: string,
+    originalName: string,
+  ): Promise<{ url: string; publicId: string }> {
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(mimetype)) {
+      throw new ApiError(
+        "INVALID_FILE_TYPE",
+        `Tipo de archivo no soportado: ${mimetype}. Solo se aceptan JPEG, PNG, WEBP y GIF.`,
+        400,
+      );
+    }
+
+    const publicId = buildImagePublicId(originalName);
+
+    const uploaded = await new Promise<{
+      secure_url: string;
+      public_id: string;
+    }>((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: "resources",
+          resource_type: "image",
+          public_id: publicId,
+        },
+        (error, result) => {
+          if (error) return reject(error);
+          if (!result) return reject(new Error("Cloudinary devolvió un resultado vacío"));
+          resolve({
+            secure_url: result.secure_url,
+            public_id: result.public_id,
+          });
+        },
+      );
+      streamifier.createReadStream(buffer).pipe(stream);
+    }).catch((err) => {
+      const message = (err as Error)?.message ?? String(err);
+      logger.error({ err, originalName, mimetype }, "Cloudinary image upload failed");
+      throw new ApiError(
+        "IMAGE_UPLOAD_FAILED",
+        `No se pudo subir la imagen: ${message}`,
+        502,
+      );
+    });
+
+    logger.info(
+      { publicId: uploaded.public_id, mimetype },
+      "Resource image uploaded",
+    );
+    return { url: uploaded.secure_url, publicId: uploaded.public_id };
+  }
+
+  /**
    * Devuelve los recursos publicados y pineados que NO son modal y cuyo
    * pin no esta vencido. Pensado para el banner del dashboard.
    * Si se pasa `category`, filtra (ej: solo ANNOUNCEMENT). Acepta `limit`.
@@ -324,4 +392,22 @@ export class ResourcesService {
         tags: resource.tags,
       }));
   }
+}
+
+// Construye un public_id seguro para Cloudinary a partir del filename
+// original (mismo criterio que AttachmentsService.buildCloudinaryPublicId,
+// pero sin la dependencia para mantener bajo acoplamiento entre modulos).
+function buildImagePublicId(fileName: string): string {
+  const lastDot = fileName.lastIndexOf(".");
+  const base = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
+
+  // Quitar diacriticos.
+  const decomposed = base.normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+  let slug = decomposed.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/_+/g, "_");
+  slug = slug.replace(/^_+|_+$/g, "");
+  if (!slug) slug = "imagen";
+  if (slug.length > 80) slug = slug.substring(0, 80);
+
+  return `${Date.now()}-${slug}`;
 }

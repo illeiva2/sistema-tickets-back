@@ -24,6 +24,17 @@ vi.mock("../src/lib/anthropic", () => ({
   RESOURCE_DRAFT_MODEL: "claude-opus-4-7",
 }));
 
+// Mock de Cloudinary para evitar llamadas reales en tests. El upload_stream
+// devuelve un Writable; simulamos un resolve inmediato del callback.
+const mockUploadStream = vi.fn();
+vi.mock("../src/lib/cloudinary", () => ({
+  default: {
+    uploader: {
+      upload_stream: (_opts: any, cb: any) => mockUploadStream(cb),
+    },
+  },
+}));
+
 import request from "supertest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/lib/database";
@@ -672,5 +683,113 @@ describe("PATCH /api/resources/:id — togglear isPinned", () => {
       .send({ isPinned: true });
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /api/resources/upload-image", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUploadStream.mockReset();
+  });
+
+  // Helper para simular un upload exitoso. Devuelve un Writable mock
+  // que cuando recibe el .end() del pipe llama al callback con OK.
+  const mockSuccessfulUpload = () => {
+    mockUploadStream.mockImplementation((cb) => {
+      // Devolver un objeto que se comporta como Writable basico.
+      const writable: any = {
+        write: () => true,
+        end: () => {
+          cb(null, {
+            secure_url: "https://res.cloudinary.com/test/image/upload/resources/foto.png",
+            public_id: "resources/123-foto",
+          });
+        },
+        on: () => writable,
+        once: () => writable,
+        emit: () => true,
+      };
+      return writable;
+    });
+  };
+
+  it("USER no puede subir imágenes", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .post("/api/resources/upload-image")
+      .set(auth(token))
+      .attach("file", Buffer.from("x"), {
+        filename: "foto.png",
+        contentType: "image/png",
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it("AGENT tampoco (solo ADMIN edita recursos)", async () => {
+    const token = signAccessToken({ role: "AGENT" });
+    const res = await request(app)
+      .post("/api/resources/upload-image")
+      .set(auth(token))
+      .attach("file", Buffer.from("x"), {
+        filename: "foto.png",
+        contentType: "image/png",
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it("ADMIN puede subir un PNG válido", async () => {
+    mockSuccessfulUpload();
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources/upload-image")
+      .set(auth(token))
+      .attach("file", Buffer.from("fake-png-data"), {
+        filename: "captura.png",
+        contentType: "image/png",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.url).toContain("res.cloudinary.com");
+    expect(res.body.data.publicId).toBeTruthy();
+  });
+
+  it("Rechaza un PDF (mimetype no permitido)", async () => {
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources/upload-image")
+      .set(auth(token))
+      .attach("file", Buffer.from("fake-pdf"), {
+        filename: "doc.pdf",
+        contentType: "application/pdf",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_FILE_TYPE");
+  });
+
+  it("Acepta WEBP, JPEG y GIF", async () => {
+    const token = signAccessToken({ role: "ADMIN" });
+    const mimes = ["image/webp", "image/jpeg", "image/gif"];
+    for (const mime of mimes) {
+      mockSuccessfulUpload();
+      const res = await request(app)
+        .post("/api/resources/upload-image")
+        .set(auth(token))
+        .attach("file", Buffer.from("x"), {
+          filename: `foto.${mime.split("/")[1]}`,
+          contentType: mime,
+        });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("400 si no viene el campo file", async () => {
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources/upload-image")
+      .set(auth(token));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("MISSING_FILE");
   });
 });
