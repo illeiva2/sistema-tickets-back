@@ -16,6 +16,14 @@ router.get(
 );
 router.get("/:idOrSlug", authMiddleware, ResourcesController.getOne);
 
+// IA: generar borrador a partir de un ticket resuelto (AGENT o ADMIN).
+router.post(
+  "/draft-from-ticket/:ticketId",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ResourcesController.draftFromTicket,
+);
+
 // Mutaciones (solo ADMIN por ahora; AGENT puede sumarse en el futuro):
 router.post(
   "/",

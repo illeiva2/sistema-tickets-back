@@ -9,6 +9,8 @@ import {
   updateResourceSchema,
   pinnedFiltersSchema,
 } from "../validations/resources";
+import ResourceDraftsService from "../services/resourceDrafts.service";
+import { AuthenticatedRequest } from "../middleware/auth";
 
 export class ResourcesController {
   static list = [
@@ -147,6 +149,30 @@ export class ResourcesController {
       }
     },
   ];
+
+  static draftFromTicket = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const { ticketId } = req.params;
+      const draft = await ResourceDraftsService.draftFromTicket(
+        ticketId,
+        req.user.id,
+        req.user.role,
+      );
+      res.json({ success: true, data: draft });
+    } catch (err) {
+      next(err);
+    }
+  };
 
   static remove = async (
     req: Request,

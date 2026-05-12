@@ -43,4 +43,9 @@ export const config = {
   // URL pública del frontend, usada en links de emails de notificación.
   // Si no está seteada los emails se mandan sin link clickeable.
   frontendUrl: process.env.FRONTEND_URL || "",
+  anthropic: {
+    // API key de Anthropic para generar borradores de recursos a partir
+    // de tickets resueltos. Si no esta seteada, el endpoint devuelve 503.
+    apiKey: process.env.ANTHROPIC_API_KEY || "",
+  },
 } as const;
