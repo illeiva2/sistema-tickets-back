@@ -21,6 +21,10 @@ const updateUserSchema = z.object({
     .optional(),
   email: z.string().email("Email inválido").optional(),
   role: z.enum(["USER", "AGENT", "ADMIN"]).optional(),
+  // departmentId puede ser cuid (asignar), null (quitar sector) o omitirse.
+  departmentId: z
+    .union([z.string().cuid("ID de sector inválido"), z.null()])
+    .optional(),
 });
 
 const changePasswordSchema = z.object({
@@ -60,6 +64,9 @@ export class UsersController {
           deletedAt: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
           _count: {
             select: {
               requestedTickets: true,
@@ -122,6 +129,9 @@ export class UsersController {
           role: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
           _count: {
             select: {
               requestedTickets: true,
@@ -223,6 +233,33 @@ export class UsersController {
         throw new ApiError("FORBIDDEN", "No puedes cambiar tu propio rol", 403);
       }
 
+      // Solo ADMIN puede asignar / cambiar el sector de un usuario.
+      if (
+        user?.role !== "ADMIN" &&
+        Object.prototype.hasOwnProperty.call(validatedData, "departmentId")
+      ) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Solo los administradores pueden cambiar el sector",
+          403,
+        );
+      }
+
+      // Si se asigna un departmentId, verificar que el sector exista.
+      if (validatedData.departmentId) {
+        const dep = await prisma.department.findUnique({
+          where: { id: validatedData.departmentId },
+          select: { id: true },
+        });
+        if (!dep) {
+          throw new ApiError(
+            "DEPARTMENT_NOT_FOUND",
+            "Sector no encontrado",
+            404,
+          );
+        }
+      }
+
       // Verificar si el usuario existe
       const existingUser = await prisma.user.findUnique({ where: { id } });
       if (!existingUser) {
@@ -253,6 +290,9 @@ export class UsersController {
           role: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
         },
       });
 
