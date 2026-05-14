@@ -30,6 +30,13 @@ export const createResourceSchema = z.object({
     .union([z.string().datetime(), z.literal(""), z.null()])
     .optional()
     .nullable(),
+  // Lista de departmentId que pueden ver el recurso. Si está vacío o
+  // ausente, es público (visible para todos).
+  audienceDepartmentIds: z
+    .array(z.string().cuid("ID de sector inválido"))
+    .max(20, "Demasiados sectores")
+    .optional()
+    .default([]),
 });
 
 export const updateResourceSchema = z.object({
@@ -45,6 +52,10 @@ export const updateResourceSchema = z.object({
     .union([z.string().datetime(), z.literal(""), z.null()])
     .optional()
     .nullable(),
+  audienceDepartmentIds: z
+    .array(z.string().cuid("ID de sector inválido"))
+    .max(20)
+    .optional(),
 });
 
 export const pinnedFiltersSchema = z.object({

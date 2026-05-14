@@ -104,6 +104,10 @@ model Resource {
 
   // Relations
   author User @relation("ResourceAuthor", fields: [authorId], references: [id])
+  // Audiencia opcional. Si el array está vacío, el recurso es público
+  // (visible para todos). Si tiene sectores, solo USERs de esos sectores
+  // (ADMIN y AGENT lo ven siempre).
+  audienceDepartments Department[] @relation("ResourceAudience")
 
   @@index([isPublished, category])
   @@index([isPinned, isPublished])
@@ -319,7 +323,8 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users User[]
+  users             User[]
+  targetedResources Resource[] @relation("ResourceAudience")
 
   @@map("departments")
 }

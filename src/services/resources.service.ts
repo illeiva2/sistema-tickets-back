@@ -34,7 +34,52 @@ const listSelect = {
   createdAt: true,
   updatedAt: true,
   author: { select: { id: true, name: true, email: true } },
+  audienceDepartments: {
+    select: { id: true, name: true, color: true, icon: true },
+  },
 } as const;
+
+// Construye el fragmento de where que filtra por audiencia segun el rol
+// del usuario. Reglas:
+// - ADMIN y AGENT: sin restriccion (ven todos los recursos).
+// - USER con departmentId: ve los publicos (audiencia vacia) + los de su
+//   sector.
+// - USER sin departmentId: solo ve los publicos.
+const buildAudienceWhere = (
+  userRole: UserRole,
+  userDepartmentId: string | null | undefined,
+): any => {
+  if (userRole === UserRole.ADMIN || userRole === UserRole.AGENT) return {};
+  // USER
+  if (userDepartmentId) {
+    return {
+      OR: [
+        { audienceDepartments: { none: {} } },
+        {
+          audienceDepartments: {
+            some: { id: userDepartmentId },
+          },
+        },
+      ],
+    };
+  }
+  return { audienceDepartments: { none: {} } };
+};
+
+// Helper: chequea si un recurso es visible para el usuario segun audiencia.
+// Lo usamos post-fetch en getOne (donde el lookup es por id/slug y no
+// queremos colar audiencia en la query).
+const isResourceVisible = (
+  resource: { audienceDepartments?: Array<{ id: string }> },
+  userRole: UserRole,
+  userDepartmentId: string | null | undefined,
+): boolean => {
+  if (userRole === UserRole.ADMIN || userRole === UserRole.AGENT) return true;
+  const audience = resource.audienceDepartments ?? [];
+  if (audience.length === 0) return true; // publico
+  if (!userDepartmentId) return false;
+  return audience.some((d) => d.id === userDepartmentId);
+};
 
 // Helper: parsea un valor del payload a Date | null para pinExpiresAt.
 // Acepta ISO string, "" o null para "sin vencimiento".
@@ -49,28 +94,43 @@ const parsePinExpiresAt = (value: unknown): Date | null | undefined => {
 };
 
 export class ResourcesService {
-  static async list(filters: ResourceFilters, userRole: UserRole) {
+  static async list(
+    filters: ResourceFilters,
+    userRole: UserRole,
+    userDepartmentId: string | null | undefined,
+  ) {
     const { q, category, tag, includeDrafts, page, pageSize } = filters;
     const includeDraftsBool =
       includeDrafts === true || includeDrafts === "true";
 
-    const where: any = {};
+    // Construimos como AND para no chocar entre OR de busqueda (q) y OR
+    // de audiencia.
+    const andConditions: any[] = [];
 
     // Solo ADMIN puede ver borradores. Para todos los demás, solo publicados.
     if (userRole !== UserRole.ADMIN || !includeDraftsBool) {
-      where.isPublished = true;
+      andConditions.push({ isPublished: true });
     }
 
-    if (category) where.category = category;
-    if (tag) where.tags = { has: tag };
+    if (category) andConditions.push({ category });
+    if (tag) andConditions.push({ tags: { has: tag } });
 
     if (q) {
-      where.OR = [
-        { title: { contains: q, mode: "insensitive" } },
-        { excerpt: { contains: q, mode: "insensitive" } },
-        { content: { contains: q, mode: "insensitive" } },
-      ];
+      andConditions.push({
+        OR: [
+          { title: { contains: q, mode: "insensitive" } },
+          { excerpt: { contains: q, mode: "insensitive" } },
+          { content: { contains: q, mode: "insensitive" } },
+        ],
+      });
     }
+
+    const audienceWhere = buildAudienceWhere(userRole, userDepartmentId);
+    if (Object.keys(audienceWhere).length > 0) {
+      andConditions.push(audienceWhere);
+    }
+
+    const where = andConditions.length > 0 ? { AND: andConditions } : {};
 
     const skip = (page - 1) * pageSize;
 
@@ -99,15 +159,24 @@ export class ResourcesService {
 
   /**
    * Acepta id (cuid) o slug. Si encuentra, incrementa viewCount.
-   * Solo devuelve borradores a admins.
+   * Solo devuelve borradores a admins. Aplica filtro de audiencia: si el
+   * recurso tiene audiencia y el usuario no es de un sector incluido (y
+   * no es ADMIN/AGENT), devolvemos 404 (no revelamos existencia).
    */
-  static async getOne(idOrSlug: string, userRole: UserRole) {
+  static async getOne(
+    idOrSlug: string,
+    userRole: UserRole,
+    userDepartmentId: string | null | undefined,
+  ) {
     const looksLikeCuid = /^c[0-9a-z]{24}$/i.test(idOrSlug);
 
     const resource = await prisma.resource.findFirst({
       where: looksLikeCuid ? { id: idOrSlug } : { slug: idOrSlug },
       include: {
         author: { select: { id: true, name: true, email: true } },
+        audienceDepartments: {
+          select: { id: true, name: true, color: true, icon: true },
+        },
       },
     });
 
@@ -117,6 +186,11 @@ export class ResourcesService {
 
     if (!resource.isPublished && userRole !== UserRole.ADMIN) {
       // No revelar la existencia del borrador a no-admins.
+      throw new ApiError("RESOURCE_NOT_FOUND", "Recurso no encontrado", 404);
+    }
+
+    if (!isResourceVisible(resource, userRole, userDepartmentId)) {
+      // No revelar existencia: el USER no es del sector que puede ver esto.
       throw new ApiError("RESOURCE_NOT_FOUND", "Recurso no encontrado", 404);
     }
 
@@ -143,6 +217,8 @@ export class ResourcesService {
       return !!existing;
     });
 
+    const audienceIds = data.audienceDepartmentIds ?? [];
+
     const resource = await prisma.resource.create({
       data: {
         slug,
@@ -156,9 +232,19 @@ export class ResourcesService {
         showAsModal: data.showAsModal ?? false,
         pinExpiresAt: parsePinExpiresAt(data.pinExpiresAt) ?? null,
         authorId,
+        ...(audienceIds.length > 0
+          ? {
+              audienceDepartments: {
+                connect: audienceIds.map((id) => ({ id })),
+              },
+            }
+          : {}),
       },
       include: {
         author: { select: { id: true, name: true, email: true } },
+        audienceDepartments: {
+          select: { id: true, name: true, color: true, icon: true },
+        },
       },
     });
 
@@ -190,10 +276,18 @@ export class ResourcesService {
     }
 
     // Normalizar pinExpiresAt si vino en el payload.
-    const updateData: any = { ...data };
+    const { audienceDepartmentIds: rawAudience, ...rest } = data as any;
+    const updateData: any = { ...rest };
     if (Object.prototype.hasOwnProperty.call(data, "pinExpiresAt")) {
       const parsed = parsePinExpiresAt(data.pinExpiresAt);
       if (parsed !== undefined) updateData.pinExpiresAt = parsed;
+    }
+    // Si vino audienceDepartmentIds, hacemos un `set` (reemplazo total).
+    // Si es undefined, no tocamos la audiencia.
+    if (Array.isArray(rawAudience)) {
+      updateData.audienceDepartments = {
+        set: rawAudience.map((aid: string) => ({ id: aid })),
+      };
     }
 
     const resource = await prisma.resource.update({
@@ -204,6 +298,9 @@ export class ResourcesService {
       },
       include: {
         author: { select: { id: true, name: true, email: true } },
+        audienceDepartments: {
+          select: { id: true, name: true, color: true, icon: true },
+        },
       },
     });
 
@@ -284,17 +381,28 @@ export class ResourcesService {
    * pin no esta vencido. Pensado para el banner del dashboard.
    * Si se pasa `category`, filtra (ej: solo ANNOUNCEMENT). Acepta `limit`.
    */
-  static async getPinned(category: string | undefined, limit: number) {
+  static async getPinned(
+    category: string | undefined,
+    limit: number,
+    userRole: UserRole,
+    userDepartmentId: string | null | undefined,
+  ) {
     const now = new Date();
-    return prisma.resource.findMany({
-      where: {
+    const audienceWhere = buildAudienceWhere(userRole, userDepartmentId);
+    const andConditions: any[] = [
+      {
         isPinned: true,
         isPublished: true,
         showAsModal: false,
         // pinExpiresAt = null (no vence) o > ahora (todavia activo)
         OR: [{ pinExpiresAt: null }, { pinExpiresAt: { gt: now } }],
-        ...(category ? { category: category as any } : {}),
       },
+    ];
+    if (category) andConditions.push({ category: category as any });
+    if (Object.keys(audienceWhere).length > 0) andConditions.push(audienceWhere);
+
+    return prisma.resource.findMany({
+      where: { AND: andConditions },
       select: listSelect,
       orderBy: [{ updatedAt: "desc" }],
       take: limit,
@@ -306,15 +414,25 @@ export class ResourcesService {
    * al entrar a la app. Filtra publicados, pinned activos (no vencidos) y
    * con showAsModal=true. Orden: mas recientes primero.
    */
-  static async getModalPinned(limit: number = 10) {
+  static async getModalPinned(
+    userRole: UserRole,
+    userDepartmentId: string | null | undefined,
+    limit: number = 10,
+  ) {
     const now = new Date();
-    return prisma.resource.findMany({
-      where: {
+    const audienceWhere = buildAudienceWhere(userRole, userDepartmentId);
+    const andConditions: any[] = [
+      {
         isPinned: true,
         isPublished: true,
         showAsModal: true,
         OR: [{ pinExpiresAt: null }, { pinExpiresAt: { gt: now } }],
       },
+    ];
+    if (Object.keys(audienceWhere).length > 0) andConditions.push(audienceWhere);
+
+    return prisma.resource.findMany({
+      where: { AND: andConditions },
       select: listSelect,
       orderBy: [{ updatedAt: "desc" }],
       take: limit,
@@ -329,7 +447,12 @@ export class ResourcesService {
    * Estrategia simple: split del query en palabras, scoring por matches
    * en title (peso 3), excerpt (2), tags (2), content (1).
    */
-  static async suggest(q: string, limit: number) {
+  static async suggest(
+    q: string,
+    limit: number,
+    userRole: UserRole,
+    userDepartmentId: string | null | undefined,
+  ) {
     const terms = q
       .toLowerCase()
       .split(/\s+/)
@@ -340,9 +463,10 @@ export class ResourcesService {
 
     // Trae candidatos que matcheen al menos una palabra. El scoring lo
     // hacemos en memoria sobre un subset acotado.
-    const candidates = await prisma.resource.findMany({
-      where: {
-        isPublished: true,
+    const audienceWhere = buildAudienceWhere(userRole, userDepartmentId);
+    const andConditions: any[] = [
+      { isPublished: true },
+      {
         OR: terms.flatMap((term) => [
           { title: { contains: term, mode: "insensitive" as const } },
           { excerpt: { contains: term, mode: "insensitive" as const } },
@@ -350,6 +474,11 @@ export class ResourcesService {
           { tags: { has: term } },
         ]),
       },
+    ];
+    if (Object.keys(audienceWhere).length > 0) andConditions.push(audienceWhere);
+
+    const candidates = await prisma.resource.findMany({
+      where: { AND: andConditions },
       select: {
         id: true,
         slug: true,

@@ -11,6 +11,19 @@ import {
 } from "../validations/resources";
 import ResourceDraftsService from "../services/resourceDrafts.service";
 import { AuthenticatedRequest } from "../middleware/auth";
+import { prisma } from "../lib/database";
+
+// Carga el departmentId del current user. Lo usamos para filtrar audiencia
+// en list/getOne/pinned/modal/suggest sin tener que meterlo en el JWT.
+const getUserDepartmentId = async (
+  userId: string,
+): Promise<string | null> => {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { departmentId: true },
+  });
+  return u?.departmentId ?? null;
+};
 
 export class ResourcesController {
   static list = [
@@ -23,9 +36,11 @@ export class ResourcesController {
             error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
           });
         }
+        const userDepartmentId = await getUserDepartmentId(req.user.id);
         const result = await ResourcesService.list(
           req.query as any,
           req.user.role,
+          userDepartmentId,
         );
         res.json({ success: true, data: result });
       } catch (err) {
@@ -47,7 +62,12 @@ export class ResourcesController {
         });
       }
       const { idOrSlug } = req.params;
-      const resource = await ResourcesService.getOne(idOrSlug, req.user.role);
+      const userDepartmentId = await getUserDepartmentId(req.user.id);
+      const resource = await ResourcesService.getOne(
+        idOrSlug,
+        req.user.role,
+        userDepartmentId,
+      );
       res.json({ success: true, data: resource });
     } catch (err) {
       next(err);
@@ -66,7 +86,12 @@ export class ResourcesController {
           error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
         });
       }
-      const items = await ResourcesService.getModalPinned(10);
+      const userDepartmentId = await getUserDepartmentId(req.user.id);
+      const items = await ResourcesService.getModalPinned(
+        req.user.role,
+        userDepartmentId,
+        10,
+      );
       res.json({ success: true, data: items });
     } catch (err) {
       next(err);
@@ -85,7 +110,13 @@ export class ResourcesController {
         }
         const category = req.query.category as string | undefined;
         const limit = Number(req.query.limit ?? 5);
-        const items = await ResourcesService.getPinned(category, limit);
+        const userDepartmentId = await getUserDepartmentId(req.user.id);
+        const items = await ResourcesService.getPinned(
+          category,
+          limit,
+          req.user.role,
+          userDepartmentId,
+        );
         res.json({ success: true, data: items });
       } catch (err) {
         next(err);
@@ -105,7 +136,13 @@ export class ResourcesController {
         }
         const q = String(req.query.q ?? "");
         const limit = Number(req.query.limit ?? 5);
-        const items = await ResourcesService.suggest(q, limit);
+        const userDepartmentId = await getUserDepartmentId(req.user.id);
+        const items = await ResourcesService.suggest(
+          q,
+          limit,
+          req.user.role,
+          userDepartmentId,
+        );
         res.json({ success: true, data: items });
       } catch (err) {
         next(err);
