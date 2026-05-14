@@ -74,6 +74,32 @@ export class ResourcesController {
     }
   };
 
+  // GET /api/resources/for-my-department
+  // Devuelve recursos dirigidos al sector del current user. Si el user
+  // no tiene sector asignado, devuelve [].
+  static getForMyDepartment = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const userDepartmentId = await getUserDepartmentId(req.user.id);
+      const items = await ResourcesService.getForMyDepartment(
+        userDepartmentId,
+        5,
+      );
+      res.json({ success: true, data: items });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   static getModalPinned = async (
     req: Request,
     res: Response,
