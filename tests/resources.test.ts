@@ -46,6 +46,19 @@ const prismaMock = prisma as unknown as DeepMockProxy<PrismaClient>;
 const app = createApp();
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
+// Helper: el service ahora arma el where con AND para combinar filtros de
+// audiencia + busqueda. Esta funcion busca un condition por clave dentro
+// del array AND y devuelve su valor, o undefined.
+const findInAnd = (where: any, key: string): any => {
+  const list = where?.AND ?? [];
+  for (const cond of list) {
+    if (cond && Object.prototype.hasOwnProperty.call(cond, key)) {
+      return cond[key];
+    }
+  }
+  return undefined;
+};
+
 const makeResource = (overrides: Partial<any> = {}) => ({
   id: "r-1",
   slug: "como-configurar-vpn",
@@ -69,28 +82,37 @@ describe("GET /api/resources", () => {
   it("USER ve solo publicados", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([makeResource()] as any);
     prismaMock.resource.count.mockResolvedValueOnce(1);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "USER" });
     await request(app).get("/api/resources").set(auth(token));
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.isPublished).toBe(true);
+    expect(findInAnd(call.where, "isPublished")).toBe(true);
   });
 
   it("ADMIN sin includeDrafts también filtra publicados", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
     prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "ADMIN" });
     await request(app).get("/api/resources").set(auth(token));
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.isPublished).toBe(true);
+    expect(findInAnd(call.where, "isPublished")).toBe(true);
   });
 
   it("ADMIN con includeDrafts=true ve borradores", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
     prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "ADMIN" });
     await request(app)
@@ -98,12 +120,16 @@ describe("GET /api/resources", () => {
       .set(auth(token));
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.isPublished).toBeUndefined();
+    // Sin filtro isPublished cuando ADMIN pide drafts.
+    expect(findInAnd(call.where, "isPublished")).toBeUndefined();
   });
 
   it("filtra por category", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
     prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "USER" });
     await request(app)
@@ -111,7 +137,7 @@ describe("GET /api/resources", () => {
       .set(auth(token));
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.category).toBe("POLICY");
+    expect(findInAnd(call.where, "category")).toBe("POLICY");
   });
 
   it("rechaza category inválida", async () => {
@@ -353,6 +379,9 @@ describe("GET /api/resources/pinned", () => {
   it("Devuelve recursos pinned publicados (default limit 5)", async () => {
     const pinned = makeResource({ id: "r-pin-1", isPinned: true });
     prismaMock.resource.findMany.mockResolvedValueOnce([pinned] as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "USER" });
     const res = await request(app)
@@ -364,13 +393,17 @@ describe("GET /api/resources/pinned", () => {
     expect(res.body.data[0].id).toBe("r-pin-1");
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.isPinned).toBe(true);
-    expect(call.where.isPublished).toBe(true);
+    // El where ahora se compone con AND.
+    expect(findInAnd(call.where, "isPinned")).toBe(true);
+    expect(findInAnd(call.where, "isPublished")).toBe(true);
     expect(call.take).toBe(5);
   });
 
   it("Filtra por categoria cuando viene en query", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "USER" });
     await request(app)
@@ -378,7 +411,7 @@ describe("GET /api/resources/pinned", () => {
       .set(auth(token));
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.category).toBe("ANNOUNCEMENT");
+    expect(findInAnd(call.where, "category")).toBe("ANNOUNCEMENT");
     expect(call.take).toBe(3);
   });
 
@@ -397,18 +430,27 @@ describe("GET /api/resources/pinned — filtros showAsModal y pinExpiresAt", () 
 
   it("Excluye recursos con showAsModal=true (esos van al modal)", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
     const token = signAccessToken({ role: "USER" });
     await request(app).get("/api/resources/pinned").set(auth(token));
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.showAsModal).toBe(false);
+    expect(findInAnd(call.where, "showAsModal")).toBe(false);
   });
 
   it("Filtra pin expirado (pinExpiresAt > now O null)", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
     const token = signAccessToken({ role: "USER" });
     await request(app).get("/api/resources/pinned").set(auth(token));
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.OR).toEqual([
+    // El OR de pinExpiresAt va dentro del primer item del AND junto con
+    // isPinned/isPublished/showAsModal.
+    const base = call.where.AND[0];
+    expect(base.OR).toEqual([
       { pinExpiresAt: null },
       { pinExpiresAt: { gt: expect.any(Date) } },
     ]);
@@ -425,6 +467,9 @@ describe("GET /api/resources/modal-pinned", () => {
       showAsModal: true,
     });
     prismaMock.resource.findMany.mockResolvedValueOnce([r] as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
 
     const token = signAccessToken({ role: "USER" });
     const res = await request(app)
@@ -436,10 +481,11 @@ describe("GET /api/resources/modal-pinned", () => {
     expect(res.body.data[0].id).toBe("r-modal");
 
     const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
-    expect(call.where.showAsModal).toBe(true);
-    expect(call.where.isPinned).toBe(true);
-    expect(call.where.isPublished).toBe(true);
-    expect(call.where.OR).toEqual([
+    const base = call.where.AND[0];
+    expect(base.showAsModal).toBe(true);
+    expect(base.isPinned).toBe(true);
+    expect(base.isPublished).toBe(true);
+    expect(base.OR).toEqual([
       { pinExpiresAt: null },
       { pinExpiresAt: { gt: expect.any(Date) } },
     ]);
@@ -683,6 +729,165 @@ describe("PATCH /api/resources/:id — togglear isPinned", () => {
       .send({ isPinned: true });
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe("Audiencia por sector (audienceDepartments)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("USER con sector ve públicos + los de su sector (where con OR)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: "cmhdept0000000000000000aa",
+    } as any);
+
+    const token = signAccessToken({ id: "u-1", role: "USER" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    // El audienceWhere debe estar dentro del AND, con OR de publicos o su sector.
+    const audCond = call.where.AND.find(
+      (c: any) => c.OR && c.OR.some((o: any) => "audienceDepartments" in o),
+    );
+    expect(audCond).toBeDefined();
+    expect(audCond.OR).toEqual([
+      { audienceDepartments: { none: {} } },
+      {
+        audienceDepartments: {
+          some: { id: "cmhdept0000000000000000aa" },
+        },
+      },
+    ]);
+  });
+
+  it("USER sin sector solo ve recursos públicos (audienceDepartments: none)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
+
+    const token = signAccessToken({ id: "u-1", role: "USER" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(findInAnd(call.where, "audienceDepartments")).toEqual({ none: {} });
+  });
+
+  it("ADMIN no aplica filtro de audiencia (ve todo)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(findInAnd(call.where, "audienceDepartments")).toBeUndefined();
+  });
+
+  it("AGENT tampoco aplica filtro de audiencia", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.resource.count.mockResolvedValueOnce(0);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: "cmhdept0000000000000000aa",
+    } as any);
+
+    const token = signAccessToken({ role: "AGENT" });
+    await request(app).get("/api/resources").set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(findInAnd(call.where, "audienceDepartments")).toBeUndefined();
+  });
+
+  it("getOne devuelve 404 si USER no es del sector destino", async () => {
+    prismaMock.resource.findFirst.mockResolvedValueOnce({
+      ...makeResource(),
+      isPublished: true,
+      audienceDepartments: [
+        { id: "cmhdept0000000000000000aa", name: "Logística" },
+      ],
+    } as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: "cmhdeptother00000000000bb", // otro sector
+    } as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/r-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(404);
+  });
+
+  it("getOne devuelve el recurso si USER es del sector destino", async () => {
+    prismaMock.resource.findFirst.mockResolvedValueOnce({
+      ...makeResource(),
+      isPublished: true,
+      audienceDepartments: [
+        { id: "cmhdept0000000000000000aa", name: "Logística" },
+      ],
+    } as any);
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: "cmhdept0000000000000000aa",
+    } as any);
+    // El incremento de viewCount es best-effort (.catch(...)). Mockeamos.
+    prismaMock.resource.update.mockResolvedValueOnce({} as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/r-1")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("create con audienceDepartmentIds aplica connect", async () => {
+    prismaMock.resource.findUnique.mockResolvedValueOnce(null);
+    prismaMock.resource.create.mockResolvedValueOnce({
+      ...makeResource(),
+      audienceDepartments: [],
+    } as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .post("/api/resources")
+      .set(auth(token))
+      .send({
+        title: "Solo para Logística",
+        content: "contenido",
+        category: "POLICY",
+        audienceDepartmentIds: ["cmhdept0000000000000000aa"],
+      });
+
+    expect(res.status).toBe(201);
+    const call = prismaMock.resource.create.mock.calls[0][0] as any;
+    expect(call.data.audienceDepartments).toEqual({
+      connect: [{ id: "cmhdept0000000000000000aa" }],
+    });
+  });
+
+  it("update con audienceDepartmentIds=[] limpia la audiencia (publico)", async () => {
+    prismaMock.resource.findUnique.mockResolvedValueOnce(
+      makeResource() as any,
+    );
+    prismaMock.resource.update.mockResolvedValueOnce({
+      ...makeResource(),
+      audienceDepartments: [],
+    } as any);
+
+    const token = signAccessToken({ role: "ADMIN" });
+    const res = await request(app)
+      .patch("/api/resources/r-1")
+      .set(auth(token))
+      .send({ audienceDepartmentIds: [] });
+
+    expect(res.status).toBe(200);
+    const call = prismaMock.resource.update.mock.calls[0][0] as any;
+    expect(call.data.audienceDepartments).toEqual({ set: [] });
   });
 });
 
