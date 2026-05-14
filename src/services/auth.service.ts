@@ -342,6 +342,11 @@ export class AuthService {
   static async getCurrentUser(userId: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
+      include: {
+        department: {
+          select: { id: true, name: true, color: true, icon: true },
+        },
+      },
     });
 
     if (!user) {
@@ -353,6 +358,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
+      department: user.department,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

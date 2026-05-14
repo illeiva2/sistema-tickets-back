@@ -61,6 +61,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Sector / area de la empresa. Opcional. Si el Department se borra,
+  // el usuario queda sin sector (no se elimina).
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
   // Relations
   requestedTickets Ticket[]  @relation("Requester")
   assignedTickets  Ticket[]  @relation("Assignee")
@@ -298,4 +303,23 @@ model FileOrganization {
   category   FileCategory? @relation(fields: [categoryId], references: [id])
 
   @@map("file_organizations")
+}
+
+// Sector / area de la empresa. Lo gestiona ADMIN desde la app. Sirve
+// para taggear users y, mas adelante, dirigir recursos / anuncios por
+// audiencia (PR-2). Hard delete: al borrar, los users del sector quedan
+// con departmentId = null (no se eliminan).
+model Department {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  // Atributos visuales opcionales para usarse en chips/badges del front.
+  color     String?  // hex string ej "#3B82F6"
+  icon      String?  // emoji o nombre de icono
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users User[]
+
+  @@map("departments")
 }
