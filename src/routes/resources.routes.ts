@@ -22,6 +22,11 @@ router.get(
   authMiddleware,
   ResourcesController.getModalPinned,
 );
+router.get(
+  "/for-my-department",
+  authMiddleware,
+  ResourcesController.getForMyDepartment,
+);
 router.get("/:idOrSlug", authMiddleware, ResourcesController.getOne);
 
 // IA: generar borrador a partir de un ticket resuelto (AGENT o ADMIN).

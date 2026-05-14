@@ -414,6 +414,41 @@ export class ResourcesService {
    * al entrar a la app. Filtra publicados, pinned activos (no vencidos) y
    * con showAsModal=true. Orden: mas recientes primero.
    */
+  /**
+   * Devuelve recursos dirigidos específicamente al sector del usuario
+   * (su departmentId aparece en audienceDepartments). Excluye públicos
+   * (esos ya aparecen en banners/listados generales) y modales (esos
+   * tienen su propio canal). Pensado para el panel "Para tu sector" del
+   * dashboard.
+   *
+   * Si el usuario no tiene sector asignado, devuelve [].
+   */
+  static async getForMyDepartment(
+    userDepartmentId: string | null | undefined,
+    limit: number = 5,
+  ) {
+    if (!userDepartmentId) return [];
+    const now = new Date();
+    return prisma.resource.findMany({
+      where: {
+        isPublished: true,
+        showAsModal: false,
+        // El pin (si tiene) no debe estar vencido. Si no es pinned, ignora.
+        OR: [
+          { isPinned: false },
+          { pinExpiresAt: null },
+          { pinExpiresAt: { gt: now } },
+        ],
+        audienceDepartments: {
+          some: { id: userDepartmentId },
+        },
+      },
+      select: listSelect,
+      orderBy: [{ updatedAt: "desc" }],
+      take: limit,
+    });
+  }
+
   static async getModalPinned(
     userRole: UserRole,
     userDepartmentId: string | null | undefined,

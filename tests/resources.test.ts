@@ -870,6 +870,52 @@ describe("Audiencia por sector (audienceDepartments)", () => {
     });
   });
 
+  it("GET /for-my-department devuelve [] si user no tiene sector", async () => {
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: null,
+    } as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/for-my-department")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+    // No debe haber llamado a resource.findMany
+    expect(prismaMock.resource.findMany).not.toHaveBeenCalled();
+  });
+
+  it("GET /for-my-department devuelve recursos del sector", async () => {
+    prismaMock.user.findUnique.mockResolvedValueOnce({
+      departmentId: "cmhdept0000000000000000aa",
+    } as any);
+    prismaMock.resource.findMany.mockResolvedValueOnce([
+      {
+        ...makeResource(),
+        audienceDepartments: [
+          { id: "cmhdept0000000000000000aa", name: "Logística" },
+        ],
+      },
+    ] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/for-my-department")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.audienceDepartments).toEqual({
+      some: { id: "cmhdept0000000000000000aa" },
+    });
+    expect(call.where.isPublished).toBe(true);
+    expect(call.where.showAsModal).toBe(false);
+    expect(call.take).toBe(5);
+  });
+
   it("update con audienceDepartmentIds=[] limpia la audiencia (publico)", async () => {
     prismaMock.resource.findUnique.mockResolvedValueOnce(
       makeResource() as any,
