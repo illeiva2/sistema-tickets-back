@@ -77,6 +77,7 @@ model User {
   ticketReads      TicketRead[]
   ticketSharesReceived TicketShare[] @relation("ShareRecipient")
   ticketSharesGiven    TicketShare[] @relation("ShareGiver")
+  workshopImports  WorkshopImport[]
 
   @@map("users")
 }
@@ -90,6 +91,10 @@ model Resource {
   category    ResourceCategory @default(OTHER)
   tags        String[]
   isPublished   Boolean          @default(false)
+  // Clave externa opcional para idempotencia con sistemas externos.
+  // Ej: "workshops:2026-05:dept-finanzas". Permite que un job de import
+  // haga upsert sin duplicar.
+  externalKey   String?          @unique
   isPinned      Boolean          @default(false)  // destacado / fijado
   // Si esta pinned y showAsModal=true, se muestra como modal flotante
   // al entrar a la app (no en el banner del dashboard).
@@ -323,8 +328,55 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users             User[]
-  targetedResources Resource[] @relation("ResourceAudience")
+  users                    User[]
+  targetedResources        Resource[] @relation("ResourceAudience")
+  workshopClassificationRules WorkshopClassificationRule[]
 
   @@map("departments")
+}
+
+// Regla editable para clasificar workshops de IMAS al sector correspondiente.
+// Se evalúan en orden de prioridad descendente; un workshop puede matchear
+// varias y se asigna a todos los sectores resultantes.
+model WorkshopClassificationRule {
+  id            String   @id @default(cuid())
+  departmentId  String
+  // Match exacto del campo "Mercado" del sheet (opcional). Si null, no
+  // restringe por mercado.
+  mercadoEquals String?
+  // Lista de keywords a buscar en (workshop + detalle). Match si CUALQUIERA
+  // está incluida (case-insensitive, sin acentos). Vacío = no usa keywords.
+  keywords      String[]
+  // Texto explicativo "Por qué te sirve" que se incluye en el ítem del
+  // workshop para los users de este sector. Opcional.
+  whyText       String?
+  enabled       Boolean  @default(true)
+  priority      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId, enabled])
+  @@map("workshop_classification_rules")
+}
+
+// Log de cada ejecución de importación (auditoría + base para futuro cron).
+model WorkshopImport {
+  id                 String   @id @default(cuid())
+  // "2026-05" para modo mensual, "2026-W20" para semanal.
+  period             String
+  mode               String   // "weekly" | "monthly"
+  sheetUrl           String
+  totalRows          Int
+  importedRows       Int      // tras filtrar CUPO AGOTADO / EVENTO CERRADO / fecha pasada
+  generatedResources Int      // cuántos Resources tocados (create + update)
+  importedById       String
+  importedAt         DateTime @default(now())
+
+  importer           User     @relation(fields: [importedById], references: [id])
+
+  @@index([period])
+  @@index([importedAt])
+  @@map("workshop_imports")
 }

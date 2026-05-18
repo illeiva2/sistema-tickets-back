@@ -8,6 +8,7 @@ import notificationsRoutes from "./notifications.routes";
 import attachmentsRoutes from "./attachments.routes";
 import resourcesRoutes from "./resources.routes";
 import departmentsRoutes from "./departments.routes";
+import workshopsRoutes from "./workshops.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
 const router = Router();
@@ -23,6 +24,7 @@ router.use("/notifications", notificationsRoutes);
 router.use("/attachments", attachmentsRoutes);
 router.use("/resources", resourcesRoutes);
 router.use("/departments", departmentsRoutes);
+router.use("/workshops", workshopsRoutes);
 
 if (fileOrganizationRouter) {
     logger.info("Mounting file-organization routes");
