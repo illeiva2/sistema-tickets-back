@@ -38,6 +38,15 @@ enum TicketCategory {
   OTRO
 }
 
+enum ProjectStatus {
+  PLANNED       // planificado, aún no arrancó
+  IN_PROGRESS   // en curso
+  ON_HOLD       // en pausa
+  BLOCKED       // bloqueado por dependencia externa
+  COMPLETED     // terminado
+  CANCELLED     // descartado
+}
+
 enum ResourceCategory {
   HOW_TO          // tutoriales y cómo-hacer
   POLICY          // políticas y normas internas
@@ -78,6 +87,8 @@ model User {
   ticketSharesReceived TicketShare[] @relation("ShareRecipient")
   ticketSharesGiven    TicketShare[] @relation("ShareGiver")
   workshopImports  WorkshopImport[]
+  ledProjects      Project[]  @relation("ProjectLead")
+  memberProjects   Project[]  @relation("ProjectTeam")
 
   @@map("users")
 }
@@ -379,4 +390,34 @@ model WorkshopImport {
   @@index([period])
   @@index([importedAt])
   @@map("workshop_imports")
+}
+
+// Proyectos e iniciativas que está llevando adelante el equipo de IT.
+// Visibles para todos los usuarios cuando isPublished=true. ADMIN/AGENT
+// pueden ver drafts para planificar.
+model Project {
+  id              String        @id @default(cuid())
+  slug            String        @unique
+  title           String
+  description     String        @db.Text  // markdown completo
+  excerpt         String?                  // resumen 1-2 líneas para la card
+  status          ProjectStatus @default(PLANNED)
+  // 0-100. null = no aplica (no queremos mostrar barra).
+  progressPercent Int?
+  startedAt       DateTime?
+  expectedEndAt   DateTime?
+  completedAt     DateTime?
+  isPublished     Boolean       @default(false)
+  isPinned        Boolean       @default(false)  // arriba en la lista
+  leadId          String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  lead User   @relation("ProjectLead", fields: [leadId], references: [id])
+  team User[] @relation("ProjectTeam")
+
+  @@index([status, isPublished])
+  @@index([isPinned, updatedAt])
+  @@index([slug])
+  @@map("projects")
 }
