@@ -345,11 +345,19 @@ export class TicketsService {
       const enrichedAttachments = await Promise.all(
         ticket.attachments.map(async (attachment: any) => {
           try {
-            const filePath = path.join(process.cwd(), attachment.storageUrl);
+            // Si el storageUrl es http(s), el archivo vive en Cloudinary
+            // (o storage remoto). En ese caso pasamos la URL directo y
+            // marcamos isRemote=true para que filePreview no intente
+            // hacer fs.stat sobre un path inexistente.
+            const isRemote = attachment.storageUrl.startsWith("http");
+            const filePathOrUrl = isRemote
+              ? attachment.storageUrl
+              : path.join(process.cwd(), attachment.storageUrl);
             const previewInfo = await FilePreviewService.getFilePreviewInfo(
-              filePath,
+              filePathOrUrl,
               attachment.mimeType,
               attachment.fileName,
+              isRemote,
             );
 
             const displayInfo = FilePreviewService.getFileDisplayInfo(
