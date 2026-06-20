@@ -22,7 +22,7 @@ export class TicketsController {
         }
 
         const result = await TicketsService.getTickets(
-          req.query as any,
+          req.query,
           req.user.id,
           req.user.role,
         );
@@ -36,6 +36,28 @@ export class TicketsController {
       }
     },
   ];
+
+  static getTriageCounts = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const counts = await TicketsService.getTriageCounts(
+        req.user.id,
+        req.user.role,
+      );
+      res.json({ success: true, data: counts });
+    } catch (error) {
+      next(error);
+    }
+  };
 
   static getTicketById = async (
     req: AuthenticatedRequest,
@@ -61,6 +83,30 @@ export class TicketsController {
         success: true,
         data: ticket,
       });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  static getTicketAudit = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+        });
+      }
+      const { id } = req.params;
+      const data = await TicketsService.getTicketAudit(
+        id,
+        req.user.id,
+        req.user.role,
+      );
+      res.json({ success: true, data });
     } catch (error) {
       next(error);
     }
@@ -149,6 +195,42 @@ export class TicketsController {
           success: true,
           data: ticket,
         });
+      } catch (error) {
+        next(error);
+      }
+    },
+  ];
+
+  static resolveTicket = [
+    validate(
+      z.object({
+        body: z
+          .object({
+            comment: z.string().optional(),
+          })
+          .optional(),
+      }),
+    ),
+    async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({
+            success: false,
+            error: { code: "UNAUTHORIZED", message: "Usuario no autenticado" },
+          });
+        }
+
+        const { id } = req.params;
+        const comment = req.body?.comment;
+
+        const ticket = await TicketsService.resolveTicket(
+          id,
+          req.user.id,
+          req.user.role,
+          comment,
+        );
+
+        res.json({ success: true, data: ticket });
       } catch (error) {
         next(error);
       }

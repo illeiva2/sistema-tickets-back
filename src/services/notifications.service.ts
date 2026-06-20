@@ -1,8 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/database";
+import { config } from "../config";
 import { createTransporter } from "../config/email";
 import { logger } from "../lib/logger";
-
-const prisma = new PrismaClient();
 
 export interface EmailData {
   to: string;
@@ -20,44 +19,153 @@ export interface NotificationData {
   metadata?: Record<string, any>;
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  OPEN: "Abierto",
+  IN_PROGRESS: "En progreso",
+  RESOLVED: "Resuelto",
+  CLOSED: "Cerrado",
+};
+
+const PRIORITY_LABEL: Record<string, string> = {
+  LOW: "Baja",
+  MEDIUM: "Media",
+  HIGH: "Alta",
+  URGENT: "Urgente",
+};
+
+const INTERNAL_PREFIX = "[INTERNA] ";
+
+const isInternalNote = (message: string): boolean =>
+  typeof message === "string" && message.startsWith(INTERNAL_PREFIX);
+
+// ─── Plantilla HTML mínima con look de email transaccional ────────────────────
+
+const buildEmailHtml = (opts: {
+  userName: string;
+  title: string;
+  body: string;
+  ticketId?: string;
+}): string => {
+  const ticketLink =
+    opts.ticketId && config.frontendUrl
+      ? `${config.frontendUrl.replace(/\/$/, "")}/tickets/${opts.ticketId}`
+      : null;
+
+  const cta = ticketLink
+    ? `
+        <p style="margin: 24px 0 0;">
+          <a href="${ticketLink}" style="
+            display: inline-block;
+            padding: 10px 18px;
+            background: #4f46e5;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 500;
+            font-size: 14px;
+          ">Ver ticket</a>
+        </p>
+      `
+    : "";
+
+  return `<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#27272a;">
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:520px;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e7e5e4;">
+          <tr>
+            <td style="padding:20px 24px;border-bottom:1px solid #e7e5e4;">
+              <span style="font-size:13px;font-weight:600;color:#71717a;letter-spacing:0.04em;text-transform:uppercase;">Sistema de tickets</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px;">
+              <p style="margin:0 0 12px;font-size:15px;color:#52525b;">Hola ${opts.userName},</p>
+              <h1 style="margin:0 0 16px;font-size:18px;font-weight:600;color:#18181b;line-height:1.4;">${opts.title}</h1>
+              <p style="margin:0;font-size:14px;line-height:1.6;color:#3f3f46;">${opts.body}</p>
+              ${cta}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px;border-top:1px solid #e7e5e4;background:#fafaf9;">
+              <p style="margin:0;font-size:11px;color:#a1a1aa;line-height:1.5;">
+                Este es un mensaje automático del Sistema de tickets. No respondas a este email.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+};
+
+const buildEmailText = (opts: {
+  userName: string;
+  title: string;
+  body: string;
+  ticketId?: string;
+}): string => {
+  const link =
+    opts.ticketId && config.frontendUrl
+      ? `${config.frontendUrl.replace(/\/$/, "")}/tickets/${opts.ticketId}`
+      : null;
+  return [
+    `Hola ${opts.userName},`,
+    "",
+    opts.title,
+    "",
+    opts.body,
+    link ? `\nVer ticket: ${link}` : "",
+    "",
+    "— Sistema de tickets",
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
 export class NotificationsService {
   /**
-   * Enviar email
+   * Enviar email crudo. Reservado a casos donde queremos componer fuera del
+   * flujo de createNotification (ej: test desde el panel de admin).
    */
   static async sendEmail(emailData: EmailData): Promise<boolean> {
     try {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM,
+        from: config.email.from,
         to: emailData.to,
         subject: emailData.subject,
         html: emailData.html,
         text: emailData.text,
       });
-
-      logger.info(`Email sent successfully to ${emailData.to}`);
+      logger.info({ to: emailData.to }, "Email sent");
       return true;
     } catch (error) {
-      logger.error({ err: error }, "Failed to send email notification");
+      logger.error({ err: error, to: emailData.to }, "Failed to send email");
       return false;
     }
   }
 
   /**
-   * Crear notificación en la base de datos
+   * Crear notificación in-app y, si las preferencias lo permiten, mandar
+   * el email correspondiente con plantilla HTML + texto + link al ticket.
    */
   static async createNotification(data: NotificationData): Promise<boolean> {
     try {
-      // Verificar si el usuario tiene preferencias habilitadas para este tipo
       const preferences = await this.getUserPreferences(data.userId);
       if (!preferences || !preferences[this.getPreferenceKey(data.type)]) {
-        logger.info(
-          `Notifications disabled for user ${data.userId} and type ${data.type}`,
+        logger.debug(
+          { userId: data.userId, type: data.type },
+          "Notifications disabled for type",
         );
         return false;
       }
 
-      // Crear la notificación
       await prisma.notification.create({
         data: {
           userId: data.userId,
@@ -69,25 +177,40 @@ export class NotificationsService {
         },
       });
 
-      // Si las notificaciones por email están habilitadas, enviar email
       if (preferences.email) {
         const user = await prisma.user.findUnique({
           where: { id: data.userId },
-          select: { email: true, name: true },
+          select: { email: true, name: true, isActive: true },
         });
 
-        if (user) {
+        // No mandar emails a usuarios inactivos.
+        if (user && user.isActive !== false) {
+          const subject = `[Tickets] ${data.title}`;
+          const html = buildEmailHtml({
+            userName: user.name,
+            title: data.title,
+            body: data.message,
+            ticketId: data.ticketId,
+          });
+          const text = buildEmailText({
+            userName: user.name,
+            title: data.title,
+            body: data.message,
+            ticketId: data.ticketId,
+          });
+
           await this.sendEmail({
             to: user.email,
-            subject: data.title,
-            html: `<p>Hola ${user.name},</p><p>${data.message}</p>`,
-            text: `${data.title}\n\n${data.message}`,
+            subject,
+            html,
+            text,
           });
         }
       }
 
       logger.info(
-        `Notification created for user ${data.userId}: ${data.title}`,
+        { userId: data.userId, type: data.type },
+        "Notification created",
       );
       return true;
     } catch (error) {
@@ -128,11 +251,10 @@ export class NotificationsService {
       await prisma.notification.updateMany({
         where: {
           id: notificationId,
-          userId, // Asegurar que solo el propietario puede marcarla como leída
+          userId,
         },
         data: { read: true },
       });
-
       return true;
     } catch (error) {
       logger.error({ err: error }, "Failed to mark notification as read");
@@ -149,7 +271,6 @@ export class NotificationsService {
         where: { userId, read: false },
         data: { read: true },
       });
-
       return true;
     } catch (error) {
       logger.error({ err: error }, "Failed to mark all notifications as read");
@@ -166,7 +287,6 @@ export class NotificationsService {
         where: { userId },
       });
 
-      // Si no existen preferencias, crear las predeterminadas
       if (!preferences) {
         preferences = await prisma.notificationPreferences.create({
           data: { userId },
@@ -175,7 +295,10 @@ export class NotificationsService {
 
       return preferences;
     } catch (error) {
-      logger.error({ err: error }, "Failed to get user notification preferences");
+      logger.error(
+        { err: error },
+        "Failed to get user notification preferences",
+      );
       throw error;
     }
   }
@@ -193,10 +316,12 @@ export class NotificationsService {
         update: updates,
         create: { userId, ...updates },
       });
-
       return true;
     } catch (error) {
-      logger.error({ err: error }, "Failed to update user notification preferences");
+      logger.error(
+        { err: error },
+        "Failed to update user notification preferences",
+      );
       return false;
     }
   }
@@ -229,12 +354,20 @@ export class NotificationsService {
 
     if (!ticket || !ticket.assignee) return;
 
-    // Notificar al agente asignado
+    // Notificar al agente asignado.
+    if (assigneeId !== ticket.assignee.id) {
+      // Defensivo: si el id pasado no coincide con el ticket actual, evitar.
+      logger.warn(
+        { ticketId, assigneeId, currentAssignee: ticket.assignee.id },
+        "notifyTicketAssigned: assigneeId mismatch",
+      );
+    }
+
     await this.createNotification({
-      userId: assigneeId,
+      userId: ticket.assignee.id,
       type: "ticket_assigned",
-      title: "Ticket Asignado",
-      message: `Se te ha asignado el ticket "${ticket.title}"`,
+      title: "Ticket asignado a vos",
+      message: `Se te asignó el ticket "${ticket.title}".`,
       ticketId,
       metadata: {
         ticketTitle: ticket.title,
@@ -242,16 +375,56 @@ export class NotificationsService {
       },
     });
 
-    // Notificar al solicitante
+    // Notificar al solicitante (si no es el propio agente).
+    if (ticket.requesterId !== ticket.assignee.id) {
+      await this.createNotification({
+        userId: ticket.requesterId,
+        type: "ticket_assigned",
+        title: "Tu ticket fue asignado",
+        message: `Tu ticket "${ticket.title}" fue asignado a ${ticket.assignee.name}.`,
+        ticketId,
+        metadata: {
+          ticketTitle: ticket.title,
+          assigneeName: ticket.assignee.name,
+        },
+      });
+    }
+  }
+
+  /**
+   * Notificar a un agente que un ticket fue compartido con el.
+   */
+  static async notifyTicketShared(
+    ticketId: string,
+    sharedWithId: string,
+    sharedById: string,
+    message?: string,
+  ): Promise<void> {
+    const [ticket, sharedBy] = await Promise.all([
+      prisma.ticket.findUnique({
+        where: { id: ticketId },
+        select: { id: true, title: true, ticketNumber: true },
+      }),
+      prisma.user.findUnique({
+        where: { id: sharedById },
+        select: { name: true },
+      }),
+    ]);
+    if (!ticket || !sharedBy) return;
+
+    const num = ticket.ticketNumber.toString().padStart(5, "0");
     await this.createNotification({
-      userId: ticket.requesterId,
-      type: "ticket_assigned",
-      title: "Ticket Asignado a Agente",
-      message: `Tu ticket "${ticket.title}" ha sido asignado a un agente`,
+      userId: sharedWithId,
+      type: "ticket_shared",
+      title: "Te compartieron un ticket",
+      message:
+        `${sharedBy.name} te compartió el ticket #${num} "${ticket.title}"` +
+        (message ? `: "${message}"` : "."),
       ticketId,
       metadata: {
         ticketTitle: ticket.title,
-        assigneeName: ticket.assignee.name,
+        sharedById,
+        note: message ?? null,
       },
     });
   }
@@ -272,33 +445,24 @@ export class NotificationsService {
 
     if (!ticket) return;
 
-    const statusLabels: Record<string, string> = {
-      OPEN: "Abierto",
-      IN_PROGRESS: "En Progreso",
-      RESOLVED: "Resuelto",
-      CLOSED: "Cerrado",
-    };
+    const message = `El ticket "${ticket.title}" pasó de "${STATUS_LABEL[oldStatus] || oldStatus}" a "${STATUS_LABEL[newStatus] || newStatus}".`;
 
-    const message = `El ticket "${ticket.title}" cambió de estado de "${statusLabels[oldStatus] || oldStatus}" a "${statusLabels[newStatus] || newStatus}"`;
-
-    // Notificar al solicitante
     if (ticket.requesterId !== actorId) {
       await this.createNotification({
         userId: ticket.requesterId,
         type: "status_changed",
-        title: "Estado del Ticket Cambiado",
+        title: "Cambio de estado",
         message,
         ticketId,
         metadata: { oldStatus, newStatus, ticketTitle: ticket.title },
       });
     }
 
-    // Notificar al agente asignado
     if (ticket.assigneeId && ticket.assigneeId !== actorId) {
       await this.createNotification({
         userId: ticket.assigneeId,
         type: "status_changed",
-        title: "Estado del Ticket Cambiado",
+        title: "Cambio de estado",
         message,
         ticketId,
         metadata: { oldStatus, newStatus, ticketTitle: ticket.title },
@@ -307,7 +471,9 @@ export class NotificationsService {
   }
 
   /**
-   * Notificar nuevo comentario
+   * Notificar nuevo comentario. Respeta notas internas: si el message empieza
+   * con "[INTERNA] " no se notifica al solicitante (USER), solo al assignee
+   * si lo hubiera y es distinto al autor.
    */
   static async notifyCommentAdded(
     ticketId: string,
@@ -318,24 +484,24 @@ export class NotificationsService {
       where: { id: ticketId },
       include: { requester: true, assignee: true },
     });
-
     if (!ticket) return;
 
     const comment = await prisma.comment.findUnique({
       where: { id: commentId },
       include: { author: true },
     });
-
     if (!comment) return;
 
-    const message = `Nuevo comentario en el ticket "${ticket.title}" de ${comment.author.name}`;
+    const internal = isInternalNote(comment.message);
+    const message = `Nuevo comentario en "${ticket.title}" de ${comment.author.name}.`;
 
-    // Notificar al solicitante (si no es el autor)
-    if (ticket.requesterId !== authorId) {
+    // Notificar al solicitante (USER), salvo que la nota sea interna o sea
+    // el propio autor.
+    if (!internal && ticket.requesterId !== authorId) {
       await this.createNotification({
         userId: ticket.requesterId,
         type: "comment_added",
-        title: "Nuevo Comentario",
+        title: "Nuevo comentario",
         message,
         ticketId,
         metadata: {
@@ -346,18 +512,19 @@ export class NotificationsService {
       });
     }
 
-    // Notificar al agente asignado (si no es el autor)
+    // Notificar al agente asignado si no es el autor.
     if (ticket.assigneeId && ticket.assigneeId !== authorId) {
       await this.createNotification({
         userId: ticket.assigneeId,
         type: "comment_added",
-        title: "Nuevo Comentario",
+        title: internal ? "Nueva nota interna" : "Nuevo comentario",
         message,
         ticketId,
         metadata: {
           commentId,
           ticketTitle: ticket.title,
           authorName: comment.author.name,
+          internal,
         },
       });
     }
@@ -376,36 +543,26 @@ export class NotificationsService {
       where: { id: ticketId },
       include: { requester: true, assignee: true },
     });
-
     if (!ticket) return;
 
-    const priorityLabels: Record<string, string> = {
-      LOW: "Baja",
-      MEDIUM: "Media",
-      HIGH: "Alta",
-      URGENT: "Urgente",
-    };
+    const message = `El ticket "${ticket.title}" cambió de prioridad: ${PRIORITY_LABEL[oldPriority] || oldPriority} → ${PRIORITY_LABEL[newPriority] || newPriority}.`;
 
-    const message = `El ticket "${ticket.title}" cambió de prioridad de "${priorityLabels[oldPriority] || oldPriority}" a "${priorityLabels[newPriority] || newPriority}"`;
-
-    // Notificar al solicitante
     if (ticket.requesterId !== actorId) {
       await this.createNotification({
         userId: ticket.requesterId,
         type: "priority_changed",
-        title: "Prioridad del Ticket Cambiada",
+        title: "Prioridad actualizada",
         message,
         ticketId,
         metadata: { oldPriority, newPriority, ticketTitle: ticket.title },
       });
     }
 
-    // Notificar al agente asignado
     if (ticket.assigneeId && ticket.assigneeId !== actorId) {
       await this.createNotification({
         userId: ticket.assigneeId,
         type: "priority_changed",
-        title: "Prioridad del Ticket Cambiada",
+        title: "Prioridad actualizada",
         message,
         ticketId,
         metadata: { oldPriority, newPriority, ticketTitle: ticket.title },

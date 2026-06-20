@@ -21,6 +21,10 @@ const updateUserSchema = z.object({
     .optional(),
   email: z.string().email("Email inválido").optional(),
   role: z.enum(["USER", "AGENT", "ADMIN"]).optional(),
+  // departmentId puede ser cuid (asignar), null (quitar sector) o omitirse.
+  departmentId: z
+    .union([z.string().cuid("ID de sector inválido"), z.null()])
+    .optional(),
 });
 
 const changePasswordSchema = z.object({
@@ -47,14 +51,22 @@ export class UsersController {
         );
       }
 
+      const includeInactive = req.query.includeInactive === "true";
+
       const users = await prisma.user.findMany({
+        where: includeInactive ? undefined : { isActive: true },
         select: {
           id: true,
           name: true,
           email: true,
           role: true,
+          isActive: true,
+          deletedAt: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
           _count: {
             select: {
               requestedTickets: true,
@@ -62,7 +74,7 @@ export class UsersController {
             },
           },
         },
-        orderBy: { name: "asc" },
+        orderBy: [{ isActive: "desc" }, { name: "asc" }],
       });
 
       res.json({ success: true, data: users });
@@ -79,7 +91,7 @@ export class UsersController {
   ) => {
     try {
       const agents = await prisma.user.findMany({
-        where: { role: "AGENT" as any },
+        where: { role: UserRole.AGENT, isActive: true },
         select: { id: true, name: true, email: true },
         orderBy: { name: "asc" },
       });
@@ -117,6 +129,9 @@ export class UsersController {
           role: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
           _count: {
             select: {
               requestedTickets: true,
@@ -218,6 +233,33 @@ export class UsersController {
         throw new ApiError("FORBIDDEN", "No puedes cambiar tu propio rol", 403);
       }
 
+      // Solo ADMIN puede asignar / cambiar el sector de un usuario.
+      if (
+        user?.role !== "ADMIN" &&
+        Object.prototype.hasOwnProperty.call(validatedData, "departmentId")
+      ) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Solo los administradores pueden cambiar el sector",
+          403,
+        );
+      }
+
+      // Si se asigna un departmentId, verificar que el sector exista.
+      if (validatedData.departmentId) {
+        const dep = await prisma.department.findUnique({
+          where: { id: validatedData.departmentId },
+          select: { id: true },
+        });
+        if (!dep) {
+          throw new ApiError(
+            "DEPARTMENT_NOT_FOUND",
+            "Sector no encontrado",
+            404,
+          );
+        }
+      }
+
       // Verificar si el usuario existe
       const existingUser = await prisma.user.findUnique({ where: { id } });
       if (!existingUser) {
@@ -248,6 +290,9 @@ export class UsersController {
           role: true,
           createdAt: true,
           updatedAt: true,
+          department: {
+            select: { id: true, name: true, color: true, icon: true },
+          },
         },
       });
 
@@ -404,7 +449,8 @@ export class UsersController {
     }
   };
 
-  // Eliminar usuario (solo ADMIN)
+  // Desactivar usuario (soft delete, solo ADMIN). Conserva el historial
+  // de tickets, comentarios y auditoría asociado al usuario.
   static deleteUser = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -417,44 +463,97 @@ export class UsersController {
       if (user?.role !== "ADMIN") {
         throw new ApiError(
           "FORBIDDEN",
-          "Solo los administradores pueden eliminar usuarios",
+          "Solo los administradores pueden desactivar usuarios",
           403,
         );
       }
 
-      // No permitir eliminar el propio usuario
       if (user.id === id) {
         throw new ApiError(
           "FORBIDDEN",
-          "No puedes eliminar tu propia cuenta",
+          "No puedes desactivar tu propia cuenta",
           400,
         );
       }
 
-      // Verificar si el usuario existe
       const existingUser = await prisma.user.findUnique({ where: { id } });
       if (!existingUser) {
         throw new ApiError("USER_NOT_FOUND", "Usuario no encontrado", 404);
       }
 
-      // Verificar si el usuario tiene tickets asignados o creados
-      const userTickets = await prisma.ticket.findMany({
-        where: {
-          OR: [{ requesterId: id }, { assigneeId: id }],
-        },
-      });
-
-      if (userTickets.length > 0) {
+      if (!existingUser.isActive) {
         throw new ApiError(
-          "USER_HAS_TICKETS",
-          "No se puede eliminar un usuario con tickets asociados",
+          "USER_ALREADY_INACTIVE",
+          "El usuario ya estaba desactivado",
           400,
         );
       }
 
-      await prisma.user.delete({ where: { id } });
+      await prisma.user.update({
+        where: { id },
+        data: { isActive: false, deletedAt: new Date() },
+      });
 
-      res.json({ success: true, message: "Usuario eliminado correctamente" });
+      res.json({
+        success: true,
+        message: "Usuario desactivado correctamente",
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  // Reactivar usuario previamente desactivado (solo ADMIN).
+  static restoreUser = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { id } = req.params;
+      const { user } = req;
+
+      if (user?.role !== "ADMIN") {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Solo los administradores pueden reactivar usuarios",
+          403,
+        );
+      }
+
+      const existingUser = await prisma.user.findUnique({ where: { id } });
+      if (!existingUser) {
+        throw new ApiError("USER_NOT_FOUND", "Usuario no encontrado", 404);
+      }
+
+      if (existingUser.isActive) {
+        throw new ApiError(
+          "USER_ALREADY_ACTIVE",
+          "El usuario ya estaba activo",
+          400,
+        );
+      }
+
+      const updated = await prisma.user.update({
+        where: { id },
+        data: { isActive: true, deletedAt: null },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isActive: true,
+          deletedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      res.json({
+        success: true,
+        data: updated,
+        message: "Usuario reactivado correctamente",
+      });
     } catch (err) {
       next(err);
     }

@@ -9,11 +9,11 @@ const router = Router();
 // Mapped to /api/file-organization
 export const fileOrganizationRouter = Router();
 fileOrganizationRouter.use(authMiddleware);
-fileOrganizationRouter.get("/tickets/:ticketId/files", FileOrganizationController.getTicketFiles as any);
-fileOrganizationRouter.get("/stats", FileOrganizationController.getFileStats as any);
-fileOrganizationRouter.get("/search", FileOrganizationController.searchFiles as any);
-fileOrganizationRouter.get("/categories", FileOrganizationController.getCategories as any);
-fileOrganizationRouter.get("/tags", FileOrganizationController.getTags as any);
+fileOrganizationRouter.get("/tickets/:ticketId/files", FileOrganizationController.getTicketFiles);
+fileOrganizationRouter.get("/stats", FileOrganizationController.getFileStats);
+fileOrganizationRouter.get("/search", FileOrganizationController.searchFiles);
+fileOrganizationRouter.get("/categories", FileOrganizationController.getCategories);
+fileOrganizationRouter.get("/tags", FileOrganizationController.getTags);
 
 // Serving Routes
 // These handle /api/files and /api/thumbnails
@@ -21,5 +21,5 @@ fileOrganizationRouter.get("/tags", FileOrganizationController.getTags as any);
 // But sticking to the grouping logic, I'll export a function to attach them or just export a router that expects to be mounted at /api
 
 export const filesServingRouter = Router();
-filesServingRouter.get("/files/:fileName", authMiddleware, AttachmentsController.serveFile as any);
-filesServingRouter.get("/thumbnails/:fileName", authMiddleware, AttachmentsController.serveThumbnail as any);
+filesServingRouter.get("/files/:fileName", authMiddleware, AttachmentsController.serveFile);
+filesServingRouter.get("/thumbnails/:fileName", authMiddleware, AttachmentsController.serveThumbnail);

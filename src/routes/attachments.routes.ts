@@ -1,7 +1,9 @@
 import { Router } from "express";
 import AttachmentsController from "../controllers/attachments.controller";
 import FileOrganizationController from "../controllers/fileOrganization.controller";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, requireRole } from "../middleware/auth";
+import { fixFilenameEncoding } from "../middleware/fixFilenameEncoding";
+import { UserRole } from "@prisma/client";
 import multer from "multer";
 
 const router = Router();
@@ -11,20 +13,26 @@ const upload = multer({
 });
 
 // Attachments
-router.get("/:ticketId", authMiddleware, AttachmentsController.list as any);
+router.get("/:ticketId", authMiddleware, AttachmentsController.list);
 router.post(
     "/:ticketId",
     authMiddleware,
     upload.single("file"),
-    AttachmentsController.upload as any
+    fixFilenameEncoding,
+    AttachmentsController.upload
 );
-router.delete("/:id", authMiddleware, AttachmentsController.remove as any);
-router.get("/:id/info", authMiddleware, AttachmentsController.getInfo as any);
-router.get("/:id/exists", authMiddleware, AttachmentsController.checkExists as any);
+router.delete(
+    "/:id",
+    authMiddleware,
+    requireRole([UserRole.ADMIN]),
+    AttachmentsController.remove
+);
+router.get("/:id/info", authMiddleware, AttachmentsController.getInfo);
+router.get("/:id/exists", authMiddleware, AttachmentsController.checkExists);
 router.get(
     "/validation/config",
     authMiddleware,
-    AttachmentsController.getValidationConfig as any
+    AttachmentsController.getValidationConfig
 );
 
 export default router;

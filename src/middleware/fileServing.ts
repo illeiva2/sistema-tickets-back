@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs/promises";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
-import jwt from "jsonwebtoken";
+import jwt, { type JwtPayload } from "jsonwebtoken";
 import { UserRole } from "@prisma/client";
 
 export interface AuthenticatedFileRequest extends Request {
@@ -36,9 +36,21 @@ export const authenticateFileAccess = async (
     const token = authHeader.substring(7);
 
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+      const decoded = jwt.verify(
+        token,
+        process.env.JWT_SECRET!,
+      ) as JwtPayload & {
+        userId?: string;
+        id?: string;
+        email?: string;
+        role?: UserRole;
+      };
+      const userId = decoded.userId || decoded.id;
+      if (!userId || !decoded.email || !decoded.role) {
+        throw new ApiError("UNAUTHORIZED", "Token inválido", 401);
+      }
       req.user = {
-        id: decoded.userId,
+        id: userId,
         email: decoded.email,
         role: decoded.role,
       };

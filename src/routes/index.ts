@@ -6,6 +6,10 @@ import ticketsRoutes from "./tickets.routes";
 import usersRoutes from "./users.routes";
 import notificationsRoutes from "./notifications.routes";
 import attachmentsRoutes from "./attachments.routes";
+import resourcesRoutes from "./resources.routes";
+import departmentsRoutes from "./departments.routes";
+import workshopsRoutes from "./workshops.routes";
+import projectsRoutes from "./projects.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
 const router = Router();
@@ -19,6 +23,10 @@ router.use("/tickets", ticketsRoutes);
 router.use("/users", usersRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/attachments", attachmentsRoutes);
+router.use("/resources", resourcesRoutes);
+router.use("/departments", departmentsRoutes);
+router.use("/workshops", workshopsRoutes);
+router.use("/projects", projectsRoutes);
 
 if (fileOrganizationRouter) {
     logger.info("Mounting file-organization routes");

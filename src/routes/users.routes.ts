@@ -4,14 +4,15 @@ import { authMiddleware } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/", authMiddleware, UsersController.listUsers as any);
-router.get("/agents", authMiddleware, UsersController.listAgents as any);
-router.get("/:id", authMiddleware, UsersController.getUserById as any);
-router.post("/", authMiddleware, UsersController.createUser as any);
-router.patch("/:id", authMiddleware, UsersController.updateUser as any);
-router.patch("/:id/password", authMiddleware, UsersController.changePassword as any);
-router.post("/:id/reset-password", authMiddleware, UsersController.resetPassword as any);
-router.delete("/:id", authMiddleware, UsersController.deleteUser as any);
-router.get("/:id/stats", authMiddleware, UsersController.getUserStats as any);
+router.get("/", authMiddleware, UsersController.listUsers);
+router.get("/agents", authMiddleware, UsersController.listAgents);
+router.get("/:id", authMiddleware, UsersController.getUserById);
+router.post("/", authMiddleware, UsersController.createUser);
+router.patch("/:id", authMiddleware, UsersController.updateUser);
+router.patch("/:id/password", authMiddleware, UsersController.changePassword);
+router.post("/:id/reset-password", authMiddleware, UsersController.resetPassword);
+router.delete("/:id", authMiddleware, UsersController.deleteUser);
+router.post("/:id/restore", authMiddleware, UsersController.restoreUser);
+router.get("/:id/stats", authMiddleware, UsersController.getUserStats);
 
 export default router;

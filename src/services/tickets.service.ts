@@ -1,6 +1,7 @@
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { calculateDueAt } from "../lib/sla";
 import { UserRole } from "@prisma/client";
 import { TicketFilters } from "../validations/tickets";
 import { NotificationsService } from "./notifications.service";
@@ -19,6 +20,7 @@ export class TicketsService {
       q,
       status,
       priority,
+      category,
       requesterId,
       assigneeId,
       dateFrom,
@@ -27,38 +29,82 @@ export class TicketsService {
       pageSize = 20,
       sortBy = "createdAt",
       sortDir = "desc",
+      filter,
     } = filters;
 
     const where: any = {};
+    // Construimos la lista de condiciones AND para no pisar `where.OR`
+    // entre visibilidad y busqueda.
+    const andConditions: any[] = [];
 
-    // Apply filters based on user role
+    // Reglas de visibilidad por rol:
+    // - USER: solo sus tickets (donde es requester).
+    // - AGENT: tickets asignados a el + tickets sin asignar + tickets
+    //   compartidos con el via TicketShare.
+    // - ADMIN: todos.
     if (userRole === UserRole.USER) {
-      where.requesterId = userId;
+      andConditions.push({ requesterId: userId });
+    } else if (userRole === UserRole.AGENT) {
+      andConditions.push({
+        OR: [
+          { assigneeId: userId },
+          { assigneeId: null },
+          { shares: { some: { sharedWithId: userId } } },
+        ],
+      });
     }
 
     if (q) {
-      where.OR = [
-        { title: { contains: q, mode: "insensitive" } },
-        { description: { contains: q, mode: "insensitive" } },
-      ];
+      andConditions.push({
+        OR: [
+          { title: { contains: q, mode: "insensitive" } },
+          { description: { contains: q, mode: "insensitive" } },
+        ],
+      });
     }
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (requesterId) where.requesterId = requesterId;
+    if (status) (where as any).status = status;
+    if (priority) (where as any).priority = priority;
+    if (category) (where as any).category = category;
+    if (requesterId) (where as any).requesterId = requesterId;
 
     if (assigneeId) {
       if (assigneeId === "null") {
-        where.assigneeId = null;
+        (where as any).assigneeId = null;
       } else {
-        where.assigneeId = assigneeId;
+        (where as any).assigneeId = assigneeId;
       }
     }
 
     if (dateFrom || dateTo) {
-      where.createdAt = {};
-      if (dateFrom) where.createdAt.gte = new Date(dateFrom);
-      if (dateTo) where.createdAt.lte = new Date(dateTo);
+      (where as any).createdAt = {};
+      if (dateFrom) (where as any).createdAt.gte = new Date(dateFrom);
+      if (dateTo) (where as any).createdAt.lte = new Date(dateTo);
+    }
+
+    // Triage filters: solo para AGENT/ADMIN. Limitan a tickets activos.
+    // `unread` usa el isRead GLOBAL del ticket (no per-user).
+    const isStaff = userRole === UserRole.AGENT || userRole === UserRole.ADMIN;
+    if (filter && isStaff) {
+      const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
+      if (filter === "unassigned") {
+        (where as any).assigneeId = null;
+        (where as any).status = activeStatus;
+      } else if (filter === "unread") {
+        (where as any).isRead = false;
+        (where as any).status = activeStatus;
+      } else if (filter === "fresh") {
+        (where as any).assigneeId = null;
+        (where as any).isRead = false;
+        (where as any).status = activeStatus;
+      } else if (filter === "mine") {
+        (where as any).assigneeId = userId;
+        (where as any).status = activeStatus;
+      }
+    }
+
+    if (andConditions.length > 0) {
+      (where as any).AND = andConditions;
     }
 
     const skip = (page - 1) * pageSize;
@@ -96,6 +142,54 @@ export class TicketsService {
     };
   }
 
+  // Contadores para el panel de triage en el dashboard de AGENT/ADMIN.
+  // Respeta la visibilidad del rol: AGENT solo cuenta sobre lo que ve
+  // (sus tickets + sin asignar); ADMIN cuenta todo el sistema.
+  static async getTriageCounts(userId: string, userRole: UserRole) {
+    if (userRole !== UserRole.AGENT && userRole !== UserRole.ADMIN) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "Solo agentes y administradores pueden ver el triage",
+        403,
+      );
+    }
+
+    const activeStatus = { in: ["OPEN" as const, "IN_PROGRESS" as const] };
+    // Visibilidad per-rol como condicion adicional (AND) en cada count.
+    const visibilityFor = (extra: any): any => {
+      if (userRole === UserRole.AGENT) {
+        return {
+          AND: [
+            { OR: [{ assigneeId: userId }, { assigneeId: null }] },
+            extra,
+          ],
+        };
+      }
+      return extra;
+    };
+
+    const [fresh, unassigned, unread, mine] = await Promise.all([
+      prisma.ticket.count({
+        where: visibilityFor({
+          status: activeStatus,
+          assigneeId: null,
+          isRead: false,
+        }),
+      }),
+      prisma.ticket.count({
+        where: visibilityFor({ status: activeStatus, assigneeId: null }),
+      }),
+      prisma.ticket.count({
+        where: visibilityFor({ status: activeStatus, isRead: false }),
+      }),
+      prisma.ticket.count({
+        where: { status: activeStatus, assigneeId: userId },
+      }),
+    ]);
+
+    return { fresh, unassigned, unread, mine };
+  }
+
   static async getTicketById(id: string, userId: string, userRole: UserRole) {
     const ticket = await prisma.ticket.findUnique({
       where: { id },
@@ -117,6 +211,22 @@ export class TicketsService {
         attachments: {
           orderBy: { createdAt: "desc" },
         },
+        // Lista de quienes vieron el ticket (staff). Solo se usa cuando
+        // el viewer es staff; para USER se descarta antes de devolver.
+        reads: {
+          include: {
+            user: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { lastReadAt: "desc" },
+        },
+        // Lista de shares activos (con quien fue compartido el ticket).
+        shares: {
+          include: {
+            sharedWith: { select: { id: true, name: true, email: true } },
+            sharedBy: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        },
       },
     });
 
@@ -124,22 +234,110 @@ export class TicketsService {
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
     }
 
-    // Check permissions
-    if (userRole === UserRole.USER && ticket.requesterId !== userId) {
-      throw new ApiError(
-        "FORBIDDEN",
-        "No tienes permisos para ver este ticket",
-        403,
-      );
+    // Visibilidad:
+    // - USER: solo si es requester.
+    // - AGENT: solo si es assignee, sin asignar, o (en PR-B) compartido.
+    // - ADMIN: todos.
+    if (userRole === UserRole.USER) {
+      if (ticket.requesterId !== userId) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "No tienes permisos para ver este ticket",
+          403,
+        );
+      }
+    } else if (userRole === UserRole.AGENT) {
+      const isMine = ticket.assigneeId === userId;
+      const isUnassigned = ticket.assigneeId === null;
+      let isSharedWithMe = false;
+      if (!isMine && !isUnassigned) {
+        const share = await prisma.ticketShare.findUnique({
+          where: {
+            ticketId_sharedWithId: { ticketId: id, sharedWithId: userId },
+          },
+          select: { id: true },
+        });
+        isSharedWithMe = !!share;
+      }
+      if (!isMine && !isUnassigned && !isSharedWithMe) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Este ticket está asignado a otro técnico",
+          403,
+        );
+      }
     }
 
-    // Marcar como leído si lo abre un AGENT o ADMIN
-    if (!ticket.isRead && (userRole === UserRole.AGENT || userRole === UserRole.ADMIN)) {
-      await prisma.ticket.update({
-        where: { id },
-        data: { isRead: true },
-      });
-      ticket.isRead = true;
+    // Marcar globalmente como leido y registrar quien fue.
+    if (userRole === UserRole.AGENT || userRole === UserRole.ADMIN) {
+      const now = new Date();
+
+      try {
+        await prisma.ticketRead.upsert({
+          where: { userId_ticketId: { userId, ticketId: id } },
+          update: { lastReadAt: now },
+          create: { userId, ticketId: id, lastReadAt: now },
+        });
+      } catch (err) {
+        logger.warn({ err }, "No se pudo registrar TicketRead");
+      }
+
+      // isRead global: si nadie del staff lo habia visto antes, marcamos true.
+      if (!ticket.isRead) {
+        try {
+          await prisma.ticket.update({
+            where: { id },
+            data: { isRead: true },
+          });
+        } catch (err) {
+          logger.warn({ err }, "No se pudo marcar isRead");
+        }
+        ticket.isRead = true;
+      }
+
+      // Auto-transicion OPEN -> IN_PROGRESS cuando el ASSIGNEE abre el
+      // ticket. La idea: si el assignee ya lo esta mirando, hay trabajo
+      // empezado; refleja eso en el estado.
+      if (
+        ticket.status === "OPEN" &&
+        ticket.assigneeId === userId
+      ) {
+        try {
+          await prisma.ticket.update({
+            where: { id },
+            data: { status: "IN_PROGRESS" },
+          });
+          await prisma.auditLog.create({
+            data: {
+              entity: "ticket",
+              entityId: id,
+              action: "ticket_auto_progressed",
+              actorId: userId,
+            },
+          });
+          ticket.status = "IN_PROGRESS";
+        } catch (err) {
+          logger.warn(
+            { err },
+            "No se pudo auto-progresar OPEN -> IN_PROGRESS",
+          );
+        }
+      }
+    }
+
+    // Para USER no devolvemos la lista de viewers (son staff).
+    if (userRole === UserRole.USER) {
+      (ticket as any).reads = undefined;
+    } else {
+      // Renombramos `reads` a `viewers` para que el front no se confunda
+      // con el TicketRead per-user (que ya no se usa para isRead).
+      (ticket as any).viewers = ((ticket as any).reads ?? []).map(
+        (r: any) => ({
+          user: r.user,
+          lastReadAt: r.lastReadAt,
+        }),
+      );
+      (ticket as any).reads = undefined;
     }
 
     // Enriquecer attachments con información de vista previa
@@ -147,11 +345,19 @@ export class TicketsService {
       const enrichedAttachments = await Promise.all(
         ticket.attachments.map(async (attachment: any) => {
           try {
-            const filePath = path.join(process.cwd(), attachment.storageUrl);
+            // Si el storageUrl es http(s), el archivo vive en Cloudinary
+            // (o storage remoto). En ese caso pasamos la URL directo y
+            // marcamos isRemote=true para que filePreview no intente
+            // hacer fs.stat sobre un path inexistente.
+            const isRemote = attachment.storageUrl.startsWith("http");
+            const filePathOrUrl = isRemote
+              ? attachment.storageUrl
+              : path.join(process.cwd(), attachment.storageUrl);
             const previewInfo = await FilePreviewService.getFilePreviewInfo(
-              filePath,
+              filePathOrUrl,
               attachment.mimeType,
               attachment.fileName,
+              isRemote,
             );
 
             const displayInfo = FilePreviewService.getFileDisplayInfo(
@@ -194,13 +400,43 @@ export class TicketsService {
     return ticket;
   }
 
+  static async getTicketAudit(id: string, userId: string, userRole: UserRole) {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { id: true, requesterId: true },
+    });
+    if (!ticket) {
+      throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+    }
+    if (userRole === UserRole.USER && ticket.requesterId !== userId) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "No tienes permisos para ver el historial de este ticket",
+        403,
+      );
+    }
+
+    const logs = await prisma.auditLog.findMany({
+      where: { entity: "ticket", entityId: id },
+      include: {
+        actor: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return logs;
+  }
+
   static async createTicket(data: any, userId: string) {
+    const now = new Date();
     const ticket = await prisma.ticket.create({
       data: {
         title: data.title,
         description: data.description,
         priority: data.priority,
+        category: data.category ?? null,
         requesterId: userId,
+        dueAt: calculateDueAt(data.priority, now),
       },
       include: {
         requester: {
@@ -238,7 +474,23 @@ export class TicketsService {
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
     }
 
-    // Check permissions
+    // Check permissions:
+    // - AGENT puede modificar si es assignee O el ticket está sin asignar.
+    //   (Si esta solo compartido, no puede tocar nada por PATCH; solo
+    //   comentar via /comments.)
+    // - ADMIN siempre puede.
+    if (userRole === UserRole.AGENT) {
+      const isAssignee = ticket.assigneeId === userId;
+      const isUnassigned = ticket.assigneeId === null;
+      if (!isAssignee && !isUnassigned) {
+        throw new ApiError(
+          "FORBIDDEN",
+          "Solo el asignado puede modificar este ticket",
+          403,
+        );
+      }
+    }
+
     if (userRole === UserRole.USER) {
       if (ticket.requesterId !== userId) {
         throw new ApiError(
@@ -247,15 +499,30 @@ export class TicketsService {
           403,
         );
       }
-      // Users can only update title and description
+      // USER puede editar title, description y category de su ticket.
+      // El cambio de category solo se permite mientras el ticket este
+      // activo (OPEN o IN_PROGRESS): no queremos reclasificar tickets
+      // ya resueltos/cerrados.
       const rest = { ...data } as Record<string, unknown>;
       delete rest.title;
       delete rest.description;
+      delete rest.category;
       if (Object.keys(rest).length > 0) {
         throw new ApiError(
           "FORBIDDEN",
           "No tienes permisos para modificar estos campos",
           403,
+        );
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(data, "category") &&
+        ticket.status !== "OPEN" &&
+        ticket.status !== "IN_PROGRESS"
+      ) {
+        throw new ApiError(
+          "INVALID_STATUS",
+          "No se puede cambiar la categoría de un ticket resuelto o cerrado",
+          400,
         );
       }
     }
@@ -294,6 +561,11 @@ export class TicketsService {
       } else if (ticket.status === "CLOSED" && data.status !== "CLOSED") {
         data.closedAt = null;
       }
+    }
+
+    // Si cambia la prioridad, recalcular dueAt sobre el createdAt original.
+    if (data.priority && data.priority !== ticket.priority) {
+      data.dueAt = calculateDueAt(data.priority, ticket.createdAt);
     }
 
     const updatedTicket = await prisma.ticket.update({
@@ -522,11 +794,14 @@ export class TicketsService {
       },
     });
 
-    // Update ticket status to OPEN
+    // Si el ticket tiene asignado, vuelve a IN_PROGRESS (preserva contexto).
+    // Si no, queda en OPEN para que alguien lo tome.
+    const newStatus: StatusLiteral = ticket.assigneeId ? "IN_PROGRESS" : "OPEN";
+
     const updatedTicket = await prisma.ticket.update({
       where: { id },
       data: {
-        status: "OPEN",
+        status: newStatus,
         closedAt: null,
       },
       include: {
@@ -547,15 +822,86 @@ export class TicketsService {
       },
     });
 
-    // Send notification about ticket reopening
     await NotificationsService.notifyStatusChanged(
       id,
       ticket.status,
-      "OPEN",
+      newStatus,
       userId,
     );
 
-    logger.info(`Ticket reopened: ${id} by user: ${userId}`);
+    logger.info(`Ticket reopened: ${id} by user: ${userId} (-> ${newStatus})`);
+    return updatedTicket;
+  }
+
+  static async resolveTicket(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+    comment?: string,
+  ) {
+    if (userRole === UserRole.USER) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "Solo los agentes y administradores pueden resolver tickets",
+        403,
+      );
+    }
+
+    const ticket = await prisma.ticket.findUnique({ where: { id } });
+    if (!ticket) {
+      throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
+    }
+
+    if (ticket.status === "RESOLVED" || ticket.status === "CLOSED") {
+      throw new ApiError(
+        "INVALID_STATUS",
+        "El ticket ya está resuelto o cerrado",
+        400,
+      );
+    }
+
+    if (comment && comment.trim().length > 0) {
+      await prisma.comment.create({
+        data: {
+          ticketId: id,
+          authorId: userId,
+          message: `[TICKET RESUELTO] ${comment.trim()}`,
+        },
+      });
+    }
+
+    const updatedTicket = await prisma.ticket.update({
+      where: { id },
+      data: { status: "RESOLVED" },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        assignee: { select: { id: true, name: true, email: true } },
+        comments: {
+          include: {
+            author: { select: { id: true, name: true, email: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        entity: "ticket",
+        entityId: id,
+        action: "ticket_resolved",
+        actorId: userId,
+      },
+    });
+
+    await NotificationsService.notifyStatusChanged(
+      id,
+      ticket.status,
+      "RESOLVED",
+      userId,
+    );
+
+    logger.info(`Ticket resolved: ${id} by user: ${userId}`);
     return updatedTicket;
   }
 

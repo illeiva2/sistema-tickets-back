@@ -4,8 +4,11 @@ import { authMiddleware } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/stats", authMiddleware, DashboardController.stats as any);
-router.get("/agent-stats", authMiddleware, DashboardController.agentStats as any);
-router.get("/user-stats", authMiddleware, DashboardController.userStats as any);
+router.get("/", authMiddleware, DashboardController.get);
+
+// Compat con clientes viejos: redirigen al endpoint principal.
+router.get("/stats", authMiddleware, DashboardController.get);
+router.get("/agent-stats", authMiddleware, DashboardController.get);
+router.get("/user-stats", authMiddleware, DashboardController.get);
 
 export default router;

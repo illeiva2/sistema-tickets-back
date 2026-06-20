@@ -4,6 +4,7 @@ import { prisma } from "../lib/database";
 import { config } from "../config";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { UserRole } from "@prisma/client";
 
 export class AuthService {
   static async login(email: string, password: string) {
@@ -15,8 +16,16 @@ export class AuthService {
       throw new ApiError("INVALID_CREDENTIALS", "Credenciales inválidas", 401);
     }
 
+    if (!user.isActive) {
+      throw new ApiError(
+        "ACCOUNT_DISABLED",
+        "Tu cuenta fue desactivada. Contactá a un administrador.",
+        403,
+      );
+    }
+
     // Verificar si es un usuario de Google OAuth que aún no configuró contraseña
-    if (user.googleId && (user as any).mustChangePassword) {
+    if (user.googleId && user.mustChangePassword) {
       throw new ApiError(
         "GOOGLE_OAUTH_USER",
         "Este usuario se registró con Google. Por favor, inicia sesión con Google o configura tu contraseña personal primero.",
@@ -34,7 +43,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
-        mustChangePassword: (user as any).mustChangePassword ?? false,
+        mustChangePassword: user.mustChangePassword ?? false,
       },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as SignOptions,
@@ -56,7 +65,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
-        mustChangePassword: (user as any).mustChangePassword ?? false,
+        mustChangePassword: user.mustChangePassword ?? false,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -105,7 +114,7 @@ export class AuthService {
         data: {
           name,
           email,
-          role: role as any,
+          role: role as UserRole,
           googleId: googleUserInfo.sub, // ID único de Google
           mustChangePassword: true, // Debe configurar contraseña
           passwordHash: "", // Contraseña vacía hasta que la configure
@@ -297,6 +306,14 @@ export class AuthService {
         throw new ApiError("USER_NOT_FOUND", "Usuario no encontrado", 404);
       }
 
+      if (!user.isActive) {
+        throw new ApiError(
+          "ACCOUNT_DISABLED",
+          "Tu cuenta fue desactivada. Contactá a un administrador.",
+          403,
+        );
+      }
+
       const newAccessToken = jwt.sign(
         { id: user.id, email: user.email, role: user.role },
         config.jwt.secret,
@@ -325,6 +342,11 @@ export class AuthService {
   static async getCurrentUser(userId: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
+      include: {
+        department: {
+          select: { id: true, name: true, color: true, icon: true },
+        },
+      },
     });
 
     if (!user) {
@@ -336,6 +358,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
+      department: user.department,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

@@ -101,7 +101,10 @@ export class FileProcessingService {
           "x" in metadata.density &&
           // @ts-expect-error - metadata.density can be null but we check it above
           "y" in metadata.density
-            ? { x: (metadata.density as any).x, y: (metadata.density as any).y }
+            ? // sharp tipa metadata.density como number, pero en algunos
+              // casos viene como { x, y } objeto. Casting necesario.
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              { x: (metadata.density as any).x, y: (metadata.density as any).y }
             : undefined,
       };
     } catch (error) {

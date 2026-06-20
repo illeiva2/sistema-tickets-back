@@ -30,6 +30,33 @@ enum TicketPriority {
   URGENT
 }
 
+enum TicketCategory {
+  SOFTWARE
+  HARDWARE
+  RED
+  ERP
+  OTRO
+}
+
+enum ProjectStatus {
+  PLANNED       // planificado, aún no arrancó
+  IN_PROGRESS   // en curso
+  ON_HOLD       // en pausa
+  BLOCKED       // bloqueado por dependencia externa
+  COMPLETED     // terminado
+  CANCELLED     // descartado
+}
+
+enum ResourceCategory {
+  HOW_TO          // tutoriales y cómo-hacer
+  POLICY          // políticas y normas internas
+  FAQ             // preguntas frecuentes
+  ANNOUNCEMENT    // avisos / anuncios
+  GLOSSARY        // glosario / definiciones
+  LINK            // links externos útiles
+  OTHER
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -38,8 +65,15 @@ model User {
   role         UserRole @default(USER)
   googleId     String?  @unique
   mustChangePassword Boolean @default(false)
+  isActive     Boolean  @default(true)
+  deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // Sector / area de la empresa. Opcional. Si el Department se borra,
+  // el usuario queda sin sector (no se elimina).
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
   // Relations
   requestedTickets Ticket[]  @relation("Requester")
@@ -48,31 +82,119 @@ model User {
   auditLogs        AuditLog[]
   notifications    Notification[]
   notificationPreferences NotificationPreferences[]
+  authoredResources Resource[] @relation("ResourceAuthor")
+  ticketReads      TicketRead[]
+  ticketSharesReceived TicketShare[] @relation("ShareRecipient")
+  ticketSharesGiven    TicketShare[] @relation("ShareGiver")
+  workshopImports  WorkshopImport[]
+  ledProjects      Project[]  @relation("ProjectLead")
+  memberProjects   Project[]  @relation("ProjectTeam")
 
   @@map("users")
 }
 
-model Ticket {
-  id          String        @id @default(cuid())
-  ticketNumber Int          @unique @default(autoincrement())
+model Resource {
+  id          String           @id @default(cuid())
+  slug        String           @unique
   title       String
-  description String
-  status      TicketStatus  @default(OPEN)
-  priority    TicketPriority @default(MEDIUM)
-  isRead      Boolean       @default(false)
-  requesterId String
-  assigneeId  String?
-  closedAt    DateTime?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  content     String           @db.Text   // markdown
+  excerpt     String?                       // resumen corto opcional
+  category    ResourceCategory @default(OTHER)
+  tags        String[]
+  isPublished   Boolean          @default(false)
+  // Clave externa opcional para idempotencia con sistemas externos.
+  // Ej: "workshops:2026-05:dept-finanzas". Permite que un job de import
+  // haga upsert sin duplicar.
+  externalKey   String?          @unique
+  isPinned      Boolean          @default(false)  // destacado / fijado
+  // Si esta pinned y showAsModal=true, se muestra como modal flotante
+  // al entrar a la app (no en el banner del dashboard).
+  showAsModal   Boolean          @default(false)
+  // Si pinExpiresAt no es null, el pin se considera vencido a partir de
+  // esa fecha y deja de aparecer en banner / modal. null = no expira.
+  pinExpiresAt  DateTime?
+  viewCount     Int              @default(0)
+  authorId    String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
   // Relations
-  requester   User         @relation("Requester", fields: [requesterId], references: [id])
-  assignee    User?        @relation("Assignee", fields: [assigneeId], references: [id])
+  author User @relation("ResourceAuthor", fields: [authorId], references: [id])
+  // Audiencia opcional. Si el array está vacío, el recurso es público
+  // (visible para todos). Si tiene sectores, solo USERs de esos sectores
+  // (ADMIN y AGENT lo ven siempre).
+  audienceDepartments Department[] @relation("ResourceAudience")
+
+  @@index([isPublished, category])
+  @@index([isPinned, isPublished])
+  @@index([slug])
+  @@map("resources")
+}
+
+model Ticket {
+  id          String         @id @default(cuid())
+  ticketNumber Int           @unique @default(autoincrement())
+  title       String
+  description String
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  category    TicketCategory?
+  isRead      Boolean        @default(false)
+  requesterId String
+  assigneeId  String?
+  dueAt       DateTime?
+  closedAt    DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  // Relations
+  requester   User          @relation("Requester", fields: [requesterId], references: [id])
+  assignee    User?         @relation("Assignee", fields: [assigneeId], references: [id])
   comments    Comment[]
   attachments Attachment[]
+  reads       TicketRead[]
+  shares      TicketShare[]
 
   @@map("tickets")
+}
+
+// Comparte un ticket con otro AGENT/ADMIN para que pueda verlo y comentar
+// sin ser el assignee. NO es asignacion: el assignee sigue siendo quien
+// trabaja el ticket. Solo da acceso de lectura + comentario.
+model TicketShare {
+  id             String   @id @default(cuid())
+  ticketId       String
+  sharedWithId   String
+  sharedById     String
+  message        String?  // Nota opcional al compartir ("mira esto, lo viste antes?")
+  createdAt      DateTime @default(now())
+
+  ticket       Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sharedWith   User   @relation("ShareRecipient", fields: [sharedWithId], references: [id], onDelete: Cascade)
+  sharedBy     User   @relation("ShareGiver", fields: [sharedById], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, sharedWithId])
+  @@index([sharedWithId])
+  @@index([ticketId])
+  @@map("ticket_shares")
+}
+
+// Tracking per-usuario de "tickets vistos" para AGENT/ADMIN.
+// Una fila significa "este user ya abrio este ticket al menos una vez".
+// Lo usamos para el triage: tickets sin asignar y/o sin leer por mi.
+model TicketRead {
+  id         String   @id @default(cuid())
+  userId     String
+  ticketId   String
+  lastReadAt DateTime @default(now()) @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ticketId])
+  @@index([userId])
+  @@index([ticketId])
+  @@map("ticket_reads")
 }
 
 model Comment {
@@ -201,4 +323,101 @@ model FileOrganization {
   category   FileCategory? @relation(fields: [categoryId], references: [id])
 
   @@map("file_organizations")
+}
+
+// Sector / area de la empresa. Lo gestiona ADMIN desde la app. Sirve
+// para taggear users y, mas adelante, dirigir recursos / anuncios por
+// audiencia (PR-2). Hard delete: al borrar, los users del sector quedan
+// con departmentId = null (no se eliminan).
+model Department {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  // Atributos visuales opcionales para usarse en chips/badges del front.
+  color     String?  // hex string ej "#3B82F6"
+  icon      String?  // emoji o nombre de icono
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                    User[]
+  targetedResources        Resource[] @relation("ResourceAudience")
+  workshopClassificationRules WorkshopClassificationRule[]
+
+  @@map("departments")
+}
+
+// Regla editable para clasificar workshops de IMAS al sector correspondiente.
+// Se evalúan en orden de prioridad descendente; un workshop puede matchear
+// varias y se asigna a todos los sectores resultantes.
+model WorkshopClassificationRule {
+  id            String   @id @default(cuid())
+  departmentId  String
+  // Match exacto del campo "Mercado" del sheet (opcional). Si null, no
+  // restringe por mercado.
+  mercadoEquals String?
+  // Lista de keywords a buscar en (workshop + detalle). Match si CUALQUIERA
+  // está incluida (case-insensitive, sin acentos). Vacío = no usa keywords.
+  keywords      String[]
+  // Texto explicativo "Por qué te sirve" que se incluye en el ítem del
+  // workshop para los users de este sector. Opcional.
+  whyText       String?
+  enabled       Boolean  @default(true)
+  priority      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId, enabled])
+  @@map("workshop_classification_rules")
+}
+
+// Log de cada ejecución de importación (auditoría + base para futuro cron).
+model WorkshopImport {
+  id                 String   @id @default(cuid())
+  // "2026-05" para modo mensual, "2026-W20" para semanal.
+  period             String
+  mode               String   // "weekly" | "monthly"
+  sheetUrl           String
+  totalRows          Int
+  importedRows       Int      // tras filtrar CUPO AGOTADO / EVENTO CERRADO / fecha pasada
+  generatedResources Int      // cuántos Resources tocados (create + update)
+  importedById       String
+  importedAt         DateTime @default(now())
+
+  importer           User     @relation(fields: [importedById], references: [id])
+
+  @@index([period])
+  @@index([importedAt])
+  @@map("workshop_imports")
+}
+
+// Proyectos e iniciativas que está llevando adelante el equipo de IT.
+// Visibles para todos los usuarios cuando isPublished=true. ADMIN/AGENT
+// pueden ver drafts para planificar.
+model Project {
+  id              String        @id @default(cuid())
+  slug            String        @unique
+  title           String
+  description     String        @db.Text  // markdown completo
+  excerpt         String?                  // resumen 1-2 líneas para la card
+  status          ProjectStatus @default(PLANNED)
+  // 0-100. null = no aplica (no queremos mostrar barra).
+  progressPercent Int?
+  startedAt       DateTime?
+  expectedEndAt   DateTime?
+  completedAt     DateTime?
+  isPublished     Boolean       @default(false)
+  isPinned        Boolean       @default(false)  // arriba en la lista
+  leadId          String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  lead User   @relation("ProjectLead", fields: [leadId], references: [id])
+  team User[] @relation("ProjectTeam")
+
+  @@index([status, isPublished])
+  @@index([isPinned, updatedAt])
+  @@index([slug])
+  @@map("projects")
 }

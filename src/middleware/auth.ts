@@ -1,22 +1,26 @@
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import jwt, { type JwtPayload } from "jsonwebtoken";
 import { config } from "../config";
 import { logger } from "../lib/logger";
 import { ApiError } from "../lib/errors";
 import { UserRole } from "@prisma/client";
 
-export interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: UserRole;
-    mustChangePassword?: boolean;
-  };
+// AuthenticatedRequest se mantiene como alias por compatibilidad pero
+// ya no es necesario: el augmentation en types/express.d.ts hace que
+// Request tenga `user?` globalmente.
+export type AuthenticatedRequest = Request;
+
+interface AccessTokenPayload extends JwtPayload {
+  id?: string;
+  userId?: string;
+  email?: string;
+  role?: UserRole;
+  mustChangePassword?: boolean;
 }
 
 export const authMiddleware = (
-  req: AuthenticatedRequest,
-  res: Response,
+  req: Request,
+  _res: Response,
   next: NextFunction,
 ) => {
   try {
@@ -27,8 +31,7 @@ export const authMiddleware = (
     }
 
     const token = authHeader.substring(7);
-
-    const decoded = jwt.verify(token, config.jwt.secret) as any;
+    const decoded = jwt.verify(token, config.jwt.secret) as AccessTokenPayload;
 
     const userId = decoded?.id || decoded?.userId;
     if (!userId || !decoded?.email || !decoded?.role) {
@@ -53,7 +56,7 @@ export const authMiddleware = (
 };
 
 export const requireRole = (roles: UserRole[]) => {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) {
       return next(new ApiError("UNAUTHORIZED", "Autenticación requerida", 401));
     }

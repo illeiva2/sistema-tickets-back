@@ -92,6 +92,9 @@ export class FilePreviewService {
       const icon = this.iconMap[fileType] || this.iconMap.other;
 
       const baseInfo: FilePreviewInfo = {
+        // fileType viene de getFileType que devuelve un string genérico;
+        // FilePreviewInfo['type'] es un union literal narrower.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         type: fileType as any,
         canPreview: this.canPreviewFile(fileType, mimeType),
         icon,

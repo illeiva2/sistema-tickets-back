@@ -59,6 +59,9 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
           );
 
           if (!profile.emails || !profile.emails[0]) {
+            // passport tipa el segundo arg de done() como User; null/false son
+            // valores válidos en runtime pero TS no lo modela.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return done(new Error("No email provided by Google"), null as any);
           }
 
@@ -72,6 +75,7 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
             
             if (!isAllowed) {
               logger.warn(`Intento de login con dominio no permitido: ${email}`);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               return done(new Error(`Acceso denegado. Solo se permiten los dominios: ${oauthConfig.google.allowedDomains.join(", ")}`), false as any);
             }
           }

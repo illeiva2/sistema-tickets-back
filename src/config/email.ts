@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { config } from "./index";
+import { logger } from "../lib/logger";
 
 export interface EmailConfig {
   host: string;
@@ -37,10 +38,10 @@ export const verifyEmailConnection = async () => {
   try {
     const transporter = createTransporter();
     await transporter.verify();
-    console.log("✅ Email service connection verified");
+    logger.info("Email service connection verified");
     return true;
   } catch (error) {
-    console.error("❌ Email service connection failed:", error);
+    logger.error({ err: error }, "Email service connection failed");
     return false;
   }
 };
