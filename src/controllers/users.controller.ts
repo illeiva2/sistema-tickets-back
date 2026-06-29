@@ -83,7 +83,11 @@ export class UsersController {
     }
   };
 
-  // Listar solo agentes (para asignación de tickets)
+  // Listar staff asignable (AGENT + ADMIN) para asignación de tickets,
+  // lead/team de proyectos, etc. Incluye ADMIN porque un administrador
+  // también puede reclamar/atender tickets y ser lead de un proyecto;
+  // si no aparece como opción, los selects del front lo muestran como
+  // "Sin asignar" aunque realmente esté asignado.
   static listAgents = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -91,8 +95,11 @@ export class UsersController {
   ) => {
     try {
       const agents = await prisma.user.findMany({
-        where: { role: UserRole.AGENT, isActive: true },
-        select: { id: true, name: true, email: true },
+        where: {
+          role: { in: [UserRole.AGENT, UserRole.ADMIN] },
+          isActive: true,
+        },
+        select: { id: true, name: true, email: true, role: true },
         orderBy: { name: "asc" },
       });
       res.json({ success: true, data: agents });

@@ -182,4 +182,33 @@ describe("POST /api/users/:id/restore — reactivar", () => {
   });
 });
 
+describe("GET /api/users/agents — staff asignable", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("incluye AGENT y ADMIN (no solo agentes)", async () => {
+    prismaMock.user.findMany.mockResolvedValueOnce([
+      { id: "agent-1", name: "Agente", email: "a@x.com", role: "AGENT" },
+      { id: "admin-1", name: "Admin", email: "ad@x.com", role: "ADMIN" },
+    ] as any);
+
+    const token = signAccessToken({ id: "admin-1", role: "ADMIN" });
+    const res = await request(app).get("/api/users/agents").set(auth(token));
+
+    expect(res.status).toBe(200);
+    const call = prismaMock.user.findMany.mock.calls[0][0] as any;
+    expect(call.where.role).toEqual({ in: ["AGENT", "ADMIN"] });
+    expect(call.where.isActive).toBe(true);
+    // El select ahora incluye role (lo usa el editor de proyectos).
+    expect(call.select.role).toBe(true);
+    expect(res.body.data).toHaveLength(2);
+  });
+
+  it("requiere autenticación", async () => {
+    const res = await request(app).get("/api/users/agents");
+    expect(res.status).toBe(401);
+  });
+});
+
 void makeAdmin;
