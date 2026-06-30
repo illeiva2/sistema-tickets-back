@@ -49,11 +49,21 @@ export const startOfToday = (now: Date = new Date()): Date => {
 // Clave de período para idempotencia.
 // monthly → "YYYY-MM"
 // weekly  → "YYYY-Www" (semana ISO)
-export const getPeriodKey = (mode: "weekly" | "monthly", now: Date = new Date()): string => {
-  if (mode === "monthly") {
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, "0");
-    return `${yyyy}-${mm}`;
+// Devuelve la clave "YYYY-MM" de una fecha dada. Usado por el modo
+// upcoming para derivar el período del propio contenido del sheet (mes de
+// la primera fecha futura) en vez del mes calendario actual.
+export const monthKeyOf = (d: Date): string => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yyyy}-${mm}`;
+};
+
+export const getPeriodKey = (
+  mode: "weekly" | "monthly" | "upcoming",
+  now: Date = new Date(),
+): string => {
+  if (mode === "monthly" || mode === "upcoming") {
+    return monthKeyOf(now);
   }
   // ISO week. Algoritmo estándar.
   const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));

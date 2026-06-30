@@ -8,7 +8,7 @@ export const importWorkshopsSchema = z.object({
       (v) => v.includes("docs.google.com/spreadsheets"),
       "Debe ser una URL de Google Sheets",
     ),
-  mode: z.enum(["weekly", "monthly"]),
+  mode: z.enum(["weekly", "monthly", "upcoming"]),
   dryRun: z.boolean().optional().default(false),
 });
 
