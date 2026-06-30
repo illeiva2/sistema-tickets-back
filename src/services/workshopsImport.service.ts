@@ -18,6 +18,7 @@ import {
   endOfWeek,
   endOfMonth,
   getPeriodKey,
+  monthKeyOf,
   formatDisplayDate,
 } from "../lib/workshopsDates";
 import {
@@ -26,7 +27,7 @@ import {
   type ClassifiedWorkshop,
 } from "../lib/workshopsMarkdown";
 
-export type ImportMode = "weekly" | "monthly";
+export type ImportMode = "weekly" | "monthly" | "upcoming";
 
 export interface ImportSummary {
   period: string;
@@ -125,8 +126,13 @@ export class WorkshopsImportService {
     const totalRows = rows.length;
 
     const today = startOfToday(now);
-    const rangeEnd = mode === "weekly" ? endOfWeek(now) : endOfMonth(now);
-    const period = getPeriodKey(mode, now);
+    // weekly/monthly tienen tope superior; upcoming no (toma todo lo futuro).
+    const upperBound: Date | null =
+      mode === "weekly"
+        ? endOfWeek(now)
+        : mode === "monthly"
+          ? endOfMonth(now)
+          : null;
 
     let discardedClosed = 0;
     let discardedPast = 0;
@@ -154,7 +160,7 @@ export class WorkshopsImportService {
         discardedPast++;
         continue;
       }
-      if (date.getTime() > rangeEnd.getTime()) {
+      if (upperBound && date.getTime() > upperBound.getTime()) {
         discardedOutOfRange++;
         continue;
       }
@@ -162,6 +168,28 @@ export class WorkshopsImportService {
     }
 
     const importedRows = valid.length;
+
+    // Determinamos el period y la fecha de fin de rango "display":
+    // - weekly/monthly: period por calendario actual, rangeEnd = tope.
+    // - upcoming: period = mes de la primera fecha futura (deriva del
+    //   contenido, no del mes actual); rangeEnd display = fecha máxima.
+    let period: string;
+    let rangeEnd: Date;
+    if (mode === "upcoming") {
+      if (valid.length > 0) {
+        const times = valid.map((v) => v.date.getTime());
+        const minDate = new Date(Math.min(...times));
+        const maxDate = new Date(Math.max(...times));
+        period = monthKeyOf(minDate);
+        rangeEnd = maxDate;
+      } else {
+        period = getPeriodKey(mode, now);
+        rangeEnd = now;
+      }
+    } else {
+      period = getPeriodKey(mode, now);
+      rangeEnd = upperBound!;
+    }
 
     // Cargamos reglas y datos de sectores.
     const ctx = await loadContext();

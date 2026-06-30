@@ -43,6 +43,38 @@ const normalizeHeader = (h: string): string =>
     .trim()
     .toLowerCase();
 
+// Resuelve un header a su clave canónica. Primero intenta match exacto
+// contra HEADER_MAP; si no, usa un match por inclusión de keyword para
+// tolerar variaciones de naming entre planillas (ej "Detalles del evento"
+// vs "Detalle para el evento", "Requisitos previos para inscribirte" vs
+// "Requisitos"). El orden importa: chequeamos los más específicos primero.
+const resolveHeaderKey = (
+  rawHeader: string,
+): keyof Omit<WorkshopRow, "raw"> | null => {
+  const norm = normalizeHeader(rawHeader);
+  if (HEADER_MAP[norm]) return HEADER_MAP[norm];
+
+  // Fallback por keyword. Cada entrada: si el header contiene el término,
+  // mapea a la columna. Orden de prioridad de arriba hacia abajo.
+  const keywordRules: Array<[string, keyof Omit<WorkshopRow, "raw">]> = [
+    ["workshop", "workshop"],
+    ["mercado", "mercado"],
+    ["horario", "horario"],
+    ["hora", "horario"],
+    ["fecha", "fecha"],
+    ["detalle", "detalle"],
+    ["descripcion", "detalle"],
+    ["requisito", "requisitos"],
+    ["inscrip", "link"], // "link para inscripcion", "inscripcion", etc.
+    ["link", "link"],
+    ["url", "link"],
+  ];
+  for (const [term, target] of keywordRules) {
+    if (norm.includes(term)) return target;
+  }
+  return null;
+};
+
 // Convierte un URL de "edit?gid=..." a un URL de export CSV. Si ya es un
 // export, lo deja como está.
 export const toCsvExportUrl = (sheetUrl: string): string => {
@@ -116,9 +148,10 @@ export const parseWorkshopsCsv = (csv: string): WorkshopRow[] => {
       raw,
     };
     for (const [k, v] of Object.entries(raw)) {
-      const norm = normalizeHeader(k);
-      const target = HEADER_MAP[norm];
-      if (target) {
+      const target = resolveHeaderKey(k);
+      // No pisamos un valor ya seteado por una columna más específica
+      // (ej: si hay "Fecha" y "Fecha límite", la primera gana).
+      if (target && !row[target]) {
         row[target] = (v ?? "").toString().trim();
       }
     }

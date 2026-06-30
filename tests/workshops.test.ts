@@ -3,6 +3,7 @@ import { parseWorkshopsCsv, toCsvExportUrl } from "../src/lib/workshopsCsv";
 import {
   parseSheetDate,
   getPeriodKey,
+  monthKeyOf,
   endOfMonth,
   endOfWeek,
   startOfToday,
@@ -378,5 +379,46 @@ describe("renderWorkshopsMarkdown", () => {
     expect(
       renderWorkshopsMarkdown([], new Date(2026, 4, 31)),
     ).toContain("No hay workshops");
+  });
+});
+
+// ─── Headers tolerantes (variaciones de naming entre planillas) ───────────────
+
+describe("parseWorkshopsCsv — headers tolerantes", () => {
+  it("mapea 'Detalles del evento' y 'Requisitos previos...' (sheet de julio)", () => {
+    const csv = [
+      "Workshop,Mercado,Fecha,Horario,Detalles del evento,Requisitos previos para poder inscribirte,Link para inscripcion",
+      "Liquidación de sueldos,Sueldos,01/07/2026,10:00,Aprende a liquidar,Tener acceso al módulo,https://x.com/insc",
+    ].join("\n");
+    const rows = parseWorkshopsCsv(csv);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detalle).toBe("Aprende a liquidar");
+    expect(rows[0].requisitos).toBe("Tener acceso al módulo");
+    expect(rows[0].link).toContain("insc");
+  });
+
+  it("sigue mapeando los headers originales de mayo", () => {
+    const csv = [
+      "Workshop,Mercado,Fecha,Horario,Detalle para el evento,Requisitos,Link para inscripcion",
+      "Conciliación,TODOS LOS MERCADOS,15/05/2026,10:00,Detalle,Ninguno,https://x.com/i",
+    ].join("\n");
+    const rows = parseWorkshopsCsv(csv);
+    expect(rows[0].detalle).toBe("Detalle");
+    expect(rows[0].requisitos).toBe("Ninguno");
+  });
+});
+
+// ─── monthKeyOf ───────────────────────────────────────────────────────────────
+
+describe("monthKeyOf", () => {
+  it("devuelve YYYY-MM de la fecha dada", () => {
+    expect(monthKeyOf(new Date(2026, 6, 15))).toBe("2026-07"); // julio = mes 6
+    expect(monthKeyOf(new Date(2026, 0, 1))).toBe("2026-01");
+  });
+});
+
+describe("getPeriodKey — upcoming usa mes actual como fallback", () => {
+  it("upcoming devuelve YYYY-MM del now", () => {
+    expect(getPeriodKey("upcoming", new Date(2026, 5, 30))).toBe("2026-06");
   });
 });
