@@ -308,7 +308,7 @@ describe("GET /api/resources/suggest", () => {
     expect(res.status).toBe(400);
   });
 
-  it("ordena resultados por relevancia (matches en title pesan más)", async () => {
+  it("prioriza matches en title y descarta matches débiles (solo content)", async () => {
     prismaMock.resource.findMany.mockResolvedValueOnce([
       {
         id: "r-1",
@@ -336,10 +336,36 @@ describe("GET /api/resources/suggest", () => {
       .set(auth(token));
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(2);
-    // r-1 tiene "vpn" en title (peso 3), r-2 solo en content (peso 1).
+    // r-1 tiene "vpn" en title (score 3, pasa el umbral). r-2 solo en
+    // content (score 1): era la fuente de sugerencias irrelevantes y
+    // ahora se descarta.
+    expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].id).toBe("r-1");
-    expect(res.body.data[1].id).toBe("r-2");
+  });
+
+  it("excluye ANNOUNCEMENT del where (avisos/workshops no son ayuda)", async () => {
+    prismaMock.resource.findMany.mockResolvedValueOnce([] as any);
+
+    const token = signAccessToken({ role: "USER" });
+    await request(app)
+      .get("/api/resources/suggest?q=conciliacion")
+      .set(auth(token));
+
+    const call = prismaMock.resource.findMany.mock.calls[0][0] as any;
+    expect(call.where.AND).toEqual(
+      expect.arrayContaining([{ category: { not: "ANNOUNCEMENT" } }]),
+    );
+  });
+
+  it("query de solo stopwords devuelve [] sin consultar la DB", async () => {
+    const token = signAccessToken({ role: "USER" });
+    const res = await request(app)
+      .get("/api/resources/suggest?q=como%20hacer%20para")
+      .set(auth(token));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+    expect(prismaMock.resource.findMany).not.toHaveBeenCalled();
   });
 
   it("filtra los que no matchean nada", async () => {

@@ -18,6 +18,20 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/gif",
 ]);
 
+// Stopwords del español para las sugerencias: palabras funcionales que no
+// aportan señal de búsqueda. Solo listamos las de 3+ letras (las más cortas
+// ya caen por el filtro de longitud).
+const SUGGEST_STOPWORDS = new Set([
+  "del", "las", "los", "una", "unas", "unos", "ante", "bajo", "con",
+  "contra", "desde", "entre", "hacia", "hasta", "para", "por", "segun",
+  "según", "sin", "sobre", "tras", "que", "qué", "cual", "cuál", "quien",
+  "quién", "cuando", "cuándo", "como", "cómo", "donde", "dónde", "sus",
+  "mis", "tus", "son", "ser", "soy", "esta", "está", "estan", "están",
+  "este", "esto", "estos", "estas", "hay", "fue", "muy", "mas", "más",
+  "pero", "porque", "tambien", "también", "puede", "pueden", "puedo",
+  "tengo", "tiene", "tienen", "hace", "hacer", "nos", "les",
+]);
+
 const listSelect = {
   id: true,
   slug: true,
@@ -479,8 +493,15 @@ export class ResourcesService {
    * mientras el usuario tipea el título: si hay artículos relevantes
    * se los muestra antes de que abra el ticket.
    *
-   * Estrategia simple: split del query en palabras, scoring por matches
-   * en title (peso 3), excerpt (2), tags (2), content (1).
+   * Estrategia simple: split del query en palabras (ignorando stopwords
+   * del español), scoring por matches en title (peso 3), excerpt (2),
+   * tags (2), content (1). Solo se devuelven resultados con score >= 3:
+   * un match debil de una sola palabra en el contenido no alcanza para
+   * sugerir un articulo (era la principal fuente de ruido).
+   *
+   * Los ANNOUNCEMENT se excluyen: son noticias con fecha (agenda de
+   * workshops, avisos) llenas de keywords que matchean casi cualquier
+   * consulta sin ser articulos de ayuda.
    */
   static async suggest(
     q: string,
@@ -491,7 +512,7 @@ export class ResourcesService {
     const terms = q
       .toLowerCase()
       .split(/\s+/)
-      .filter((t) => t.length >= 2)
+      .filter((t) => t.length >= 3 && !SUGGEST_STOPWORDS.has(t))
       .slice(0, 6);
 
     if (terms.length === 0) return [];
@@ -501,6 +522,7 @@ export class ResourcesService {
     const audienceWhere = buildAudienceWhere(userRole, userDepartmentId);
     const andConditions: any[] = [
       { isPublished: true },
+      { category: { not: "ANNOUNCEMENT" } },
       {
         OR: terms.flatMap((term) => [
           { title: { contains: term, mode: "insensitive" as const } },
@@ -544,7 +566,10 @@ export class ResourcesService {
     });
 
     return scored
-      .filter((s) => s.score > 0)
+      // Umbral: exige al menos un match fuerte (título) o una combinación
+      // de matches menores. Un término suelto en el contenido (score 1-2)
+      // no justifica la sugerencia.
+      .filter((s) => s.score >= 3)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map(({ resource }) => ({

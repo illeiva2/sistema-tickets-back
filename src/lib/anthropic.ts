@@ -24,3 +24,7 @@ export const getAnthropicClient = (): Anthropic => {
 // El modelo recomendado por defecto. Si en el futuro queremos cambiar (p. ej.
 // para abaratar con un modelo mas chico) lo centralizamos aca.
 export const RESOURCE_DRAFT_MODEL = "claude-opus-4-7";
+
+// Modelo del asistente conversacional de tickets. Haiku: barato y rapido,
+// suficiente para respuestas cortas ancladas en articulos de la KB.
+export const ASSISTANT_MODEL = "claude-haiku-4-5-20251001";
