@@ -48,4 +48,15 @@ export const config = {
     // de tickets resueltos. Si no esta seteada, el endpoint devuelve 503.
     apiKey: process.env.ANTHROPIC_API_KEY || "",
   },
+  // Base de Conocimiento oficial de Finnegans (bc.finneg.com).
+  // Es un foro Discourse con API JSON publica: consultamos su busqueda en
+  // vivo (search.json), sin indexar nada ni servicios intermedios.
+  // Funciona out-of-the-box; para apagar la feature setear
+  // FINNEGANS_KB_DISABLED=true.
+  finnegansKb: {
+    baseUrl: process.env.FINNEGANS_KB_URL || "https://bc.finneg.com",
+    disabled: process.env.FINNEGANS_KB_DISABLED === "true",
+    // Timeout de cada request a Discourse (ms).
+    timeoutMs: parseInt(process.env.FINNEGANS_KB_TIMEOUT_MS || "8000", 10),
+  },
 } as const;
