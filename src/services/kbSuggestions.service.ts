@@ -1,114 +1,105 @@
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { UserRole } from "@prisma/client";
 import {
   buscarKb,
   isFinnegansKbConfigured,
-  type KbModo,
-  type KbResultado,
+  type KbSugerencia,
 } from "../lib/finnegansKb";
 
 // Sugerencias de la Base de Conocimiento OFICIAL de Finnegans (bc.finneg.com)
-// para asistir al agente que gestiona un ticket. Complementa la KB interna
-// ("resources"): esto trae documentacion oficial del ERP.
+// — documentacion viva del ERP — para complementar la KB interna (resources).
 //
-// Privacidad: solo mandamos titulo + descripcion + categoria del ticket al
-// servicio de busqueda (que es LOCAL, no un LLM). No enviamos comentarios,
-// nombres ni datos de contacto para minimizar exposicion de datos personales.
+// Privacidad: la consulta que se manda a bc.finneg.com se construye SOLO con
+// el titulo del ticket (nunca descripcion, comentarios ni datos de personas).
+// El titulo es la señal mas limpia para la busqueda por keywords de Discourse
+// y minimiza la exposicion de datos internos a un servicio externo.
 
-export interface KbSugerencia {
-  id: number | string;
-  titulo: string;
-  categoria: string;
-  tags: string[];
-  url: string;
-  extracto: string;
-  score: number;
-}
+export type { KbSugerencia };
 
-// Recorta el texto de la consulta: suficiente para dar contexto de busqueda,
-// sin mandar descripciones enormes que ensucian el ranking.
-const MAX_QUERY_CHARS = 500;
+const MAX_QUERY_CHARS = 120;
 
-function construirConsulta(ticket: {
-  title: string;
-  description: string | null;
-  category: string | null;
-}): string {
-  const partes = [ticket.title, ticket.category ?? "", ticket.description ?? ""]
-    .map((p) => (p || "").trim())
-    .filter(Boolean);
-  return partes.join(". ").slice(0, MAX_QUERY_CHARS);
-}
+const construirConsulta = (titulo: string): string =>
+  (titulo || "").trim().slice(0, MAX_QUERY_CHARS);
 
-function mapear(r: KbResultado): KbSugerencia {
-  return {
-    id: r.id,
-    titulo: r.titulo,
-    categoria: r.categoria,
-    tags: r.tags,
-    url: r.url,
-    extracto: r.extracto,
-    score: r.score,
-  };
-}
+const assertKbDisponible = () => {
+  if (!isFinnegansKbConfigured()) {
+    throw new ApiError(
+      "KB_NOT_CONFIGURED",
+      "La Base de Conocimiento de Finnegans esta deshabilitada en el servidor.",
+      503,
+    );
+  }
+};
 
 export class KbSuggestionsService {
-  // Sugerencias a partir de un ticket existente. Construye la consulta con el
-  // titulo/descripcion/categoria del ticket y devuelve los top-N articulos.
+  // Sugerencias para un ticket existente. Solo staff; ademas un AGENT solo
+  // puede pedirlas sobre tickets que puede ver (asignado a el, sin asignar,
+  // o compartido con el) — misma regla de visibilidad que el resto del
+  // modulo de tickets.
   static async forTicket(
     ticketId: string,
+    userId: string,
+    userRole: UserRole,
     limit = 5,
-    modo: KbModo = "hibrido",
   ): Promise<{ consulta: string; sugerencias: KbSugerencia[] }> {
-    if (!isFinnegansKbConfigured()) {
-      throw new ApiError(
-        "KB_NOT_CONFIGURED",
-        "Las sugerencias de la Base de Conocimiento no estan disponibles. Falta configurar FINNEGANS_KB_URL en el servidor.",
-        503,
-      );
-    }
+    assertKbDisponible();
 
     const ticket = await prisma.ticket.findUnique({
       where: { id: ticketId },
-      select: { id: true, title: true, description: true, category: true },
+      select: { id: true, title: true, assigneeId: true },
     });
     if (!ticket) {
       throw new ApiError("TICKET_NOT_FOUND", "Ticket no encontrado", 404);
     }
 
-    const consulta = construirConsulta(ticket);
+    if (userRole === UserRole.AGENT) {
+      const esMio = ticket.assigneeId === userId;
+      const sinAsignar = ticket.assigneeId === null;
+      if (!esMio && !sinAsignar) {
+        const share = await prisma.ticketShare.findUnique({
+          where: {
+            ticketId_sharedWithId: { ticketId, sharedWithId: userId },
+          },
+          select: { id: true },
+        });
+        if (!share) {
+          throw new ApiError(
+            "FORBIDDEN",
+            "Este ticket está asignado a otro técnico",
+            403,
+          );
+        }
+      }
+    }
+
+    const consulta = construirConsulta(ticket.title);
     if (!consulta) {
       return { consulta: "", sugerencias: [] };
     }
 
-    const res = await buscarKb(consulta, { limite: limit, modo });
+    const sugerencias = await buscarKb(consulta, limit);
     logger.info(
-      { ticketId, total: res.total, modo: res.modo_usado },
-      "Sugerencias de KB para ticket",
+      { ticketId, total: sugerencias.length },
+      "Sugerencias de KB oficial para ticket",
     );
-    return { consulta, sugerencias: res.resultados.map(mapear) };
+    return { consulta, sugerencias };
   }
 
-  // Busqueda libre en la KB (caja "Buscar en la KB"). No toca la base de datos.
+  // Busqueda libre en la KB oficial (cualquier usuario autenticado; el
+  // corpus de bc.finneg.com es publico). No toca la base de datos.
   static async buscarLibre(
     q: string,
     limit = 5,
-    modo: KbModo = "hibrido",
   ): Promise<{ consulta: string; sugerencias: KbSugerencia[] }> {
-    if (!isFinnegansKbConfigured()) {
-      throw new ApiError(
-        "KB_NOT_CONFIGURED",
-        "La Base de Conocimiento no esta disponible. Falta configurar FINNEGANS_KB_URL en el servidor.",
-        503,
-      );
-    }
-    const consulta = (q || "").trim();
+    assertKbDisponible();
+    const consulta = construirConsulta(q);
     if (!consulta) {
       return { consulta: "", sugerencias: [] };
     }
-    const res = await buscarKb(consulta, { limite: limit, modo });
-    return { consulta, sugerencias: res.resultados.map(mapear) };
+    const sugerencias = await buscarKb(consulta, limit);
+    return { consulta, sugerencias };
   }
 }
 
