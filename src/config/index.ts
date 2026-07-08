@@ -48,4 +48,15 @@ export const config = {
     // de tickets resueltos. Si no esta seteada, el endpoint devuelve 503.
     apiKey: process.env.ANTHROPIC_API_KEY || "",
   },
+  // Microservicio HTTP de la Base de Conocimiento oficial de Finnegans
+  // (proyecto finnegans-kb-mcp -> api.py). Si baseUrl esta vacio, las
+  // features de sugerencias de KB quedan deshabilitadas (responden 503).
+  finnegansKb: {
+    // Ej: "http://127.0.0.1:8077". Dejar en red interna.
+    baseUrl: process.env.FINNEGANS_KB_URL || "",
+    // Bearer token si el servicio exige auth (FINNEGANS_KB_API_TOKEN alla).
+    apiToken: process.env.FINNEGANS_KB_TOKEN || "",
+    // Timeout de cada request al servicio (ms).
+    timeoutMs: parseInt(process.env.FINNEGANS_KB_TIMEOUT_MS || "8000", 10),
+  },
 } as const;
