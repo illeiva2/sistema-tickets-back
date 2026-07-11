@@ -339,6 +339,7 @@ model Maintenance {
   @@index([assetId, performedAt])
   @@index([status, scheduledAt])
   @@index([supplierId])
+  @@index([ticketId]) // FK sin índice automático en Postgres; el detalle de Ticket lista sus mantenimientos
   @@map("maintenances")
 }
 
@@ -861,6 +862,9 @@ Todas son campos de relación sin columna, salvo `tickets.asset_id` (única colu
   assetId      String?
   asset        Asset?        @relation(fields: [assetId], references: [id], onDelete: SetNull)
   maintenances Maintenance[]
+
+  // FK sin índice automático en Postgres; la ficha de Asset lista sus tickets.
+  @@index([assetId])
 ```
 
 ---
