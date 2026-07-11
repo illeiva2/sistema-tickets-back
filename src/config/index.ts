@@ -48,6 +48,12 @@ export const config = {
     // de tickets resueltos. Si no esta seteada, el endpoint devuelve 503.
     apiKey: process.env.ANTHROPIC_API_KEY || "",
   },
+  itSecrets: {
+    // Clave maestra AES-256-GCM para los secretos de Gestión IT (PUK de
+    // SIM, password VNC). 32 bytes en hex (64 chars) o base64. NO es
+    // obligatoria al boot: crypto.service la exige recién al usarse.
+    key: process.env.IT_SECRETS_KEY || "",
+  },
   // Base de Conocimiento oficial de Finnegans (bc.finneg.com).
   // Es un foro Discourse con API JSON publica: consultamos su busqueda en
   // vivo (search.json), sin indexar nada ni servicios intermedios.
