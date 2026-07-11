@@ -176,6 +176,9 @@ model Ticket {
   reads        TicketRead[]
   shares       TicketShare[]
 
+  // FK sin índice automático en Postgres: la ficha de Asset (GET /assets/:id)
+  // lista los tickets vinculados filtrando por assetId.
+  @@index([assetId])
   @@map("tickets")
 }
 
@@ -754,6 +757,9 @@ model Maintenance {
   @@index([assetId, performedAt])
   @@index([status, scheduledAt])
   @@index([supplierId])
+  // FK sin índice automático en Postgres: el detalle de Ticket lista sus
+  // mantenimientos (relación Ticket.maintenances) filtrando por ticketId.
+  @@index([ticketId])
   @@map("maintenances")
 }
 
