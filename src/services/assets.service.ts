@@ -1,4 +1,4 @@
-import { AssetType, Prisma, UserRole } from "@prisma/client";
+import { AssetStatus, AssetType, Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
@@ -109,10 +109,35 @@ const auditableUpdateFields = [
   "brand",
   "model",
   "serialNumber",
+  "specs",
+  "notes",
+  "secretsRef",
   "location",
   "warrantyUntil",
+  "purchaseItemId",
+  "retiredAt",
   "retirementReason",
 ] as const;
+
+const redactedAuditFields = new Set(["notes", "specs", "secretsRef"]);
+
+const normalizeComparable = (value: unknown): unknown => {
+  if (value instanceof Date) return value.toISOString();
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map(normalizeComparable);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nestedValue]) => [key, normalizeComparable(nestedValue)]),
+    );
+  }
+  return value;
+};
+
+const auditValuesEqual = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(normalizeComparable(left)) ===
+  JSON.stringify(normalizeComparable(right));
 
 const toAuditScalar = (value: unknown): string | number | boolean | null => {
   if (value instanceof Date) return value.toISOString();
@@ -130,25 +155,28 @@ const toAuditScalar = (value: unknown): string | number | boolean | null => {
 const buildUpdateAudit = (
   beforeAsset: Record<string, unknown>,
   afterAsset: Record<string, unknown>,
-  changes: Record<string, unknown>,
 ) => {
-  const fields: string[] = auditableUpdateFields.filter((field) =>
-    Object.prototype.hasOwnProperty.call(changes, field),
-  );
-  if (
-    Object.prototype.hasOwnProperty.call(changes, "status") &&
-    !fields.includes("retiredAt")
-  ) {
-    fields.push("retiredAt");
-  }
+  const fields: string[] = [];
+  const changes: Record<
+    string,
+    | {
+        from: string | number | boolean | null;
+        to: string | number | boolean | null;
+      }
+    | { changed: true; redacted: true }
+  > = {};
 
-  const before: Record<string, string | number | boolean | null> = {};
-  const after: Record<string, string | number | boolean | null> = {};
-  for (const field of fields) {
-    before[field] = toAuditScalar(beforeAsset[field]);
-    after[field] = toAuditScalar(afterAsset[field]);
+  for (const field of auditableUpdateFields) {
+    if (auditValuesEqual(beforeAsset[field], afterAsset[field])) continue;
+    fields.push(field);
+    changes[field] = redactedAuditFields.has(field)
+      ? { changed: true, redacted: true }
+      : {
+          from: toAuditScalar(beforeAsset[field]),
+          to: toAuditScalar(afterAsset[field]),
+        };
   }
-  return { fields, before, after };
+  return { fields, changes };
 };
 
 const parseDate = (
@@ -169,6 +197,33 @@ const specsInput = (
   if (value === undefined) return undefined;
   if (value === null) return Prisma.DbNull;
   return value as Prisma.InputJsonValue;
+};
+
+const buildUpdateCandidate = (
+  beforeAsset: Record<string, unknown>,
+  changes: Record<string, unknown>,
+  retirementTimestamp: Date | undefined,
+): Record<string, unknown> => {
+  const afterAsset = { ...beforeAsset };
+  for (const [field, value] of Object.entries(changes)) {
+    afterAsset[field] =
+      field === "warrantyUntil" ? parseDate(value as string | null) : value;
+  }
+
+  if (retirementTimestamp) {
+    afterAsset.retiredAt = retirementTimestamp;
+  } else if (
+    changes.status !== undefined &&
+    changes.status !== "RETIRED" &&
+    beforeAsset.status === "RETIRED"
+  ) {
+    afterAsset.retiredAt = null;
+    if (changes.retirementReason === undefined) {
+      afterAsset.retirementReason = null;
+    }
+  }
+
+  return afterAsset;
 };
 
 const isKnownPrismaError = (
@@ -267,8 +322,12 @@ const findActiveAsset = async (
       brand: true,
       model: true,
       serialNumber: true,
+      specs: true,
+      notes: true,
+      secretsRef: true,
       location: true,
       warrantyUntil: true,
+      purchaseItemId: true,
       retiredAt: true,
       retirementReason: true,
       assignedPersonId: true,
@@ -453,7 +512,7 @@ export class AssetsService {
     const expectedVersion = new Date(expectedUpdatedAt);
 
     try {
-      const asset = await runSerializable(async (tx) => {
+      const result = await runSerializable(async (tx) => {
         const current = await findActiveAsset(tx, id);
         const changesAssetTag =
           changes.assetTag !== undefined &&
@@ -516,35 +575,78 @@ export class AssetsService {
           }
         }
 
-        const updateData: Prisma.AssetUncheckedUpdateInput = {
-          assetTag:
-            actorRole === UserRole.ADMIN ||
-            changesAssetTag
-              ? changes.assetTag
-              : undefined,
-          type: changes.type,
-          status: changes.status,
-          brand: changes.brand,
-          model: changes.model,
-          serialNumber: changes.serialNumber,
-          specs: specsInput(changes.specs),
-          notes: changes.notes,
-          secretsRef: changes.secretsRef,
-          location: changes.location,
-          warrantyUntil: parseDate(changes.warrantyUntil),
-          purchaseItemId: changes.purchaseItemId,
-          retirementReason: changes.retirementReason,
-        };
-        if (changes.status === "RETIRED") {
-          updateData.retiredAt = new Date();
-        } else if (
-          changes.status !== undefined &&
-          current.status === "RETIRED"
-        ) {
-          updateData.retiredAt = null;
-          if (changes.retirementReason === undefined) {
-            updateData.retirementReason = null;
+        const retirementTimestamp =
+          changes.status === "RETIRED" && current.status !== "RETIRED"
+            ? new Date()
+            : undefined;
+        const candidate = buildUpdateCandidate(
+          current as unknown as Record<string, unknown>,
+          changes,
+          retirementTimestamp,
+        );
+        const audit = buildUpdateAudit(
+          current as unknown as Record<string, unknown>,
+          candidate,
+        );
+
+        if (audit.fields.length === 0) {
+          const unchanged = await tx.asset.findFirst({
+            where: { id, isActive: true },
+            select: assetListSelect,
+          });
+          if (!unchanged) {
+            throw new ApiError("ASSET_NOT_FOUND", "Activo no encontrado", 404);
           }
+          return { asset: unchanged, changed: false };
+        }
+
+        const changedFields = new Set(audit.fields);
+        const updateData: Prisma.AssetUncheckedUpdateInput = {};
+        if (changedFields.has("assetTag")) {
+          updateData.assetTag = candidate.assetTag as string;
+        }
+        if (changedFields.has("type")) {
+          updateData.type = candidate.type as AssetType;
+        }
+        if (changedFields.has("status")) {
+          updateData.status = candidate.status as AssetStatus;
+        }
+        if (changedFields.has("brand")) {
+          updateData.brand = candidate.brand as string;
+        }
+        if (changedFields.has("model")) {
+          updateData.model = candidate.model as string;
+        }
+        if (changedFields.has("serialNumber")) {
+          updateData.serialNumber = candidate.serialNumber as string | null;
+        }
+        if (changedFields.has("specs")) {
+          updateData.specs = specsInput(
+            candidate.specs as Record<string, unknown> | null,
+          );
+        }
+        if (changedFields.has("notes")) {
+          updateData.notes = candidate.notes as string | null;
+        }
+        if (changedFields.has("secretsRef")) {
+          updateData.secretsRef = candidate.secretsRef as string | null;
+        }
+        if (changedFields.has("location")) {
+          updateData.location = candidate.location as string | null;
+        }
+        if (changedFields.has("warrantyUntil")) {
+          updateData.warrantyUntil = candidate.warrantyUntil as Date | null;
+        }
+        if (changedFields.has("purchaseItemId")) {
+          updateData.purchaseItemId = candidate.purchaseItemId as string | null;
+        }
+        if (changedFields.has("retiredAt")) {
+          updateData.retiredAt = candidate.retiredAt as Date | null;
+        }
+        if (changedFields.has("retirementReason")) {
+          updateData.retirementReason = candidate.retirementReason as
+            | string
+            | null;
         }
 
         const write = await tx.asset.updateMany({
@@ -569,11 +671,6 @@ export class AssetsService {
         if (!updated) {
           throw new ApiError("ASSET_NOT_FOUND", "Activo no encontrado", 404);
         }
-        const audit = buildUpdateAudit(
-          current as unknown as Record<string, unknown>,
-          updated as unknown as Record<string, unknown>,
-          changes,
-        );
         await tx.auditLog.create({
           data: {
             entity: "asset",
@@ -583,11 +680,14 @@ export class AssetsService {
             meta: audit,
           },
         });
-        return updated;
+        return { asset: updated, changed: true };
       });
 
-      logger.info({ assetId: id, actorId }, "Asset updated");
-      return asset;
+      logger.info(
+        { assetId: id, actorId, changed: result.changed },
+        result.changed ? "Asset updated" : "Asset update skipped",
+      );
+      return result.asset;
     } catch (error) {
       translateAssetWriteError(error);
     }

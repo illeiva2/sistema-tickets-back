@@ -343,14 +343,99 @@ describe("API de inventario IT", () => {
     expect(response.body.data.status).toBe("ASSIGNED");
     expect(prismaMock.assetAssignment.findFirst).not.toHaveBeenCalled();
     expect(prismaMock.asset.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ assetTag: undefined }),
-        where: expect.objectContaining({ updatedAt: version }),
-      }),
+      {
+        data: { brand: "Lenovo actualizado" },
+        where: {
+          id: assetId,
+          isActive: true,
+          updatedAt: version,
+        },
+      },
     );
     const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
       .meta;
-    expect(auditMeta.fields).not.toContain("expectedUpdatedAt");
+    expect(auditMeta).toEqual({
+      fields: ["brand"],
+      changes: {
+        brand: { from: "Lenovo", to: "Lenovo actualizado" },
+      },
+    });
+  });
+
+  it("devuelve el recurso sin escribir ni auditar cuando el PATCH es un no-op", async () => {
+    const unchanged = makeAsset({
+      status: "ASSIGNED",
+      assignedPersonId: personId,
+      specs: { ramGb: 16, cpu: "Core i7" },
+      notes: "Equipo de desarrollo",
+      warrantyUntil: new Date("2027-08-31T00:00:00.000Z"),
+    });
+    prismaMock.asset.findFirst
+      .mockResolvedValueOnce(unchanged as any)
+      .mockResolvedValueOnce(unchanged as any);
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("AGENT"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        assetTag: "nb-0001",
+        status: "ASSIGNED",
+        brand: " Lenovo ",
+        specs: { cpu: "Core i7", ramGb: 16 },
+        notes: " Equipo de desarrollo ",
+        warrantyUntil: "2027-08-31",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.assetTag).toBe("NB-0001");
+    expect(response.body.data.secretsRef).toBeUndefined();
+    expect(prismaMock.assetAssignment.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
+    const safeSelect = (prismaMock.asset.findFirst.mock.calls[1][0] as any)
+      .select;
+    expect(safeSelect.secretsRef).toBeUndefined();
+  });
+
+  it("no regenera retiredAt al reenviar el mismo estado RETIRED", async () => {
+    const retiredAt = new Date("2026-06-01T09:00:00.000Z");
+    const unchanged = makeAsset({ status: "RETIRED", retiredAt });
+    prismaMock.asset.findFirst
+      .mockResolvedValueOnce(unchanged as any)
+      .mockResolvedValueOnce(unchanged as any);
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("ADMIN"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        status: "RETIRED",
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.retiredAt).toBe(retiredAt.toISOString());
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("mantiene el conflicto de versión aunque los valores enviados sean iguales", async () => {
+    prismaMock.asset.findFirst.mockResolvedValueOnce(
+      makeAsset({ updatedAt: nextVersion }) as any,
+    );
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("AGENT"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        assetTag: "NB-0001",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("ASSET_VERSION_CONFLICT");
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -420,7 +505,7 @@ describe("API de inventario IT", () => {
     expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it("audita before/after escalares sin datos sensibles ni expectedUpdatedAt", async () => {
+  it("audita sólo cambios reales, con IDs y marcadores sensibles redactados", async () => {
     prismaMock.asset.findFirst
       .mockResolvedValueOnce(makeAsset() as any)
       .mockResolvedValueOnce(
@@ -438,6 +523,7 @@ describe("API de inventario IT", () => {
       .send({
         expectedUpdatedAt: version.toISOString(),
         brand: "Dell",
+        model: "ThinkPad T14",
         notes: "nota confidencial",
         specs: { cpu: "Ryzen secreto" },
         secretsRef: "vault:item:123",
@@ -448,15 +534,24 @@ describe("API de inventario IT", () => {
     const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
       .meta;
     expect(auditMeta).toEqual({
-      fields: ["brand"],
-      before: { brand: "Lenovo" },
-      after: { brand: "Dell" },
+      fields: ["brand", "specs", "notes", "secretsRef", "purchaseItemId"],
+      changes: {
+        brand: { from: "Lenovo", to: "Dell" },
+        specs: { changed: true, redacted: true },
+        notes: { changed: true, redacted: true },
+        secretsRef: { changed: true, redacted: true },
+        purchaseItemId: {
+          from: null,
+          to: "cmh333aaaaaaaaaaaaaaaaaaa",
+        },
+      },
     });
     const serialized = JSON.stringify(auditMeta);
     expect(serialized).not.toContain("nota confidencial");
     expect(serialized).not.toContain("Ryzen secreto");
     expect(serialized).not.toContain("vault:item:123");
-    expect(serialized).not.toContain("purchaseItemId");
+    expect(serialized).toContain("cmh333aaaaaaaaaaaaaaaaaaa");
+    expect(serialized).not.toContain("model");
     expect(serialized).not.toContain("expectedUpdatedAt");
   });
 
