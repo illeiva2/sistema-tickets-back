@@ -52,7 +52,11 @@ export class AssetsController {
     async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
       try {
         const user = requireAuthenticatedUser(req);
-        const asset = await AssetsService.create(req.body, user.id);
+        const asset = await AssetsService.create(
+          req.body,
+          user.id,
+          user.role,
+        );
         res.status(201).json({ success: true, data: asset });
       } catch (error) {
         next(error);

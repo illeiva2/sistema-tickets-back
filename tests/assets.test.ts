@@ -26,6 +26,8 @@ const app = createApp();
 const assetId = "cmh000aaaaaaaaaaaaaaaaaaa";
 const personId = "cmh111aaaaaaaaaaaaaaaaaaa";
 const assignmentId = "cmh222aaaaaaaaaaaaaaaaaaa";
+const version = new Date("2026-07-12T12:00:00.000Z");
+const nextVersion = new Date("2026-07-12T12:01:00.000Z");
 
 const auth = (role: "USER" | "AGENT" | "ADMIN") => ({
   Authorization: `Bearer ${signAccessToken({ role })}`,
@@ -41,7 +43,6 @@ const makeAsset = (overrides: Record<string, any> = {}) => ({
   serialNumber: "SER-001",
   specs: { ramGb: 16 },
   notes: null,
-  secretsRef: null,
   location: "Depósito IT",
   warrantyUntil: null,
   assignedPersonId: null,
@@ -53,7 +54,7 @@ const makeAsset = (overrides: Record<string, any> = {}) => ({
   deletedAt: null,
   createdById: "user-1",
   createdAt: new Date(),
-  updatedAt: new Date(),
+  updatedAt: version,
   assignedPerson: null,
   assignedDepartment: null,
   createdBy: {
@@ -96,6 +97,7 @@ describe("API de inventario IT", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.items).toHaveLength(1);
+    expect(response.body.data.items[0].secretsRef).toBeUndefined();
     expect(response.body.data.pagination).toEqual({
       page: 2,
       pageSize: 10,
@@ -113,6 +115,9 @@ describe("API de inventario IT", () => {
         take: 10,
       }),
     );
+    const listSelect = (prismaMock.asset.findMany.mock.calls[0][0] as any)
+      .select;
+    expect(listSelect.secretsRef).toBeUndefined();
 
     const invalid = await request(app)
       .get("/api/it/assets?type=INVALID")
@@ -139,10 +144,11 @@ describe("API de inventario IT", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.assignments).toHaveLength(1);
+    expect(response.body.data.secretsRef).toBeUndefined();
     expect(prismaMock.asset.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: assetId, isActive: true },
-        include: expect.objectContaining({
+        select: expect.objectContaining({
           assignedPerson: expect.any(Object),
           assignedDepartment: expect.any(Object),
           createdBy: expect.any(Object),
@@ -152,6 +158,9 @@ describe("API de inventario IT", () => {
         }),
       }),
     );
+    const detailSelect = (prismaMock.asset.findFirst.mock.calls[0][0] as any)
+      .select;
+    expect(detailSelect.secretsRef).toBeUndefined();
   });
 
   it.each([
@@ -198,7 +207,7 @@ describe("API de inventario IT", () => {
         model: "T14",
         warrantyUntil: "2027-08-31",
         specs: { cpu: "Core i7", ramGb: 16 },
-        notes: "dato-que-no-debe-ir-al-audit",
+        notes: "   ",
       });
 
     expect(response.status).toBe(201);
@@ -207,6 +216,7 @@ describe("API de inventario IT", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           assetTag: "NB-0003",
+          notes: null,
           warrantyUntil: new Date("2027-08-31T00:00:00.000Z"),
         }),
       }),
@@ -217,11 +227,32 @@ describe("API de inventario IT", () => {
     expect(auditMeta.fields).toEqual(
       expect.arrayContaining(["assetTag", "notes", "specs", "warrantyUntil"]),
     );
-    expect(JSON.stringify(auditMeta)).not.toContain(
-      "dato-que-no-debe-ir-al-audit",
-    );
     expect(JSON.stringify(auditMeta)).not.toContain("Core i7");
   });
+
+  it.each(["assetTag", "secretsRef", "purchaseItemId"])(
+    "impide que AGENT defina el campo administrativo %s al crear",
+    async (field) => {
+      const values: Record<string, string> = {
+        assetTag: "NB-9000",
+        secretsRef: "vault:item:123",
+        purchaseItemId: "cmh333aaaaaaaaaaaaaaaaaaa",
+      };
+      const response = await request(app)
+        .post("/api/it/assets")
+        .set(auth("AGENT"))
+        .send({
+          type: "NOTEBOOK",
+          brand: "Lenovo",
+          model: "T14",
+          [field]: values[field],
+        });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+      expect(prismaMock.asset.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("exige persona y/o sector para asignar", async () => {
     const response = await request(app)
@@ -287,13 +318,15 @@ describe("API de inventario IT", () => {
         assignedPersonId: personId,
       }) as any,
     );
-    prismaMock.asset.update.mockResolvedValueOnce(
+    prismaMock.asset.findFirst.mockResolvedValueOnce(
       makeAsset({
         status: "ASSIGNED",
         assignedPersonId: personId,
         brand: "Lenovo actualizado",
+        updatedAt: nextVersion,
       }) as any,
     );
+    prismaMock.asset.updateMany.mockResolvedValueOnce({ count: 1 } as any);
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
 
     const response = await request(app)
@@ -303,16 +336,128 @@ describe("API de inventario IT", () => {
         assetTag: "NB-0001",
         status: "ASSIGNED",
         brand: "Lenovo actualizado",
+        expectedUpdatedAt: version.toISOString(),
       });
 
     expect(response.status).toBe(200);
     expect(response.body.data.status).toBe("ASSIGNED");
     expect(prismaMock.assetAssignment.findFirst).not.toHaveBeenCalled();
-    expect(prismaMock.asset.update).toHaveBeenCalledWith(
+    expect(prismaMock.asset.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ assetTag: undefined }),
+        where: expect.objectContaining({ updatedAt: version }),
       }),
     );
+    const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
+      .meta;
+    expect(auditMeta.fields).not.toContain("expectedUpdatedAt");
+  });
+
+  it.each([
+    ["assetTag", "NB-9000"],
+    ["secretsRef", "vault:item:123"],
+    ["purchaseItemId", "cmh333aaaaaaaaaaaaaaaaaaa"],
+  ])(
+    "impide que AGENT modifique el campo administrativo %s",
+    async (field, value) => {
+      prismaMock.asset.findFirst.mockResolvedValueOnce(makeAsset() as any);
+
+      const response = await request(app)
+        .patch("/api/it/assets/" + assetId)
+        .set(auth("AGENT"))
+        .send({
+          expectedUpdatedAt: version.toISOString(),
+          [field]: value,
+        });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe("FORBIDDEN");
+      expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("devuelve conflicto si expectedUpdatedAt quedó desactualizado", async () => {
+    prismaMock.asset.findFirst.mockResolvedValueOnce(
+      makeAsset({ updatedAt: nextVersion }) as any,
+    );
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("ADMIN"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        brand: "Dell",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("ASSET_VERSION_CONFLICT");
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("detecta una carrera entre lectura y escritura con la precondición SQL", async () => {
+    prismaMock.asset.findFirst.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.asset.updateMany.mockResolvedValueOnce({ count: 0 } as any);
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("ADMIN"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        brand: "Dell",
+      });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("ASSET_VERSION_CONFLICT");
+    expect(prismaMock.asset.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: assetId,
+          isActive: true,
+          updatedAt: version,
+        },
+      }),
+    );
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("audita before/after escalares sin datos sensibles ni expectedUpdatedAt", async () => {
+    prismaMock.asset.findFirst
+      .mockResolvedValueOnce(makeAsset() as any)
+      .mockResolvedValueOnce(
+        makeAsset({
+          brand: "Dell",
+          updatedAt: nextVersion,
+        }) as any,
+      );
+    prismaMock.asset.updateMany.mockResolvedValueOnce({ count: 1 } as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("ADMIN"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        brand: "Dell",
+        notes: "nota confidencial",
+        specs: { cpu: "Ryzen secreto" },
+        secretsRef: "vault:item:123",
+        purchaseItemId: "cmh333aaaaaaaaaaaaaaaaaaa",
+      });
+
+    expect(response.status).toBe(200);
+    const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
+      .meta;
+    expect(auditMeta).toEqual({
+      fields: ["brand"],
+      before: { brand: "Lenovo" },
+      after: { brand: "Dell" },
+    });
+    const serialized = JSON.stringify(auditMeta);
+    expect(serialized).not.toContain("nota confidencial");
+    expect(serialized).not.toContain("Ryzen secreto");
+    expect(serialized).not.toContain("vault:item:123");
+    expect(serialized).not.toContain("purchaseItemId");
+    expect(serialized).not.toContain("expectedUpdatedAt");
   });
 
   it("impide pasar a ASSIGNED por PATCH", async () => {
@@ -321,11 +466,14 @@ describe("API de inventario IT", () => {
     const response = await request(app)
       .patch("/api/it/assets/" + assetId)
       .set(auth("ADMIN"))
-      .send({ status: "ASSIGNED" });
+      .send({
+        status: "ASSIGNED",
+        expectedUpdatedAt: version.toISOString(),
+      });
 
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe("ASSET_STATUS_MANAGED");
-    expect(prismaMock.asset.update).not.toHaveBeenCalled();
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
   });
 
   it("devuelve el activo, cierra el historial y audita sin returnNote", async () => {

@@ -65,5 +65,14 @@ describe("GET /api/it/overview", () => {
     expect(response.body.data.coverage.crud).toEqual({
       assets: "available",
     });
+    expect(prismaMock.asset.count).toHaveBeenNthCalledWith(1, {
+      where: { isActive: true },
+    });
+    expect(prismaMock.asset.count).toHaveBeenNthCalledWith(2, {
+      where: { status: "ASSIGNED", isActive: true },
+    });
+    expect(prismaMock.asset.count).toHaveBeenNthCalledWith(3, {
+      where: { status: "IN_REPAIR", isActive: true },
+    });
   });
 });

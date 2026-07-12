@@ -34,7 +34,8 @@ const assetTagSchema = z
 
 const nullableText = (max: number) =>
   z.preprocess(
-    (value) => (value === "" ? null : value),
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? null : value,
     z.string().trim().max(max).nullable().optional(),
   );
 
@@ -147,6 +148,9 @@ export const createAssetSchema = z
 
 export const updateAssetSchema = z
   .object({
+    expectedUpdatedAt: z
+      .string()
+      .datetime("expectedUpdatedAt debe ser una fecha ISO válida"),
     assetTag: assetTagSchema.optional(),
     type: z.enum(ASSET_TYPES).optional(),
     status: z.enum(ASSET_STATUSES).optional(),
@@ -163,7 +167,10 @@ export const updateAssetSchema = z
   })
   .strict()
   .superRefine((data, ctx) => {
-    if (Object.keys(data).length === 0) {
+    if (
+      Object.keys(data).filter((field) => field !== "expectedUpdatedAt")
+        .length === 0
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Debe enviar al menos un campo para actualizar",

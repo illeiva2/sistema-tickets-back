@@ -33,7 +33,31 @@ const assignmentInclude = {
   assignedBy: { select: actorSelect },
 } as const;
 
-const assetListInclude = {
+const assetSafeScalarSelect = {
+  id: true,
+  assetTag: true,
+  type: true,
+  status: true,
+  brand: true,
+  model: true,
+  serialNumber: true,
+  specs: true,
+  notes: true,
+  location: true,
+  warrantyUntil: true,
+  assignedPersonId: true,
+  assignedDepartmentId: true,
+  purchaseItemId: true,
+  retiredAt: true,
+  retirementReason: true,
+  isActive: true,
+  createdById: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+const assetListSelect = {
+  ...assetSafeScalarSelect,
   assignedPerson: { select: personSelect },
   assignedDepartment: { select: departmentSelect },
   createdBy: { select: actorSelect },
@@ -45,7 +69,8 @@ const assetListInclude = {
   },
 } as const;
 
-const assetDetailInclude = {
+const assetDetailSelect = {
+  ...assetSafeScalarSelect,
   assignedPerson: { select: personSelect },
   assignedDepartment: { select: departmentSelect },
   createdBy: { select: actorSelect },
@@ -70,6 +95,61 @@ const assetTagPrefixes: Record<AssetType, string> = {
 
 const safeFieldNames = (data: Record<string, unknown>): string[] =>
   Object.keys(data).sort();
+
+const adminOnlyAssetFields = [
+  "assetTag",
+  "secretsRef",
+  "purchaseItemId",
+] as const;
+
+const auditableUpdateFields = [
+  "assetTag",
+  "type",
+  "status",
+  "brand",
+  "model",
+  "serialNumber",
+  "location",
+  "warrantyUntil",
+  "retirementReason",
+] as const;
+
+const toAuditScalar = (value: unknown): string | number | boolean | null => {
+  if (value instanceof Date) return value.toISOString();
+  if (value === null) return null;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  return null;
+};
+
+const buildUpdateAudit = (
+  beforeAsset: Record<string, unknown>,
+  afterAsset: Record<string, unknown>,
+  changes: Record<string, unknown>,
+) => {
+  const fields: string[] = auditableUpdateFields.filter((field) =>
+    Object.prototype.hasOwnProperty.call(changes, field),
+  );
+  if (
+    Object.prototype.hasOwnProperty.call(changes, "status") &&
+    !fields.includes("retiredAt")
+  ) {
+    fields.push("retiredAt");
+  }
+
+  const before: Record<string, string | number | boolean | null> = {};
+  const after: Record<string, string | number | boolean | null> = {};
+  for (const field of fields) {
+    before[field] = toAuditScalar(beforeAsset[field]);
+    after[field] = toAuditScalar(afterAsset[field]);
+  }
+  return { fields, before, after };
+};
 
 const parseDate = (
   value: string | null | undefined,
@@ -182,9 +262,18 @@ const findActiveAsset = async (
     select: {
       id: true,
       assetTag: true,
+      type: true,
       status: true,
+      brand: true,
+      model: true,
+      serialNumber: true,
+      location: true,
+      warrantyUntil: true,
+      retiredAt: true,
+      retirementReason: true,
       assignedPersonId: true,
       assignedDepartmentId: true,
+      updatedAt: true,
     },
   });
   if (!asset) {
@@ -241,7 +330,7 @@ export class AssetsService {
     const [items, total] = await Promise.all([
       prisma.asset.findMany({
         where,
-        include: assetListInclude,
+        select: assetListSelect,
         orderBy: { assetTag: "asc" },
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -263,7 +352,7 @@ export class AssetsService {
   static async getOne(id: string) {
     const asset = await prisma.asset.findFirst({
       where: { id, isActive: true },
-      include: assetDetailInclude,
+      select: assetDetailSelect,
     });
     if (!asset) {
       throw new ApiError("ASSET_NOT_FOUND", "Activo no encontrado", 404);
@@ -271,7 +360,22 @@ export class AssetsService {
     return asset;
   }
 
-  static async create(data: CreateAssetRequest, actorId: string) {
+  static async create(
+    data: CreateAssetRequest,
+    actorId: string,
+    actorRole: UserRole,
+  ) {
+    const forbiddenFields = adminOnlyAssetFields.filter(
+      (field) => data[field] !== undefined,
+    );
+    if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "Solo ADMIN puede definir código manual, referencia de secretos o compra",
+        403,
+        { fields: forbiddenFields },
+      );
+    }
     const generatedTag = !data.assetTag;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -297,7 +401,7 @@ export class AssetsService {
               retiredAt: data.status === "RETIRED" ? new Date() : undefined,
               createdById: actorId,
             },
-            include: assetListInclude,
+            select: assetListSelect,
           });
 
           await tx.auditLog.create({
@@ -345,24 +449,37 @@ export class AssetsService {
     actorId: string,
     actorRole: UserRole,
   ) {
+    const { expectedUpdatedAt, ...changes } = data;
+    const expectedVersion = new Date(expectedUpdatedAt);
+
     try {
       const asset = await runSerializable(async (tx) => {
         const current = await findActiveAsset(tx, id);
         const changesAssetTag =
-          data.assetTag !== undefined &&
-          data.assetTag.toUpperCase() !== current.assetTag.toUpperCase();
-        if (
-          changesAssetTag &&
-          actorRole !== UserRole.ADMIN
-        ) {
+          changes.assetTag !== undefined &&
+          changes.assetTag.toUpperCase() !== current.assetTag.toUpperCase();
+        const forbiddenFields = [
+          ...(changesAssetTag ? ["assetTag"] : []),
+          ...(changes.secretsRef !== undefined ? ["secretsRef"] : []),
+          ...(changes.purchaseItemId !== undefined ? ["purchaseItemId"] : []),
+        ];
+        if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
           throw new ApiError(
             "FORBIDDEN",
-            "Solo ADMIN puede modificar el código de activo",
+            "Solo ADMIN puede modificar código, referencia de secretos o compra",
             403,
+            { fields: forbiddenFields },
+          );
+        }
+        if (current.updatedAt.getTime() !== expectedVersion.getTime()) {
+          throw new ApiError(
+            "ASSET_VERSION_CONFLICT",
+            "El activo fue modificado por otro usuario",
+            409,
           );
         }
         if (
-          data.status === "ASSIGNED" &&
+          changes.status === "ASSIGNED" &&
           current.status !== "ASSIGNED"
         ) {
           throw new ApiError(
@@ -372,8 +489,8 @@ export class AssetsService {
           );
         }
         if (
-          data.status !== undefined &&
-          data.status !== current.status
+          changes.status !== undefined &&
+          changes.status !== current.status
         ) {
           const activeAssignment = await tx.assetAssignment.findFirst({
             where: { assetId: id, endAt: null },
@@ -403,45 +520,67 @@ export class AssetsService {
           assetTag:
             actorRole === UserRole.ADMIN ||
             changesAssetTag
-              ? data.assetTag
+              ? changes.assetTag
               : undefined,
-          type: data.type,
-          status: data.status,
-          brand: data.brand,
-          model: data.model,
-          serialNumber: data.serialNumber,
-          specs: specsInput(data.specs),
-          notes: data.notes,
-          secretsRef: data.secretsRef,
-          location: data.location,
-          warrantyUntil: parseDate(data.warrantyUntil),
-          purchaseItemId: data.purchaseItemId,
-          retirementReason: data.retirementReason,
+          type: changes.type,
+          status: changes.status,
+          brand: changes.brand,
+          model: changes.model,
+          serialNumber: changes.serialNumber,
+          specs: specsInput(changes.specs),
+          notes: changes.notes,
+          secretsRef: changes.secretsRef,
+          location: changes.location,
+          warrantyUntil: parseDate(changes.warrantyUntil),
+          purchaseItemId: changes.purchaseItemId,
+          retirementReason: changes.retirementReason,
         };
-        if (data.status === "RETIRED") {
+        if (changes.status === "RETIRED") {
           updateData.retiredAt = new Date();
         } else if (
-          data.status !== undefined &&
+          changes.status !== undefined &&
           current.status === "RETIRED"
         ) {
           updateData.retiredAt = null;
-          if (data.retirementReason === undefined) {
+          if (changes.retirementReason === undefined) {
             updateData.retirementReason = null;
           }
         }
 
-        const updated = await tx.asset.update({
-          where: { id },
+        const write = await tx.asset.updateMany({
+          where: {
+            id,
+            isActive: true,
+            updatedAt: expectedVersion,
+          },
           data: updateData,
-          include: assetListInclude,
         });
+        if (write.count !== 1) {
+          throw new ApiError(
+            "ASSET_VERSION_CONFLICT",
+            "El activo fue modificado por otro usuario",
+            409,
+          );
+        }
+        const updated = await tx.asset.findFirst({
+          where: { id, isActive: true },
+          select: assetListSelect,
+        });
+        if (!updated) {
+          throw new ApiError("ASSET_NOT_FOUND", "Activo no encontrado", 404);
+        }
+        const audit = buildUpdateAudit(
+          current as unknown as Record<string, unknown>,
+          updated as unknown as Record<string, unknown>,
+          changes,
+        );
         await tx.auditLog.create({
           data: {
             entity: "asset",
             entityId: id,
             action: "updated",
             actorId,
-            meta: { fields: safeFieldNames(data) },
+            meta: audit,
           },
         });
         return updated;
@@ -533,7 +672,7 @@ export class AssetsService {
           assignedPersonId: data.personId ?? null,
           assignedDepartmentId: data.departmentId ?? null,
         },
-        include: assetListInclude,
+        select: assetListSelect,
       });
       await tx.auditLog.create({
         data: {
@@ -606,7 +745,7 @@ export class AssetsService {
           assignedPersonId: null,
           assignedDepartmentId: null,
         },
-        include: assetListInclude,
+        select: assetListSelect,
       });
       await tx.auditLog.create({
         data: {

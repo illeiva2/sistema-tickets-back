@@ -33,7 +33,7 @@ export const getItOverview = async () => {
   ] = await prisma.$transaction([
     prisma.person.count(),
     prisma.person.count({ where: { isActive: true } }),
-    prisma.asset.count(),
+    prisma.asset.count({ where: { isActive: true } }),
     prisma.asset.count({ where: { status: "ASSIGNED", isActive: true } }),
     prisma.asset.count({ where: { status: "IN_REPAIR", isActive: true } }),
     prisma.assetAssignment.count({ where: { endAt: null } }),
