@@ -11,6 +11,7 @@ import departmentsRoutes from "./departments.routes";
 import workshopsRoutes from "./workshops.routes";
 import projectsRoutes from "./projects.routes";
 import kbRoutes from "./kb.routes";
+import itRoutes from "./it.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
 const router = Router();
@@ -29,6 +30,7 @@ router.use("/departments", departmentsRoutes);
 router.use("/workshops", workshopsRoutes);
 router.use("/projects", projectsRoutes);
 router.use("/kb", kbRoutes);
+router.use("/it", itRoutes);
 
 if (fileOrganizationRouter) {
     logger.info("Mounting file-organization routes");
