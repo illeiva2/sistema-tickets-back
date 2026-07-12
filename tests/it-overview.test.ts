@@ -58,9 +58,12 @@ describe("GET /api/it/overview", () => {
     expect(response.body.data.counts.assets.total).toBe(0);
     expect(response.body.data.coverage.apiSurface).toEqual({
       overview: "available",
-      crud: "not_exposed",
+      crud: "assets",
       agentGateway: "not_exposed",
       remoteControl: "not_exposed",
+    });
+    expect(response.body.data.coverage.crud).toEqual({
+      assets: "available",
     });
   });
 });

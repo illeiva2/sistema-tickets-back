@@ -85,6 +85,9 @@ export const getItOverview = async () => {
       remoteSessions: { active: activeRemoteSessions },
     },
     coverage: {
+      crud: {
+        assets: "available",
+      },
       modeledDomains: [
         "people",
         "assets",
@@ -100,7 +103,7 @@ export const getItOverview = async () => {
       ],
       apiSurface: {
         overview: "available",
-        crud: "not_exposed",
+        crud: "assets",
         agentGateway: "not_exposed",
         remoteControl: "not_exposed",
       },
