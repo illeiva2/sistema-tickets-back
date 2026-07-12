@@ -1181,8 +1181,8 @@ model RemoteSession {
   targetHost String? // ip/host destino al momento de conectar
   startedAt  DateTime            @default(now())
   endedAt    DateTime?
-  bytesIn    Int?
-  bytesOut   Int?
+  bytesIn    BigInt?
+  bytesOut   BigInt?
   errorMsg   String?
 
   device AgentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
