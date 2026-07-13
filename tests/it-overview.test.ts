@@ -58,12 +58,19 @@ describe("GET /api/it/overview", () => {
     expect(response.body.data.counts.assets.total).toBe(0);
     expect(response.body.data.coverage.apiSurface).toEqual({
       overview: "available",
-      crud: "assets",
+      crud: "assets,people",
       agentGateway: "not_exposed",
       remoteControl: "not_exposed",
     });
     expect(response.body.data.coverage.crud).toEqual({
+      people: "available",
       assets: "available",
+    });
+    expect(prismaMock.person.count).toHaveBeenNthCalledWith(1, {
+      where: { isActive: true },
+    });
+    expect(prismaMock.person.count).toHaveBeenNthCalledWith(2, {
+      where: { isActive: true, status: "ACTIVE" },
     });
     expect(prismaMock.asset.count).toHaveBeenNthCalledWith(1, {
       where: { isActive: true },

@@ -31,8 +31,10 @@ export const getItOverview = async () => {
     agentDevicesOnline,
     activeRemoteSessions,
   ] = await prisma.$transaction([
-    prisma.person.count(),
     prisma.person.count({ where: { isActive: true } }),
+    prisma.person.count({
+      where: { isActive: true, status: "ACTIVE" },
+    }),
     prisma.asset.count({ where: { isActive: true } }),
     prisma.asset.count({ where: { status: "ASSIGNED", isActive: true } }),
     prisma.asset.count({ where: { status: "IN_REPAIR", isActive: true } }),
@@ -86,6 +88,7 @@ export const getItOverview = async () => {
     },
     coverage: {
       crud: {
+        people: "available",
         assets: "available",
       },
       modeledDomains: [
@@ -103,7 +106,7 @@ export const getItOverview = async () => {
       ],
       apiSurface: {
         overview: "available",
-        crud: "assets",
+        crud: "assets,people",
         agentGateway: "not_exposed",
         remoteControl: "not_exposed",
       },
