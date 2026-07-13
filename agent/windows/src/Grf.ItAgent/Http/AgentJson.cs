@@ -10,5 +10,6 @@ internal static class AgentJson
         PropertyNameCaseInsensitive = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        Converters = { new UtcDateTimeOffsetJsonConverter() },
     };
 }

@@ -14,13 +14,23 @@ internal static class ServiceCollector
     {
         var sshPort = ReadSshPort();
         var vncPort = ReadVncPort();
-        var sshAvailable = ProcessExists("sshd") || (ServiceExists("sshd") && IsTcpPortListening(sshPort));
-        var vncAvailable = VncProcessNames.Any(ProcessExists)
-            || (VncServiceNames.Any(ServiceExists) && IsTcpPortListening(vncPort));
+        var sshAvailable = DetermineAvailability(
+            ServiceExists("sshd"),
+            ProcessExists("sshd"),
+            IsTcpPortListening(sshPort));
+        var vncAvailable = DetermineAvailability(
+            VncServiceNames.Any(ServiceExists),
+            VncProcessNames.Any(ProcessExists),
+            IsTcpPortListening(vncPort));
 
         return new ServiceSnapshot(
             new RemoteServiceSnapshot(sshAvailable, sshAvailable ? sshPort : null),
             new RemoteServiceSnapshot(vncAvailable, vncAvailable ? vncPort : null));
+    }
+
+    internal static bool DetermineAvailability(bool serviceExists, bool processExists, bool portListening)
+    {
+        return (serviceExists || processExists) && portListening;
     }
 
     private static bool IsTcpPortListening(int port)

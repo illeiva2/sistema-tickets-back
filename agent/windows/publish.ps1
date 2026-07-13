@@ -47,6 +47,7 @@ if ($targetFramework.StartsWith("net8.0", [System.StringComparison]::OrdinalIgno
 }
 
 if (-not $SkipTests) {
+    & (Join-Path $PSScriptRoot "tests\validate-scripts.ps1")
     & dotnet run --project $testProjectPath --configuration Release
     if ($LASTEXITCODE -ne 0) {
         throw "Las pruebas del agente fallaron."

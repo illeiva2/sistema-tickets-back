@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Grf.ItAgent.Configuration;
@@ -31,6 +33,8 @@ internal static class Program
             ("DPAPI LocalMachine cifra y descifra", DpapiRoundTripTest),
             ("CredentialStore conserva pending y enrolled", CredentialStoreTest),
             ("StringLimiter no corta surrogate pair", StringLimiterTest),
+            ("WTS usa explícitamente Unicode", WtsUnicodeInteropTest),
+            ("Servicio remoto exige puerto escuchando", RemoteServiceAvailabilityTest),
         };
 
         var failures = 0;
@@ -124,7 +128,9 @@ internal static class Program
 
     private static Task HeartbeatJsonContractTest()
     {
-        var request = CreateHeartbeat(null);
+        var collectedAt = new DateTimeOffset(2026, 7, 13, 9, 0, 0, TimeSpan.FromHours(-3));
+        var inventory = new InventorySnapshot(collectedAt, null, null, null, null, null);
+        var request = CreateHeartbeat(inventory);
         var payload = HeartbeatPayloadLimiter.Serialize(request);
         using var document = JsonDocument.Parse(payload.Bytes);
         var root = document.RootElement;
@@ -135,6 +141,9 @@ internal static class Program
         Assert.True(root.TryGetProperty("services", out _));
         Assert.True(root.TryGetProperty("os", out _));
         Assert.False(root.TryGetProperty("username", out _));
+        var serializedCollectedAt = root.GetProperty("inventory").GetProperty("collectedAt").GetString();
+        Assert.Equal("2026-07-13T12:00:00.0000000Z", serializedCollectedAt);
+        Assert.False(serializedCollectedAt!.Contains("+00:00", StringComparison.Ordinal));
         CryptographicOperations.ZeroMemory(payload.Bytes);
         return Task.CompletedTask;
     }
@@ -226,6 +235,29 @@ internal static class Program
     private static Task StringLimiterTest()
     {
         Assert.Equal("ab", StringLimiter.LimitOptional("ab😀", 3));
+        return Task.CompletedTask;
+    }
+
+    private static Task WtsUnicodeInteropTest()
+    {
+        foreach (var methodName in new[] { "WTSEnumerateSessions", "WTSQuerySessionInformation" })
+        {
+            var method = typeof(WindowsNative).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
+            var import = method?.GetCustomAttribute<DllImportAttribute>();
+            Assert.NotNull(import);
+            Assert.Equal(CharSet.Unicode, import!.CharSet);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task RemoteServiceAvailabilityTest()
+    {
+        Assert.False(ServiceCollector.DetermineAvailability(false, true, false));
+        Assert.False(ServiceCollector.DetermineAvailability(true, false, false));
+        Assert.False(ServiceCollector.DetermineAvailability(false, false, true));
+        Assert.True(ServiceCollector.DetermineAvailability(true, false, true));
+        Assert.True(ServiceCollector.DetermineAvailability(false, true, true));
         return Task.CompletedTask;
     }
 

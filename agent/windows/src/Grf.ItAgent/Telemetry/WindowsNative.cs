@@ -185,7 +185,7 @@ internal static class WindowsNative
     [DllImport("kernel32.dll")]
     private static extern uint WTSGetActiveConsoleSessionId();
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WTSEnumerateSessions(
         IntPtr server,
@@ -194,7 +194,7 @@ internal static class WindowsNative
         out IntPtr sessionInfo,
         out int count);
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WTSQuerySessionInformation(
         IntPtr server,

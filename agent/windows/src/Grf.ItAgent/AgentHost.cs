@@ -36,24 +36,10 @@ internal sealed class AgentHost : IDisposable
     public async Task<int> RunAsync(CancellationToken cancellationToken)
     {
         _logger.Write(LogSeverity.Information, "AgentStarted");
-        DeviceCredentials credentials;
-        try
-        {
-            credentials = await GetOrCreateCredentialsAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        var credentials = await WaitForCredentialsAsync(cancellationToken).ConfigureAwait(false);
+        if (credentials is null)
         {
             return 0;
-        }
-        catch (AgentApiException exception)
-        {
-            _logger.Write(LogSeverity.Error, "EnrollmentRejected", exception, (int)exception.StatusCode);
-            return 3;
-        }
-        catch (Exception exception)
-        {
-            _logger.Write(LogSeverity.Error, "EnrollmentFailed", exception);
-            return 3;
         }
 
         _stateStore.Load();
@@ -118,6 +104,48 @@ internal sealed class AgentHost : IDisposable
     public void Dispose()
     {
         _apiClient.Dispose();
+    }
+
+    private async Task<DeviceCredentials?> WaitForCredentialsAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var retrySeconds = _configuration.HeartbeatSeconds;
+            try
+            {
+                return await GetOrCreateCredentialsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+            catch (AgentApiException exception)
+            {
+                _logger.Write(LogSeverity.Warning, "EnrollmentRejected", exception, (int)exception.StatusCode);
+                var statusCode = (int)exception.StatusCode;
+                if (statusCode is >= 400 and < 500)
+                {
+                    retrySeconds = Math.Max(retrySeconds, 300);
+                }
+            }
+            catch (Exception exception)
+            {
+                _logger.Write(LogSeverity.Warning, "EnrollmentFailed", exception);
+            }
+
+            try
+            {
+                await Task.Delay(
+                    HeartbeatSchedule.WithJitter(retrySeconds, Random.Shared.NextDouble()),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private async Task<DeviceCredentials> GetOrCreateCredentialsAsync(CancellationToken cancellationToken)

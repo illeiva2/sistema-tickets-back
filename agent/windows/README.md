@@ -24,7 +24,7 @@ Una vez por día de forma predeterminada agrega inventario: fabricante/modelo/se
 - El token de un uso se solicita como `SecureString`; nunca se pasa en texto plano por la línea de comandos ni se imprime.
 - Antes del primer POST, el agente genera un secreto CSPRNG de 32 bytes y guarda un estado `pending` cifrado con DPAPI `LocalMachine`. Un crash o una respuesta perdida reutiliza exactamente el mismo token, `MachineGuid` y secreto.
 - Al confirmar el servidor, se guarda `deviceId` junto al secreto como estado `enrolled`, también cifrado con DPAPI, y se sobrescribe/elimina el archivo de token temporal.
-- `%ProgramData%\GRF\ITAgent` y `%ProgramFiles%\GRF\ITAgent` quedan con herencia deshabilitada y acceso únicamente para `SYSTEM` y Administradores locales.
+- El instalador asegura primero los ancestros `%ProgramData%\GRF` y `%ProgramFiles%\GRF`, y luego los directorios `ITAgent`, todos con herencia deshabilitada y acceso únicamente para `SYSTEM` y Administradores locales. Rechaza junctions/symlinks en cualquier componente y vuelve a validar las rutas antes de escribir archivos o registrar la tarea.
 - DPAPI `LocalMachine` protege contra usuarios normales, pero un Administrador local o `SYSTEM` siguen siendo identidades de confianza y pueden descifrar datos de máquina si también acceden al binario.
 - El log rota a 2 MiB y sólo contiene timestamp, nivel, identificador de evento, tipo de excepción y código HTTP. No registra URLs, bodies, headers, IDs, tokens, secretos ni mensajes de excepción.
 - Reintentos transitorios usan backoff exponencial y jitter. Cada intervalo de heartbeat agrega ±10 % de jitter para evitar picos después de un encendido masivo.
@@ -86,6 +86,7 @@ No hay paquetes NuGet ni dependencias de terceros. Las pruebas son un runner BCL
 ```powershell
 dotnet build .\src\Grf.ItAgent\Grf.ItAgent.csproj --configuration Release
 dotnet run --project .\tests\Grf.ItAgent.Tests\Grf.ItAgent.Tests.csproj --configuration Release
+.\tests\validate-scripts.ps1
 ```
 
 Para generar el paquete self-contained:
@@ -123,6 +124,8 @@ $token = Read-Host "Token de enrolamiento" -AsSecureString
 
 El instalador es idempotente: detiene la tarea existente, reemplaza el ejecutable, conserva configuración/credenciales, vuelve a aplicar las ACL y registra la tarea `GRF-IT-Agent` como `SYSTEM`, con trigger al inicio y reinicio ante fallos. Si ya hay credencial o enrolamiento pendiente, no solicita ni reemplaza el token.
 
+Una actualización desde la primera versión endurece automáticamente un ancestro `GRF` real con owner administrativo y conserva el leaf `ITAgent` ya protegido. Si `GRF` fue precreado por un usuario estándar, es un junction/symlink o el leaf no tiene ACL confiables, la instalación aborta antes de leer o escribir. En ese caso un administrador debe inspeccionar la ruta, retirar manualmente el objeto no confiable y ejecutar de nuevo el instalador; el script no intenta “reparar” un enlace potencialmente hostil.
+
 Para actualizar, copiar una publicación nueva y ejecutar de nuevo `install.ps1` con la misma URL. No se necesita un token nuevo mientras se conserve `credentials.dat`.
 
 ## Archivos locales
@@ -153,7 +156,7 @@ La configuración de ejemplo es deliberadamente estricta. Los nombres de archivo
 - Último resultado: `Get-ScheduledTaskInfo -TaskName GRF-IT-Agent`.
 - Eventos seguros: `%ProgramData%\GRF\ITAgent\agent.log`.
 - Código de salida `2`: configuración inválida.
-- Código de salida `3`: enrolamiento no completado; la tarea reintentará con el mismo estado `pending`.
+- El enrolamiento no completado permanece en un bucle durable con backoff/jitter. Conserva el mismo estado `pending`, token y secreto DPAPI aunque la API esté caída durante horas; no depende del contador de reinicios de la tarea.
 - Si TLS falla, instalar/corregir la CA en el almacén de la máquina o corregir hostname/vigencia. No se debe desactivar la validación.
 - Si el `MachineGuid` falta o no es un GUID válido, el agente aborta antes del POST para evitar que varias PCs colisionen.
 
