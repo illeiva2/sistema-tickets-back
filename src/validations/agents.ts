@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { z } from "zod";
+import { assignAssetSchema, createAssetSchema } from "./assets";
 
 export const AGENT_API_STATES = ["ONLINE", "STALE", "OFFLINE"] as const;
 
@@ -111,6 +112,24 @@ export const linkAgentAssetSchema = z
   .object({
     expectedUpdatedAt,
     assetId: nullableId("activo"),
+  })
+  .strict();
+
+const agentAssetSchema = createAssetSchema.superRefine((asset, ctx) => {
+  if (asset.status !== "IN_STOCK") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["status"],
+      message: "El alta desde un agente sólo admite activos disponibles en stock",
+    });
+  }
+});
+
+export const registerAgentAssetSchema = z
+  .object({
+    expectedUpdatedAt,
+    asset: agentAssetSchema,
+    custody: assignAssetSchema.optional(),
   })
   .strict();
 
@@ -292,6 +311,7 @@ export type EnrollmentTokenFilters = z.infer<typeof enrollmentTokenFiltersSchema
 export type CreateEnrollmentTokenRequest = z.infer<typeof createEnrollmentTokenSchema>;
 export type AgentDeviceFilters = z.infer<typeof agentDeviceFiltersSchema>;
 export type LinkAgentAssetRequest = z.infer<typeof linkAgentAssetSchema>;
+export type RegisterAgentAssetRequest = z.infer<typeof registerAgentAssetSchema>;
 export type AgentDeviceTransitionRequest = z.infer<typeof agentDeviceTransitionSchema>;
 export type SnapshotFilters = z.infer<typeof snapshotFiltersSchema>;
 export type MetricFilters = z.infer<typeof metricFiltersSchema>;

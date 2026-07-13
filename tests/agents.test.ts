@@ -15,7 +15,7 @@ vi.mock("nodemailer", () => ({
   },
 }));
 
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { DeepMockProxy } from "vitest-mock-extended";
 import request from "supertest";
 import { createApp, shouldSkipGlobalRateLimit } from "../src/app";
@@ -30,6 +30,8 @@ const deviceId = "cmhaaaaaaaaaaaaaaaaaaaaaaa";
 const tokenId = "cmhbbbbbbbbbbbbbbbbbbbbbbb";
 const assetId = "cmhccccccccccccccccccccccc";
 const sessionId = "cmhddddddddddddddddddddddd";
+const personId = "cmheeeeeeeeeeeeeeeeeeeeeee";
+const assignmentId = "cmhfffffffffffffffffffffff";
 const version = new Date("2026-07-13T10:00:00.000Z");
 const nextVersion = new Date("2026-07-13T10:01:00.000Z");
 const token = "A".repeat(43);
@@ -37,6 +39,12 @@ const deviceSecret = "B".repeat(43);
 const otherSecret = "C".repeat(43);
 const machineGuid = "550e8400-e29b-41d4-a716-446655440000";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const uniqueError = (field: string) =>
+  new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+    code: "P2002",
+    clientVersion: "6.15.0",
+    meta: { target: [field] },
+  });
 
 const auth = (role: "USER" | "AGENT" | "ADMIN", id = "agent-1") => ({
   Authorization: `Bearer ${signAccessToken({ role, id })}`,
@@ -95,6 +103,34 @@ const makeToken = (overrides: Record<string, any> = {}) => ({
   ...overrides,
 });
 
+const makeAsset = (overrides: Record<string, any> = {}) => ({
+  id: assetId,
+  assetTag: "NB-0001",
+  type: "NOTEBOOK",
+  status: "IN_STOCK",
+  brand: "Dell",
+  model: "Latitude 5420",
+  serialNumber: "SER-AGENT-001",
+  specs: { cpu: "Core i5", ramGb: 16 },
+  notes: null,
+  location: null,
+  warrantyUntil: null,
+  assignedPersonId: null,
+  assignedDepartmentId: null,
+  purchaseItemId: null,
+  retiredAt: null,
+  retirementReason: null,
+  isActive: true,
+  createdById: "agent-1",
+  createdAt: version,
+  updatedAt: version,
+  assignedPerson: null,
+  assignedDepartment: null,
+  createdBy: { id: "agent-1", name: "Agente", email: "it@grf.com.ar" },
+  assignments: [],
+  ...overrides,
+});
+
 const makeSession = (overrides: Record<string, any> = {}) => ({
   id: sessionId,
   deviceId,
@@ -129,6 +165,18 @@ const heartbeat = (overrides: Record<string, any> = {}) => ({
   },
   os: { name: "Windows 11 Pro", version: "10.0.26100", build: "26100" },
   agentVersion: "1.0.0",
+  ...overrides,
+});
+
+const registerAssetBody = (overrides: Record<string, any> = {}) => ({
+  expectedUpdatedAt: version.toISOString(),
+  asset: {
+    type: "NOTEBOOK",
+    brand: "Dell",
+    model: "Latitude 5420",
+    serialNumber: "SER-AGENT-001",
+    specs: { cpu: "Core i5", ramGb: 16 },
+  },
   ...overrides,
 });
 
@@ -533,6 +581,278 @@ describe("API de agentes de monitoreo IT", () => {
       .send({ expectedUpdatedAt: version.toISOString(), assetId: null });
     expect(conflict.status).toBe(409);
     expect(conflict.body.error.code).toBe("AGENT_DEVICE_VERSION_CONFLICT");
+  });
+
+  it("crea y vincula un activo IN_STOCK en una única transacción", async () => {
+    prismaMock.agentDevice.findFirst
+      .mockResolvedValueOnce({
+        id: deviceId,
+        assetId: null,
+        isActive: true,
+        updatedAt: version,
+      } as any)
+      .mockResolvedValueOnce(
+        makeDevice({
+          assetId,
+          asset: {
+            id: assetId,
+            assetTag: "NB-0001",
+            type: "NOTEBOOK",
+            status: "IN_STOCK",
+            brand: "Dell",
+            model: "Latitude 5420",
+          },
+          updatedAt: nextVersion,
+        }) as any,
+      );
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockImplementationOnce(async (args: any) =>
+      makeAsset({ ...args.data, assetTag: args.data.assetTag }) as any,
+    );
+    prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.auditLog.create.mockResolvedValue({} as any);
+
+    const response = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody());
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.asset).toEqual(
+      expect.objectContaining({ assetTag: "NB-0001", status: "IN_STOCK" }),
+    );
+    expect(response.body.data.device).toEqual(
+      expect.objectContaining({ id: deviceId, assetId }),
+    );
+    expect(prismaMock.asset.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "IN_STOCK" }),
+      }),
+    );
+    expect(prismaMock.agentDevice.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: deviceId,
+          isActive: true,
+          assetId: null,
+          updatedAt: version,
+        }),
+        data: { assetId },
+      }),
+    );
+    expect(
+      prismaMock.auditLog.create.mock.calls.map(
+        (call) => (call[0] as any).data.action,
+      ),
+    ).toEqual(["created", "asset_link_updated"]);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("crea, asigna custodia y vincula el agente atómicamente", async () => {
+    prismaMock.agentDevice.findFirst
+      .mockResolvedValueOnce({
+        id: deviceId,
+        assetId: null,
+        isActive: true,
+        updatedAt: version,
+      } as any)
+      .mockResolvedValueOnce(makeDevice({ updatedAt: nextVersion }) as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.asset.findFirst.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.assetAssignment.findFirst.mockResolvedValueOnce(null);
+    prismaMock.person.findFirst.mockResolvedValueOnce({ id: personId } as any);
+    prismaMock.assetAssignment.create.mockResolvedValueOnce({
+      id: assignmentId,
+    } as any);
+    prismaMock.asset.update.mockResolvedValueOnce(
+      makeAsset({
+        status: "ASSIGNED",
+        assignedPersonId: personId,
+      }) as any,
+    );
+    prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.auditLog.create.mockResolvedValue({} as any);
+
+    const response = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("ADMIN"))
+      .send(
+        registerAssetBody({
+          custody: { personId, note: "Entrega inicial" },
+        }),
+      );
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.asset).toEqual(
+      expect.objectContaining({
+        status: "ASSIGNED",
+        assignedPersonId: personId,
+      }),
+    );
+    expect(prismaMock.assetAssignment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          assetId,
+          personId,
+          assignedById: "agent-1",
+        }),
+      }),
+    );
+    expect(
+      prismaMock.auditLog.create.mock.calls.map(
+        (call) => (call[0] as any).data.action,
+      ),
+    ).toEqual(["created", "assigned", "asset_link_updated"]);
+    expect(
+      JSON.stringify(prismaMock.auditLog.create.mock.calls),
+    ).not.toContain("Entrega inicial");
+  });
+
+  it("rechaza dispositivo ya vinculado y versión obsoleta antes de crear", async () => {
+    prismaMock.agentDevice.findFirst
+      .mockResolvedValueOnce({
+        id: deviceId,
+        assetId,
+        isActive: true,
+        updatedAt: version,
+      } as any)
+      .mockResolvedValueOnce({
+        id: deviceId,
+        assetId: null,
+        isActive: true,
+        updatedAt: nextVersion,
+      } as any);
+
+    const linked = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody());
+    const stale = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody());
+
+    expect(linked.status).toBe(409);
+    expect(linked.body.error.code).toBe("AGENT_DEVICE_ALREADY_LINKED");
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe("AGENT_DEVICE_VERSION_CONFLICT");
+    expect(prismaMock.asset.create).not.toHaveBeenCalled();
+  });
+
+  it("rechaza custodia de una persona inactiva dentro de la transacción", async () => {
+    prismaMock.agentDevice.findFirst.mockResolvedValueOnce({
+      id: deviceId,
+      assetId: null,
+      isActive: true,
+      updatedAt: version,
+    } as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.asset.findFirst.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.assetAssignment.findFirst.mockResolvedValueOnce(null);
+    prismaMock.person.findFirst.mockResolvedValueOnce(null);
+    prismaMock.auditLog.create.mockResolvedValue({} as any);
+
+    const response = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody({ custody: { personId } }));
+
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("PERSON_NOT_FOUND");
+    expect(prismaMock.agentDevice.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.assetAssignment.create).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("propaga el conflicto final para que Prisma revierta alta y auditoría", async () => {
+    let transactionRejected = false;
+    prismaMock.$transaction.mockImplementationOnce(async (work: any) => {
+      try {
+        return await work(prismaMock);
+      } catch (error) {
+        transactionRejected = true;
+        throw error;
+      }
+    });
+    prismaMock.agentDevice.findFirst.mockResolvedValueOnce({
+      id: deviceId,
+      assetId: null,
+      isActive: true,
+      updatedAt: version,
+    } as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockResolvedValueOnce(makeAsset() as any);
+    prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.auditLog.create.mockResolvedValue({} as any);
+
+    const response = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody());
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("AGENT_DEVICE_VERSION_CONFLICT");
+    expect(transactionRejected).toBe(true);
+    expect(prismaMock.asset.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.agentDevice.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("aplica validación de estado y campos administrativos al nuevo flujo", async () => {
+    const retired = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("ADMIN"))
+      .send(
+        registerAssetBody({
+          asset: {
+            type: "NOTEBOOK",
+            status: "RETIRED",
+            brand: "Dell",
+            model: "Latitude 5420",
+          },
+        }),
+      );
+    const manualTag = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(
+        registerAssetBody({
+          asset: {
+            assetTag: "NB-9000",
+            type: "NOTEBOOK",
+            brand: "Dell",
+            model: "Latitude 5420",
+          },
+        }),
+      );
+
+    expect(retired.status).toBe(400);
+    expect(retired.body.error.code).toBe("VALIDATION_ERROR");
+    expect(manualTag.status).toBe(403);
+    expect(manualTag.body.error.code).toBe("FORBIDDEN");
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("traduce conflictos únicos del activo sin intentar el vínculo", async () => {
+    prismaMock.agentDevice.findFirst.mockResolvedValueOnce({
+      id: deviceId,
+      assetId: null,
+      isActive: true,
+      updatedAt: version,
+    } as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockRejectedValueOnce(uniqueError("serialNumber"));
+
+    const response = await request(app)
+      .post(`/api/it/agents/devices/${deviceId}/register-asset`)
+      .set(auth("AGENT"))
+      .send(registerAssetBody());
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("SERIAL_NUMBER_EXISTS");
+    expect(prismaMock.agentDevice.updateMany).not.toHaveBeenCalled();
   });
 
   it("revoca agente con CAS y cierra sesiones remotas activas", async () => {

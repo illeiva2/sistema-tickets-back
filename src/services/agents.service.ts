@@ -4,11 +4,19 @@ import {
   Prisma,
   RemoteSessionKind,
   RemoteSessionStatus,
+  UserRole,
 } from "@prisma/client";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
+import {
+  asAssetWriteError,
+  assertAssetCreateAllowed,
+  assignAssetInTransaction,
+  createAssetInTransaction,
+  isGeneratedAssetTagConflict,
+} from "./assets.service";
 import type {
   AgentDeviceFilters,
   AgentDeviceTransitionRequest,
@@ -18,6 +26,7 @@ import type {
   MachineEnrollRequest,
   MachineHeartbeatRequest,
   MetricFilters,
+  RegisterAgentAssetRequest,
   SnapshotFilters,
   StartRemoteSessionRequest,
 } from "../validations/agents";
@@ -542,6 +551,146 @@ export class AgentsService {
     } catch (error) {
       translateWriteError(error);
     }
+  }
+
+  static async registerAsset(
+    id: string,
+    data: RegisterAgentAssetRequest,
+    actorId: string,
+    actorRole: UserRole,
+  ) {
+    assertAssetCreateAllowed(data.asset, actorRole);
+    if (data.asset.status !== "IN_STOCK") {
+      throw new ApiError(
+        "AGENT_ASSET_STATUS_INVALID",
+        "El alta desde un agente sólo admite activos disponibles en stock",
+        400,
+      );
+    }
+
+    const expected = new Date(data.expectedUpdatedAt);
+    const generatedTag = !data.asset.assetTag;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return await runSerializable(async (tx) => {
+          const current = await tx.agentDevice.findFirst({
+            where: { id, deletedAt: null },
+            select: {
+              id: true,
+              assetId: true,
+              isActive: true,
+              updatedAt: true,
+            },
+          });
+          if (!current) {
+            throw new ApiError(
+              "AGENT_DEVICE_NOT_FOUND",
+              "Dispositivo agente no encontrado",
+              404,
+            );
+          }
+          if (!current.isActive) {
+            throw new ApiError(
+              "AGENT_DEVICE_INACTIVE",
+              "El agente debe estar activo para registrar su activo",
+              409,
+            );
+          }
+          if (current.assetId) {
+            throw new ApiError(
+              "AGENT_DEVICE_ALREADY_LINKED",
+              "El dispositivo ya está vinculado a un activo",
+              409,
+            );
+          }
+          if (current.updatedAt.getTime() !== expected.getTime()) {
+            throw new ApiError(
+              "AGENT_DEVICE_VERSION_CONFLICT",
+              "El dispositivo fue modificado por otro usuario",
+              409,
+            );
+          }
+
+          let asset = await createAssetInTransaction(
+            tx,
+            data.asset,
+            actorId,
+          );
+          if (data.custody) {
+            asset = await assignAssetInTransaction(
+              tx,
+              asset.id,
+              data.custody,
+              actorId,
+            );
+          }
+
+          const write = await tx.agentDevice.updateMany({
+            where: {
+              id,
+              deletedAt: null,
+              isActive: true,
+              assetId: null,
+              updatedAt: expected,
+            },
+            data: { assetId: asset.id },
+          });
+          if (write.count !== 1) {
+            throw new ApiError(
+              "AGENT_DEVICE_VERSION_CONFLICT",
+              "El dispositivo fue modificado por otro usuario",
+              409,
+            );
+          }
+
+          const updated = await tx.agentDevice.findFirst({
+            where: { id, deletedAt: null },
+            select: deviceListSelect,
+          });
+          if (!updated) {
+            throw new ApiError(
+              "AGENT_DEVICE_NOT_FOUND",
+              "Dispositivo agente no encontrado",
+              404,
+            );
+          }
+          await tx.auditLog.create({
+            data: {
+              entity: "agent_device",
+              entityId: id,
+              action: "asset_link_updated",
+              actorId,
+              meta: {
+                previousAssetLinked: false,
+                assetLinked: true,
+                assetId: asset.id,
+                source: "created_from_agent",
+                custodyAssigned: Boolean(data.custody),
+              },
+            },
+          });
+          return { device: serializeDevice(updated), asset };
+        });
+      } catch (error) {
+        if (
+          generatedTag &&
+          isGeneratedAssetTagConflict(error) &&
+          attempt < 4
+        ) {
+          continue;
+        }
+        const assetError = asAssetWriteError(error);
+        if (assetError) throw assetError;
+        translateWriteError(error);
+      }
+    }
+
+    throw new ApiError(
+      "ASSET_TAG_CONFLICT",
+      "No se pudo reservar un código de activo",
+      409,
+    );
   }
 
   private static async transitionDevice(
