@@ -36,8 +36,8 @@ const safeText = (max: number) =>
     .max(max)
     .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "Texto inválido");
 
-const canonicalIp = z
-  .preprocess((value) => {
+const canonicalIp = z.preprocess(
+  (value) => {
     if (typeof value !== "string" || !value.includes("%")) return value;
     const parts = value.trim().split("%");
     if (
@@ -48,22 +48,27 @@ const canonicalIp = z
       return parts[0];
     }
     return value;
-  }, z
-  .string()
-  .trim()
-  .max(45)
-  .refine((value) => isIP(value) !== 0, "Dirección IP inválida")
-  .transform((value) => {
-    if (isIP(value) !== 6) return value;
-    return new URL(`http://[${value}]/`)
-      .hostname.replace(/^\[|\]$/g, "")
-      .toLowerCase();
-  }));
+  },
+  z
+    .string()
+    .trim()
+    .max(45)
+    .refine((value) => isIP(value) !== 0, "Dirección IP inválida")
+    .transform((value) => {
+      if (isIP(value) !== 6) return value;
+      return new URL(`http://[${value}]/`).hostname
+        .replace(/^\[|\]$/g, "")
+        .toLowerCase();
+    }),
+);
 
 const canonicalMac = z.preprocess(
   (value) =>
     typeof value === "string"
-      ? value.trim().replace(/[.\-:\s]/g, "").toUpperCase()
+      ? value
+          .trim()
+          .replace(/[.\-:\s]/g, "")
+          .toUpperCase()
       : value,
   z
     .string()
@@ -75,14 +80,18 @@ const nonNegativeBytes = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 export const enrollmentTokenFiltersSchema = z
   .object({
-    status: z.enum(["AVAILABLE", "USED", "EXPIRED"]).optional(),
+    status: z.enum(["AVAILABLE", "USED", "EXPIRED", "REVOKED"]).optional(),
   })
   .strict();
 
 export const createEnrollmentTokenSchema = z
   .object({
     label: nullableText(200),
-    expiresAt: z.string().datetime("expiresAt debe ser una fecha ISO válida").optional(),
+    expiresAt: z
+      .string()
+      .datetime("expiresAt debe ser una fecha ISO válida")
+      .optional(),
+    maxUses: z.number().int().min(1).max(250).default(1),
   })
   .strict();
 
@@ -120,7 +129,8 @@ const agentAssetSchema = createAssetSchema.superRefine((asset, ctx) => {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["status"],
-      message: "El alta desde un agente sólo admite activos disponibles en stock",
+      message:
+        "El alta desde un agente sólo admite activos disponibles en stock",
     });
   }
 });
@@ -138,7 +148,10 @@ export const agentDeviceTransitionSchema = z
   .strict();
 
 export const snapshotFiltersSchema = z
-  .object({ ...pagination, pageSize: z.coerce.number().int().min(1).max(20).default(10) })
+  .object({
+    ...pagination,
+    pageSize: z.coerce.number().int().min(1).max(20).default(10),
+  })
   .strict();
 
 export const metricFiltersSchema = z
@@ -149,7 +162,8 @@ export const metricFiltersSchema = z
   })
   .strict()
   .refine(
-    (data) => !data.from || !data.to || new Date(data.from) <= new Date(data.to),
+    (data) =>
+      !data.from || !data.to || new Date(data.from) <= new Date(data.to),
     { path: ["to"], message: "to debe ser posterior a from" },
   );
 
@@ -174,7 +188,10 @@ const hostnameSchema = z
   .trim()
   .min(1)
   .max(255)
-  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/, "Hostname inválido");
+  .regex(
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/,
+    "Hostname inválido",
+  );
 
 export const machineEnrollSchema = z
   .object({
@@ -242,7 +259,10 @@ const networkAdapterSchema = z
 
 export const agentInventorySchema = z
   .object({
-    collectedAt: z.string().datetime("collectedAt debe ser una fecha ISO válida").optional(),
+    collectedAt: z
+      .string()
+      .datetime("collectedAt debe ser una fecha ISO válida")
+      .optional(),
     hardware: hardwareInventorySchema.optional(),
     cpu: cpuInventorySchema.optional(),
     memoryModules: z.array(memoryModuleSchema).max(32).optional(),
@@ -307,14 +327,24 @@ export const machineHeartbeatSchema = z
   })
   .strict();
 
-export type EnrollmentTokenFilters = z.infer<typeof enrollmentTokenFiltersSchema>;
-export type CreateEnrollmentTokenRequest = z.infer<typeof createEnrollmentTokenSchema>;
+export type EnrollmentTokenFilters = z.infer<
+  typeof enrollmentTokenFiltersSchema
+>;
+export type CreateEnrollmentTokenRequest = z.infer<
+  typeof createEnrollmentTokenSchema
+>;
 export type AgentDeviceFilters = z.infer<typeof agentDeviceFiltersSchema>;
 export type LinkAgentAssetRequest = z.infer<typeof linkAgentAssetSchema>;
-export type RegisterAgentAssetRequest = z.infer<typeof registerAgentAssetSchema>;
-export type AgentDeviceTransitionRequest = z.infer<typeof agentDeviceTransitionSchema>;
+export type RegisterAgentAssetRequest = z.infer<
+  typeof registerAgentAssetSchema
+>;
+export type AgentDeviceTransitionRequest = z.infer<
+  typeof agentDeviceTransitionSchema
+>;
 export type SnapshotFilters = z.infer<typeof snapshotFiltersSchema>;
 export type MetricFilters = z.infer<typeof metricFiltersSchema>;
-export type StartRemoteSessionRequest = z.infer<typeof startRemoteSessionSchema>;
+export type StartRemoteSessionRequest = z.infer<
+  typeof startRemoteSessionSchema
+>;
 export type MachineEnrollRequest = z.infer<typeof machineEnrollSchema>;
 export type MachineHeartbeatRequest = z.infer<typeof machineHeartbeatSchema>;

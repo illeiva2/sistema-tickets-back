@@ -21,7 +21,10 @@ import request from "supertest";
 import { createApp, shouldSkipGlobalRateLimit } from "../src/app";
 import { prisma } from "../src/lib/database";
 import { AGENT_ENROLL_RATE_LIMIT } from "../src/routes/agent-machine.routes";
-import { machineEnrollSchema, machineHeartbeatSchema } from "../src/validations/agents";
+import {
+  machineEnrollSchema,
+  machineHeartbeatSchema,
+} from "../src/validations/agents";
 import { signAccessToken } from "./helpers";
 
 const prismaMock = prisma as unknown as DeepMockProxy<PrismaClient>;
@@ -38,7 +41,8 @@ const token = "A".repeat(43);
 const deviceSecret = "B".repeat(43);
 const otherSecret = "C".repeat(43);
 const machineGuid = "550e8400-e29b-41d4-a716-446655440000";
-const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const hash = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
 const uniqueError = (field: string) =>
   new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
     code: "P2002",
@@ -96,10 +100,13 @@ const makeToken = (overrides: Record<string, any> = {}) => ({
   id: tokenId,
   label: "Lote Contaduría",
   expiresAt: new Date(Date.now() + 60 * 60_000),
+  maxUses: 1,
+  useCount: 0,
   usedAt: null,
+  revokedAt: null,
   createdAt: version,
   createdBy: { id: "agent-1", name: "Agente" },
-  usedByDevice: null,
+  enrolledDevices: [],
   ...overrides,
 });
 
@@ -193,7 +200,8 @@ describe("API de agentes de monitoreo IT", () => {
     expect(shouldSkipGlobalRateLimit("/api/agent/heartbeat")).toBe(true);
     expect((await request(app).get("/api/it/agents/devices")).status).toBe(401);
     expect(
-      (await request(app).get("/api/it/agents/devices").set(auth("USER"))).status,
+      (await request(app).get("/api/it/agents/devices").set(auth("USER")))
+        .status,
     ).toBe(403);
     expect(
       (
@@ -236,33 +244,72 @@ describe("API de agentes de monitoreo IT", () => {
     );
   });
 
-  it("crea token CSPRNG de un uso, almacena sólo hash y redacta auditoría", async () => {
-    prismaMock.agentEnrollmentToken.create.mockImplementationOnce(async (args: any) => ({
-      ...makeToken(),
-      label: args.data.label,
-      expiresAt: args.data.expiresAt,
-    }) as any);
+  it("crea token CSPRNG por lote, almacena sólo hash y conserva un uso por defecto", async () => {
+    prismaMock.agentEnrollmentToken.create.mockImplementationOnce(
+      async (args: any) =>
+        ({
+          ...makeToken(),
+          label: args.data.label,
+          expiresAt: args.data.expiresAt,
+        }) as any,
+    );
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
 
     const response = await request(app)
       .post("/api/it/agents/enrollment-tokens")
       .set(auth("ADMIN"))
-      .send({ label: "Lote Contaduría" });
+      .send({ label: "Lote Contaduría", maxUses: 25 });
 
     expect(response.status).toBe(201);
     expect(response.body.data.plainToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const createData = (prismaMock.agentEnrollmentToken.create.mock.calls[0][0] as any).data;
+    const createData = (
+      prismaMock.agentEnrollmentToken.create.mock.calls[0][0] as any
+    ).data;
     expect(createData.tokenHash).toHaveLength(64);
     expect(createData.tokenHash).not.toBe(response.body.data.plainToken);
-    const audit = (prismaMock.auditLog.create.mock.calls[0][0] as any).data.meta;
+    expect(createData.maxUses).toBe(25);
+    const audit = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
+      .meta;
     expect(JSON.stringify(audit)).not.toContain(response.body.data.plainToken);
+    expect(audit.maxUses).toBe(25);
+
+    prismaMock.agentEnrollmentToken.create.mockImplementationOnce(
+      async (args: any) =>
+        ({
+          ...makeToken(),
+          maxUses: args.data.maxUses,
+          expiresAt: args.data.expiresAt,
+        }) as any,
+    );
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+    await request(app)
+      .post("/api/it/agents/enrollment-tokens")
+      .set(auth("AGENT"))
+      .send({});
+    expect(
+      (prismaMock.agentEnrollmentToken.create.mock.calls[1][0] as any).data
+        .maxUses,
+    ).toBe(1);
+
+    const tooLarge = await request(app)
+      .post("/api/it/agents/enrollment-tokens")
+      .set(auth("ADMIN"))
+      .send({ maxUses: 251 });
+    expect(tooLarge.status).toBe(400);
   });
 
   it("lista estados derivados de tokens y revoca sólo vigente/no usado", async () => {
     prismaMock.agentEnrollmentToken.findMany.mockResolvedValueOnce([
       makeToken(),
-      makeToken({ id: "used", usedAt: new Date() }),
+      makeToken({
+        id: "partial",
+        maxUses: 10,
+        useCount: 4,
+        usedAt: new Date(),
+      }),
+      makeToken({ id: "used", useCount: 1, usedAt: new Date() }),
       makeToken({ id: "expired", expiresAt: new Date(Date.now() - 1000) }),
+      makeToken({ id: "revoked", revokedAt: new Date() }),
     ] as any);
     const listed = await request(app)
       .get("/api/it/agents/enrollment-tokens")
@@ -270,16 +317,37 @@ describe("API de agentes de monitoreo IT", () => {
     expect(listed.status).toBe(200);
     expect(listed.body.data.items.map((item: any) => item.status)).toEqual([
       "AVAILABLE",
+      "AVAILABLE",
       "USED",
       "EXPIRED",
+      "REVOKED",
     ]);
+    expect(listed.body.data.items[1]).toEqual(
+      expect.objectContaining({ maxUses: 10, useCount: 4, remainingUses: 6 }),
+    );
+
+    prismaMock.agentEnrollmentToken.findMany.mockResolvedValueOnce([
+      makeToken({ id: "revoked", revokedAt: new Date() }),
+    ] as any);
+    const revokedOnly = await request(app)
+      .get("/api/it/agents/enrollment-tokens?status=REVOKED")
+      .set(auth("AGENT"));
+    expect(revokedOnly.status).toBe(200);
+    expect(revokedOnly.body.data.items).toHaveLength(1);
+    expect(prismaMock.agentEnrollmentToken.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { revokedAt: { not: null } } }),
+    );
 
     prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
       id: tokenId,
-      usedAt: null,
+      maxUses: 10,
+      useCount: 4,
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
     } as any);
-    prismaMock.agentEnrollmentToken.deleteMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.agentEnrollmentToken.updateMany.mockResolvedValueOnce({
+      count: 1,
+    });
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
     const revoked = await request(app)
       .post(`/api/it/agents/enrollment-tokens/${tokenId}/revoke`)
@@ -287,51 +355,80 @@ describe("API de agentes de monitoreo IT", () => {
       .send({});
     expect(revoked.status).toBe(200);
     expect(revoked.body.data).toEqual({ revoked: true, id: tokenId });
+    expect(prismaMock.agentEnrollmentToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { revokedAt: expect.any(Date) } }),
+    );
   });
 
   it("enrola con secreto generado por la máquina y nunca lo devuelve ni persiste plano", async () => {
     prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
       id: tokenId,
       createdById: "agent-1",
-      usedAt: null,
+      maxUses: 10,
+      useCount: 3,
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
-      usedByDevice: null,
     } as any);
     prismaMock.agentDevice.findUnique.mockResolvedValueOnce(null);
-    prismaMock.agentDevice.create.mockResolvedValueOnce({ id: deviceId } as any);
-    prismaMock.agentEnrollmentToken.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.agentDevice.create.mockResolvedValueOnce({
+      id: deviceId,
+    } as any);
+    prismaMock.agentEnrollmentToken.updateMany.mockResolvedValueOnce({
+      count: 1,
+    });
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
 
-    const response = await request(app)
-      .post("/api/agent/enroll")
-      .send({
-        token,
-        deviceSecret,
-        machineGuid,
-        hostname: "PC-GRF-001",
-        agentVersion: "1.0.0",
-        osName: "Windows 11 Pro",
-        osVersion: "10.0.26100",
-      });
+    const response = await request(app).post("/api/agent/enroll").send({
+      token,
+      deviceSecret,
+      machineGuid,
+      hostname: "PC-GRF-001",
+      agentVersion: "1.0.0",
+      osName: "Windows 11 Pro",
+      osVersion: "10.0.26100",
+    });
 
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual({ deviceId, nextHeartbeatSeconds: 60 });
     expect(JSON.stringify(response.body)).not.toContain(deviceSecret);
-    const createData = (prismaMock.agentDevice.create.mock.calls[0][0] as any).data;
+    const createData = (prismaMock.agentDevice.create.mock.calls[0][0] as any)
+      .data;
     expect(createData.secretHash).toBe(hash(deviceSecret));
+    expect(createData.enrollmentTokenId).toBe(tokenId);
     expect(JSON.stringify(createData)).not.toContain(deviceSecret);
-    expect(JSON.stringify((prismaMock.auditLog.create.mock.calls[0][0] as any).data.meta))
-      .not.toContain(deviceSecret);
+    expect(
+      JSON.stringify(
+        (prismaMock.auditLog.create.mock.calls[0][0] as any).data.meta,
+      ),
+    ).not.toContain(deviceSecret);
+    expect(prismaMock.agentEnrollmentToken.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: tokenId,
+        revokedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+        maxUses: 10,
+        useCount: 3,
+      },
+      data: { useCount: { increment: 1 }, usedAt: expect.any(Date) },
+    });
   });
 
-  it("reintenta el mismo enrolamiento idempotentemente sin nuevas escrituras", async () => {
+  it("rechaza atómicamente si otro equipo consume el último uso durante el enrolamiento", async () => {
     prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
       id: tokenId,
       createdById: "agent-1",
-      usedAt: new Date(),
+      maxUses: 5,
+      useCount: 4,
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
-      usedByDevice: { id: deviceId, machineId: machineGuid, secretHash: hash(deviceSecret) },
     } as any);
+    prismaMock.agentDevice.findUnique.mockResolvedValueOnce(null);
+    prismaMock.agentDevice.create.mockResolvedValueOnce({
+      id: deviceId,
+    } as any);
+    prismaMock.agentEnrollmentToken.updateMany.mockResolvedValueOnce({
+      count: 0,
+    });
 
     const response = await request(app)
       .post("/api/agent/enroll")
@@ -342,6 +439,36 @@ describe("API de agentes de monitoreo IT", () => {
         hostname: "PC-GRF-001",
         agentVersion: "1.0.0",
       });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("ENROLLMENT_TOKEN_NOT_AVAILABLE");
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("reintenta el mismo enrolamiento idempotentemente aunque el lote ya no esté disponible", async () => {
+    prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
+      id: tokenId,
+      createdById: "agent-1",
+      maxUses: 1,
+      useCount: 1,
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() - 60_000),
+    } as any);
+    prismaMock.agentDevice.findUnique.mockResolvedValueOnce({
+      id: deviceId,
+      isActive: true,
+      deletedAt: null,
+      enrollmentTokenId: tokenId,
+      secretHash: hash(deviceSecret),
+    } as any);
+
+    const response = await request(app).post("/api/agent/enroll").send({
+      token,
+      deviceSecret,
+      machineGuid,
+      hostname: "PC-GRF-001",
+      agentVersion: "1.0.0",
+    });
 
     expect(response.status).toBe(200);
     expect(response.body.data.deviceId).toBe(deviceId);
@@ -354,19 +481,25 @@ describe("API de agentes de monitoreo IT", () => {
     prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
       id: tokenId,
       createdById: "agent-1",
-      usedAt: new Date(),
+      maxUses: 10,
+      useCount: 1,
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
-      usedByDevice: { id: deviceId, machineId: machineGuid, secretHash: hash(deviceSecret) },
     } as any);
-    const response = await request(app)
-      .post("/api/agent/enroll")
-      .send({
-        token,
-        deviceSecret: otherSecret,
-        machineGuid,
-        hostname: "PC-GRF-001",
-        agentVersion: "1.0.0",
-      });
+    prismaMock.agentDevice.findUnique.mockResolvedValueOnce({
+      id: deviceId,
+      isActive: true,
+      deletedAt: null,
+      enrollmentTokenId: tokenId,
+      secretHash: hash(deviceSecret),
+    } as any);
+    const response = await request(app).post("/api/agent/enroll").send({
+      token,
+      deviceSecret: otherSecret,
+      machineGuid,
+      hostname: "PC-GRF-001",
+      agentVersion: "1.0.0",
+    });
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe("ENROLLMENT_TOKEN_NOT_AVAILABLE");
   });
@@ -375,33 +508,73 @@ describe("API de agentes de monitoreo IT", () => {
     prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
       id: tokenId,
       createdById: "agent-1",
-      usedAt: null,
+      maxUses: 1,
+      useCount: 0,
+      revokedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
-      usedByDevice: null,
     } as any);
     prismaMock.agentDevice.findUnique.mockResolvedValueOnce({
       id: deviceId,
       isActive: false,
       deletedAt: null,
+      enrollmentTokenId: "cmholdtokenaaaaaaaaaaaaaaaaa",
+      secretHash: hash(otherSecret),
     } as any);
-    prismaMock.agentEnrollmentToken.updateMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 1 });
-    prismaMock.agentDevice.update.mockResolvedValueOnce({ id: deviceId } as any);
+    prismaMock.agentEnrollmentToken.updateMany.mockResolvedValueOnce({
+      count: 1,
+    });
+    prismaMock.agentDevice.update.mockResolvedValueOnce({
+      id: deviceId,
+    } as any);
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
 
     const response = await request(app)
       .post("/api/agent/enroll")
-      .send({ token, deviceSecret, machineGuid, hostname: "PC-GRF-001", agentVersion: "2.0.0" });
+      .send({
+        token,
+        deviceSecret,
+        machineGuid,
+        hostname: "PC-GRF-001",
+        agentVersion: "2.0.0",
+      });
     expect(response.status).toBe(200);
-    expect(prismaMock.agentEnrollmentToken.updateMany.mock.calls[0][0]).toEqual({
-      where: { usedByDeviceId: deviceId },
-      data: { usedByDeviceId: null },
-    });
-    const updateData = (prismaMock.agentDevice.update.mock.calls[0][0] as any).data;
+    const updateData = (prismaMock.agentDevice.update.mock.calls[0][0] as any)
+      .data;
     expect(updateData.secretHash).toBe(hash(deviceSecret));
+    expect(updateData.enrollmentTokenId).toBe(tokenId);
     expect(updateData.isActive).toBeUndefined();
     expect(updateData.assetId).toBeUndefined();
+  });
+
+  it("impide que un token por lote rote el secreto de una máquina existente", async () => {
+    prismaMock.agentEnrollmentToken.findUnique.mockResolvedValueOnce({
+      id: tokenId,
+      createdById: "agent-1",
+      maxUses: 25,
+      useCount: 4,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    } as any);
+    prismaMock.agentDevice.findUnique.mockResolvedValueOnce({
+      id: deviceId,
+      isActive: true,
+      deletedAt: null,
+      enrollmentTokenId: "cmholdtokenaaaaaaaaaaaaaaaaa",
+      secretHash: hash(otherSecret),
+    } as any);
+
+    const response = await request(app).post("/api/agent/enroll").send({
+      token,
+      deviceSecret,
+      machineGuid,
+      hostname: "PC-GRF-001",
+      agentVersion: "2.0.0",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("AGENT_MACHINE_NOT_AVAILABLE");
+    expect(prismaMock.agentDevice.update).not.toHaveBeenCalled();
+    expect(prismaMock.agentEnrollmentToken.updateMany).not.toHaveBeenCalled();
   });
 
   it("usa 401 uniforme para deviceId, secreto o agente revocado", async () => {
@@ -428,8 +601,16 @@ describe("API de agentes de monitoreo IT", () => {
 
   it("procesa heartbeat, canoniza zona IPv6, elige IP útil y aplica retención", async () => {
     prismaMock.agentDevice.findFirst
-      .mockResolvedValueOnce({ id: deviceId, isActive: true, secretHash: hash(deviceSecret) } as any)
-      .mockResolvedValueOnce({ id: deviceId, secretHash: hash(deviceSecret), updatedAt: version } as any);
+      .mockResolvedValueOnce({
+        id: deviceId,
+        isActive: true,
+        secretHash: hash(deviceSecret),
+      } as any)
+      .mockResolvedValueOnce({
+        id: deviceId,
+        secretHash: hash(deviceSecret),
+        updatedAt: version,
+      } as any);
     prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
     prismaMock.agentMetricSample.findFirst.mockResolvedValueOnce(null);
     prismaMock.agentMetricSample.create.mockResolvedValueOnce({} as any);
@@ -438,7 +619,9 @@ describe("API de agentes de monitoreo IT", () => {
     prismaMock.agentInventorySnapshot.findMany.mockResolvedValueOnce([
       { id: "old-snapshot" },
     ] as any);
-    prismaMock.agentInventorySnapshot.deleteMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.agentInventorySnapshot.deleteMany.mockResolvedValueOnce({
+      count: 1,
+    });
 
     const response = await request(app)
       .post("/api/agent/heartbeat")
@@ -456,7 +639,8 @@ describe("API de agentes de monitoreo IT", () => {
     expect(response.body.data).toEqual(
       expect.objectContaining({ nextHeartbeatSeconds: 60, state: "ONLINE" }),
     );
-    const updated = (prismaMock.agentDevice.updateMany.mock.calls[0][0] as any).data;
+    const updated = (prismaMock.agentDevice.updateMany.mock.calls[0][0] as any)
+      .data;
     expect(updated.primaryIp).toBe("10.0.0.25");
     expect(updated.primaryMac).toBe("AA:BB:CC:DD:EE:FF");
     expect(updated.ramUsedMb).toBe(8192);
@@ -469,10 +653,20 @@ describe("API de agentes de monitoreo IT", () => {
 
   it("downsamplea métricas y sólo crea snapshot cuando viene inventario", async () => {
     prismaMock.agentDevice.findFirst
-      .mockResolvedValueOnce({ id: deviceId, isActive: true, secretHash: hash(deviceSecret) } as any)
-      .mockResolvedValueOnce({ id: deviceId, secretHash: hash(deviceSecret), updatedAt: version } as any);
+      .mockResolvedValueOnce({
+        id: deviceId,
+        isActive: true,
+        secretHash: hash(deviceSecret),
+      } as any)
+      .mockResolvedValueOnce({
+        id: deviceId,
+        secretHash: hash(deviceSecret),
+        updatedAt: version,
+      } as any);
     prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
-    prismaMock.agentMetricSample.findFirst.mockResolvedValueOnce({ sampledAt: new Date() } as any);
+    prismaMock.agentMetricSample.findFirst.mockResolvedValueOnce({
+      sampledAt: new Date(),
+    } as any);
     prismaMock.agentMetricSample.deleteMany.mockResolvedValueOnce({ count: 0 });
 
     const response = await request(app)
@@ -520,7 +714,9 @@ describe("API de agentes de monitoreo IT", () => {
     expect(response.body.data.items[0].connState).toBe("OFFLINE");
     expect(prismaMock.agentDevice.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.agentDevice.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ AND: expect.any(Array) }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({ AND: expect.any(Array) }),
+      }),
     );
   });
 
@@ -540,7 +736,9 @@ describe("API de agentes de monitoreo IT", () => {
       id: "snapshot-1",
       createdAt: version,
     } as any);
-    prismaMock.remoteSession.findMany.mockResolvedValueOnce([makeSession()] as any);
+    prismaMock.remoteSession.findMany.mockResolvedValueOnce([
+      makeSession(),
+    ] as any);
     const response = await request(app)
       .get(`/api/it/agents/devices/${deviceId}`)
       .set(auth("AGENT"));
@@ -553,7 +751,11 @@ describe("API de agentes de monitoreo IT", () => {
 
   it("vincula activo compatible con CAS y audita sin datos secretos", async () => {
     prismaMock.agentDevice.findFirst
-      .mockResolvedValueOnce({ id: deviceId, assetId: null, updatedAt: version } as any)
+      .mockResolvedValueOnce({
+        id: deviceId,
+        assetId: null,
+        updatedAt: version,
+      } as any)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(makeDevice({ updatedAt: nextVersion }) as any);
     prismaMock.asset.findFirst.mockResolvedValueOnce({ id: assetId } as any);
@@ -569,7 +771,9 @@ describe("API de agentes de monitoreo IT", () => {
     );
 
     vi.clearAllMocks();
-    prismaMock.$transaction.mockImplementation(async (work: any) => work(prismaMock));
+    prismaMock.$transaction.mockImplementation(async (work: any) =>
+      work(prismaMock),
+    );
     prismaMock.agentDevice.findFirst.mockResolvedValueOnce({
       id: deviceId,
       assetId,
@@ -606,8 +810,9 @@ describe("API de agentes de monitoreo IT", () => {
         }) as any,
       );
     prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
-    prismaMock.asset.create.mockImplementationOnce(async (args: any) =>
-      makeAsset({ ...args.data, assetTag: args.data.assetTag }) as any,
+    prismaMock.asset.create.mockImplementationOnce(
+      async (args: any) =>
+        makeAsset({ ...args.data, assetTag: args.data.assetTag }) as any,
     );
     prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
     prismaMock.auditLog.create.mockResolvedValue({} as any);
@@ -704,9 +909,9 @@ describe("API de agentes de monitoreo IT", () => {
         (call) => (call[0] as any).data.action,
       ),
     ).toEqual(["created", "assigned", "asset_link_updated"]);
-    expect(
-      JSON.stringify(prismaMock.auditLog.create.mock.calls),
-    ).not.toContain("Entrega inicial");
+    expect(JSON.stringify(prismaMock.auditLog.create.mock.calls)).not.toContain(
+      "Entrega inicial",
+    );
   });
 
   it("rechaza dispositivo ya vinculado y versión obsoleta antes de crear", async () => {
@@ -857,8 +1062,14 @@ describe("API de agentes de monitoreo IT", () => {
 
   it("revoca agente con CAS y cierra sesiones remotas activas", async () => {
     prismaMock.agentDevice.findFirst
-      .mockResolvedValueOnce({ id: deviceId, isActive: true, updatedAt: version } as any)
-      .mockResolvedValueOnce(makeDevice({ isActive: false, connState: "OFFLINE" }) as any);
+      .mockResolvedValueOnce({
+        id: deviceId,
+        isActive: true,
+        updatedAt: version,
+      } as any)
+      .mockResolvedValueOnce(
+        makeDevice({ isActive: false, connState: "OFFLINE" }) as any,
+      );
     prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
     prismaMock.remoteSession.updateMany.mockResolvedValueOnce({ count: 2 });
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
@@ -870,7 +1081,10 @@ describe("API de agentes de monitoreo IT", () => {
     expect(prismaMock.remoteSession.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { deviceId, status: "ACTIVE", endedAt: null },
-        data: expect.objectContaining({ status: "ERROR", errorMsg: "Agente revocado" }),
+        data: expect.objectContaining({
+          status: "ERROR",
+          errorMsg: "Agente revocado",
+        }),
       }),
     );
   });
@@ -903,7 +1117,9 @@ describe("API de agentes de monitoreo IT", () => {
         requiresNetworkReachability: true,
       }),
     );
-    expect(JSON.stringify(response.body).toLowerCase()).not.toContain("password");
+    expect(JSON.stringify(response.body).toLowerCase()).not.toContain(
+      "password",
+    );
     expect(response.body.data.connection.command).toBeUndefined();
   });
 
@@ -928,15 +1144,25 @@ describe("API de agentes de monitoreo IT", () => {
       .send({ protocol: "VNC" });
     expect(response.status).toBe(200);
     expect(response.body.data.connection.uri).toBe("vnc://[2001:db8::25]:5905");
-    const deviceQuery = prismaMock.agentDevice.findFirst.mock.calls[0][0] as any;
+    const deviceQuery = prismaMock.agentDevice.findFirst.mock
+      .calls[0][0] as any;
     expect(deviceQuery.select.vncCredential.select).toEqual({ vncPort: true });
   });
 
   it("cierra sesión atómicamente y serializa contadores BigInt", async () => {
     prismaMock.remoteSession.findUnique
-      .mockResolvedValueOnce({ id: sessionId, status: "ACTIVE", endedAt: null } as any)
+      .mockResolvedValueOnce({
+        id: sessionId,
+        status: "ACTIVE",
+        endedAt: null,
+      } as any)
       .mockResolvedValueOnce(
-        makeSession({ status: "CLOSED", endedAt: new Date(), bytesIn: 123n, bytesOut: 456n }) as any,
+        makeSession({
+          status: "CLOSED",
+          endedAt: new Date(),
+          bytesIn: 123n,
+          bytesOut: 456n,
+        }) as any,
       );
     prismaMock.remoteSession.updateMany.mockResolvedValueOnce({ count: 1 });
     prismaMock.auditLog.create.mockResolvedValueOnce({} as any);

@@ -23,6 +23,15 @@ $requirements = @{
         "Secure-ExistingAgentDirectory",
         "Assert-SecureExistingAgentPaths"
     )
+    "deploy-remotely.ps1" = @(
+        "Get-ValidatedPackage",
+        "Assert-ValidTargetName",
+        "New-DeploymentResult",
+        "Get-SafeErrorSummary",
+        "Set-RestrictedDirectoryAcl",
+        "Assert-PhysicalAdministrativeDirectory",
+        "Remove-SafeStagingTree"
+    )
 }
 
 foreach ($entry in $requirements.GetEnumerator()) {
@@ -56,9 +65,11 @@ foreach ($entry in $requirements.GetEnumerator()) {
     }
 
     $source = [System.IO.File]::ReadAllText($path)
-    if ($source -notmatch "ReparsePoint" `
-        -or $source -notmatch 'S-1-5-18' `
-        -or $source -notmatch 'S-1-5-32-544') {
+    if ($source -notmatch "ReparsePoint") {
+        throw "$($entry.Key) perdió controles contra reparse points."
+    }
+    if ($entry.Key -ne "deploy-remotely.ps1" `
+        -and ($source -notmatch 'S-1-5-18' -or $source -notmatch 'S-1-5-32-544')) {
         throw "$($entry.Key) perdió controles de reparse o ACL esperados."
     }
     if ($source -match 'Remove-Item[^\r\n]*-Recurse') {
@@ -67,3 +78,48 @@ foreach ($entry in $requirements.GetEnumerator()) {
 
     Write-Output "PASS seguridad estática $($entry.Key)"
 }
+
+$deployPath = Join-Path $agentRoot "deploy-remotely.ps1"
+$deploySource = [System.IO.File]::ReadAllText($deployPath)
+foreach ($requiredPattern in @(
+    'SupportsShouldProcess\s*=\s*\$true',
+    '\[System\.Security\.SecureString\]\$EnrollmentToken',
+    'Read-Host\s+"Token de enrolamiento por lote"\s+-AsSecureString',
+    'Get-Credential',
+    'New-PSSession',
+    'Copy-Item[\s\S]{0,300}-ToSession',
+    'Invoke-Command',
+    'Remove-PSSession',
+    'SHA256SUMS\.txt',
+    'S-1-5-18',
+    'S-1-5-32-544',
+    'REMOTING_UNAVAILABLE',
+    'Enable-PSRemoting -Force'
+)) {
+    if ($deploySource -notmatch $requiredPattern) {
+        throw "deploy-remotely.ps1 perdió el control esperado: $requiredPattern"
+    }
+}
+
+foreach ($forbiddenPattern in @(
+    'SecureStringToBSTR',
+    'PtrToString',
+    'NetworkCredential',
+    'ConvertFrom-SecureString',
+    'ConvertTo-SecureString[^\r\n]*-AsPlainText',
+    'Remove-Item[^\r\n]*-Recurse',
+    '(Write-Host|Write-Output|Write-Verbose|Write-Information|Write-Warning)[^\r\n]*EnrollmentToken'
+)) {
+    if ($deploySource -match $forbiddenPattern) {
+        throw "deploy-remotely.ps1 expone secretos o usa una limpieza insegura: $forbiddenPattern"
+    }
+}
+
+Write-Output "PASS despliegue remoto sin secretos en argumentos/logs"
+
+$publishPath = Join-Path $agentRoot "publish.ps1"
+$publishSource = [System.IO.File]::ReadAllText($publishPath)
+if ($publishSource -notmatch '"deploy-remotely\.ps1"') {
+    throw "publish.ps1 no incluye el coordinador de despliegue remoto en el paquete."
+}
+Write-Output "PASS paquete incluye deploy-remotely.ps1"

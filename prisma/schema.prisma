@@ -1127,30 +1127,35 @@ model AgentDevice {
   metrics         AgentMetricSample[]
   sessions        RemoteSession[]
   vncCredential   DeviceVncCredential?
-  enrollmentToken AgentEnrollmentToken?    @relation("TokenUsedBy")
+  enrollmentTokenId String?
+  enrollmentToken   AgentEnrollmentToken?    @relation("TokenEnrollments", fields: [enrollmentTokenId], references: [id], onDelete: SetNull)
 
   @@index([connState])
   @@index([hostname])
   @@index([lastSeenAt])
+  @@index([enrollmentTokenId])
   @@map("agent_devices")
 }
 
-// Token de un solo uso para enrolamiento. Se guarda HASHEADO (sha256);
+// Token de enrolamiento individual o por lote. Se guarda HASHEADO (sha256);
 // el plano se muestra 1 sola vez. Vencimiento corto (ej 7 días).
 model AgentEnrollmentToken {
-  id             String    @id @default(cuid())
-  tokenHash      String    @unique
-  label          String? // ej "Lote Contaduría 2026"
-  expiresAt      DateTime
-  usedAt         DateTime? // null = sin usar
-  usedByDeviceId String?   @unique
-  createdById    String
-  createdAt      DateTime  @default(now())
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  label       String? // ej "Lote Contaduría 2026"
+  expiresAt   DateTime
+  maxUses     Int       @default(1)
+  useCount    Int       @default(0)
+  usedAt      DateTime? // última utilización exitosa
+  revokedAt   DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
 
-  createdBy    User         @relation("EnrollTokenCreator", fields: [createdById], references: [id])
-  usedByDevice AgentDevice? @relation("TokenUsedBy", fields: [usedByDeviceId], references: [id], onDelete: SetNull)
+  createdBy       User          @relation("EnrollTokenCreator", fields: [createdById], references: [id])
+  enrolledDevices AgentDevice[] @relation("TokenEnrollments")
 
   @@index([expiresAt])
+  @@index([revokedAt])
   @@map("agent_enrollment_tokens")
 }
 

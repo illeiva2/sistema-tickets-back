@@ -40,7 +40,9 @@ const SNAPSHOT_RETENTION = 30;
 const TOKEN_DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
 const TOKEN_MIN_TTL_MS = 10 * 60_000;
 const TOKEN_MAX_TTL_MS = 7 * 24 * 60 * 60_000;
-const DUMMY_HASH = createHash("sha256").update("invalid-agent-secret").digest("hex");
+const DUMMY_HASH = createHash("sha256")
+  .update("invalid-agent-secret")
+  .digest("hex");
 
 type AgentApiState = "ONLINE" | "STALE" | "OFFLINE";
 
@@ -85,10 +87,17 @@ const tokenSelect = {
   id: true,
   label: true,
   expiresAt: true,
+  maxUses: true,
+  useCount: true,
   usedAt: true,
+  revokedAt: true,
   createdAt: true,
   createdBy: { select: { id: true, name: true } },
-  usedByDevice: { select: { id: true, hostname: true, isActive: true } },
+  enrolledDevices: {
+    select: { id: true, hostname: true, isActive: true },
+    orderBy: { lastEnrolledAt: "desc" as const },
+    take: 10,
+  },
 } as const;
 
 const metricSelect = {
@@ -171,13 +180,16 @@ const runSerializable = async <T>(
   throw new ApiError("AGENT_WRITE_CONFLICT", "Conflicto de escritura", 409);
 };
 
-const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const sha256 = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
 const randomSecret = () => randomBytes(32).toString("base64url");
 
 const safeHashEquals = (suppliedPlain: string, expectedHash: string) => {
   const supplied = Buffer.from(sha256(suppliedPlain), "hex");
   const expected = Buffer.from(expectedHash, "hex");
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  return (
+    supplied.length === expected.length && timingSafeEqual(supplied, expected)
+  );
 };
 
 const safeDigestEquals = (leftHash: string, rightHash: string) => {
@@ -207,27 +219,45 @@ const serializeDevice = (device: Record<string, any>, now = new Date()) => {
     state,
     // connState persistido es sólo el último evento conocido. La API evita
     // mostrar ONLINE cuando el heartbeat ya superó el umbral, sin mutar en GET.
-    connState: state === "ONLINE" ? AgentConnState.ONLINE : AgentConnState.OFFLINE,
+    connState:
+      state === "ONLINE" ? AgentConnState.ONLINE : AgentConnState.OFFLINE,
   };
 };
 
-const serializeToken = (token: Record<string, any>, now = new Date()) => ({
-  ...token,
-  status: token.usedAt
-    ? ("USED" as const)
-    : token.expiresAt <= now
-      ? ("EXPIRED" as const)
-      : ("AVAILABLE" as const),
-});
+type EnrollmentTokenStatus = "AVAILABLE" | "USED" | "EXPIRED" | "REVOKED";
+
+const deriveTokenStatus = (
+  token: Record<string, any>,
+  now = new Date(),
+): EnrollmentTokenStatus => {
+  if (token.revokedAt) return "REVOKED";
+  if (token.useCount >= token.maxUses) return "USED";
+  if (token.expiresAt <= now) return "EXPIRED";
+  return "AVAILABLE";
+};
+
+const serializeToken = (token: Record<string, any>, now = new Date()) => {
+  const enrolledDevices = token.enrolledDevices ?? [];
+  return {
+    ...token,
+    enrolledDevices,
+    // Se mantiene durante la transición para clientes anteriores al contrato 1:N.
+    usedByDevice: enrolledDevices[0] ?? null,
+    remainingUses: Math.max(0, token.maxUses - token.useCount),
+    status: deriveTokenStatus(token, now),
+  };
+};
 
 const serializeSession = (session: Record<string, any>) => ({
   ...session,
-  bytesIn: session.bytesIn === null || session.bytesIn === undefined
-    ? null
-    : String(session.bytesIn),
-  bytesOut: session.bytesOut === null || session.bytesOut === undefined
-    ? null
-    : String(session.bytesOut),
+  bytesIn:
+    session.bytesIn === null || session.bytesIn === undefined
+      ? null
+      : String(session.bytesIn),
+  bytesOut:
+    session.bytesOut === null || session.bytesOut === undefined
+      ? null
+      : String(session.bytesOut),
 });
 
 const pageResult = (page: number, pageSize: number, total: number) => ({
@@ -237,7 +267,10 @@ const pageResult = (page: number, pageSize: number, total: number) => ({
   totalPages: Math.ceil(total / pageSize),
 });
 
-const stateWhere = (state: AgentApiState, now: Date): Prisma.AgentDeviceWhereInput => {
+const stateWhere = (
+  state: AgentApiState,
+  now: Date,
+): Prisma.AgentDeviceWhereInput => {
   const onlineAfter = new Date(now.getTime() - AGENT_ONLINE_THRESHOLD_MS);
   const staleAfter = new Date(now.getTime() - AGENT_STALE_THRESHOLD_MS);
   if (state === "ONLINE") {
@@ -267,11 +300,23 @@ const ensureAssetAvailable = async (
       isActive: true,
       deletedAt: null,
       status: { not: "RETIRED" },
-      type: { in: [AssetType.DESKTOP, AssetType.NOTEBOOK, AssetType.SERVER, AssetType.OTHER] },
+      type: {
+        in: [
+          AssetType.DESKTOP,
+          AssetType.NOTEBOOK,
+          AssetType.SERVER,
+          AssetType.OTHER,
+        ],
+      },
     },
     select: { id: true },
   });
-  if (!asset) throw new ApiError("ASSET_NOT_FOUND", "Activo compatible no encontrado", 404);
+  if (!asset)
+    throw new ApiError(
+      "ASSET_NOT_FOUND",
+      "Activo compatible no encontrado",
+      404,
+    );
   const linked = await tx.agentDevice.findFirst({
     where: { assetId, id: { not: excludingDeviceId }, deletedAt: null },
     select: { id: true },
@@ -285,7 +330,8 @@ const ensureAssetAvailable = async (
   }
 };
 
-const mb = (bytes: number) => Math.min(2_147_483_647, Math.round(bytes / 1_048_576));
+const mb = (bytes: number) =>
+  Math.min(2_147_483_647, Math.round(bytes / 1_048_576));
 
 const diskUsedPct = (disks: MachineHeartbeatRequest["disks"]) => {
   const total = disks.reduce((sum, disk) => sum + disk.totalBytes, 0);
@@ -296,20 +342,28 @@ const diskUsedPct = (disks: MachineHeartbeatRequest["disks"]) => {
 
 const usablePrimaryIp = (addresses: string[]) => {
   const unique = [...new Set(addresses)];
-  return unique.find((address) => {
-    if (isIP(address) === 4) {
-      return !(
-        address.startsWith("127.") ||
-        address.startsWith("169.254.") ||
-        address === "0.0.0.0"
+  return (
+    unique.find((address) => {
+      if (isIP(address) === 4) {
+        return !(
+          address.startsWith("127.") ||
+          address.startsWith("169.254.") ||
+          address === "0.0.0.0"
+        );
+      }
+      const lower = address.toLowerCase();
+      return (
+        isIP(address) === 6 &&
+        lower !== "::" &&
+        lower !== "::1" &&
+        !lower.startsWith("fe80:")
       );
-    }
-    const lower = address.toLowerCase();
-    return isIP(address) === 6 && lower !== "::" && lower !== "::1" && !lower.startsWith("fe80:");
-  }) ?? null;
+    }) ?? null
+  );
 };
 
-const formatUriTarget = (target: string) => (target.includes(":") ? `[${target}]` : target);
+const formatUriTarget = (target: string) =>
+  target.includes(":") ? `[${target}]` : target;
 
 export class AgentsService {
   static async lookups() {
@@ -318,7 +372,14 @@ export class AgentsService {
         isActive: true,
         deletedAt: null,
         status: { not: "RETIRED" },
-        type: { in: [AssetType.DESKTOP, AssetType.NOTEBOOK, AssetType.SERVER, AssetType.OTHER] },
+        type: {
+          in: [
+            AssetType.DESKTOP,
+            AssetType.NOTEBOOK,
+            AssetType.SERVER,
+            AssetType.OTHER,
+          ],
+        },
         agentDevice: null,
       },
       select: assetSelect,
@@ -331,23 +392,33 @@ export class AgentsService {
   static async listEnrollmentTokens(filters: EnrollmentTokenFilters) {
     const now = new Date();
     const where: Prisma.AgentEnrollmentTokenWhereInput =
-      filters.status === "USED"
-        ? { usedAt: { not: null } }
+      filters.status === "REVOKED"
+        ? { revokedAt: { not: null } }
         : filters.status === "EXPIRED"
-          ? { usedAt: null, expiresAt: { lte: now } }
+          ? { revokedAt: null, expiresAt: { lte: now } }
           : filters.status === "AVAILABLE"
-            ? { usedAt: null, expiresAt: { gt: now } }
+            ? { revokedAt: null, expiresAt: { gt: now } }
             : {};
     const tokens = await prisma.agentEnrollmentToken.findMany({
       where,
       select: tokenSelect,
       orderBy: { createdAt: "desc" },
-      take: 200,
+      // AVAILABLE/USED dependen de una comparación entre columnas. Se filtra
+      // el conjunto acotado en memoria porque Prisma no expresa esa condición.
+      take: filters.status ? 1000 : 200,
     });
-    return { items: tokens.map((token) => serializeToken(token, now)) };
+    const serialized = tokens.map((token) => serializeToken(token, now));
+    return {
+      items: serialized
+        .filter((token) => !filters.status || token.status === filters.status)
+        .slice(0, 200),
+    };
   }
 
-  static async createEnrollmentToken(data: CreateEnrollmentTokenRequest, actorId: string) {
+  static async createEnrollmentToken(
+    data: CreateEnrollmentTokenRequest,
+    actorId: string,
+  ) {
     const now = new Date();
     const expiresAt = data.expiresAt
       ? new Date(data.expiresAt)
@@ -367,6 +438,7 @@ export class AgentsService {
           tokenHash: sha256(plainToken),
           label: data.label,
           expiresAt,
+          maxUses: data.maxUses,
           createdById: actorId,
         },
         select: tokenSelect,
@@ -377,7 +449,11 @@ export class AgentsService {
           entityId: created.id,
           action: "created",
           actorId,
-          meta: { labelProvided: Boolean(data.label), expiresAt: expiresAt.toISOString() },
+          meta: {
+            labelProvided: Boolean(data.label),
+            expiresAt: expiresAt.toISOString(),
+            maxUses: data.maxUses,
+          },
         },
       });
       return created;
@@ -390,22 +466,43 @@ export class AgentsService {
       const now = new Date();
       const token = await tx.agentEnrollmentToken.findUnique({
         where: { id },
-        select: { id: true, usedAt: true, expiresAt: true },
+        select: {
+          id: true,
+          maxUses: true,
+          useCount: true,
+          revokedAt: true,
+          expiresAt: true,
+        },
       });
       if (!token) {
-        throw new ApiError("ENROLLMENT_TOKEN_NOT_FOUND", "Token no encontrado", 404);
+        throw new ApiError(
+          "ENROLLMENT_TOKEN_NOT_FOUND",
+          "Token no encontrado",
+          404,
+        );
       }
-      if (token.usedAt || token.expiresAt <= now) {
+      if (
+        token.revokedAt ||
+        token.useCount >= token.maxUses ||
+        token.expiresAt <= now
+      ) {
         throw new ApiError(
           "ENROLLMENT_TOKEN_NOT_AVAILABLE",
-          "Sólo se puede revocar un token vigente y no utilizado",
+          "Sólo se puede revocar un token vigente con usos disponibles",
           409,
         );
       }
-      const deleted = await tx.agentEnrollmentToken.deleteMany({
-        where: { id, usedAt: null, expiresAt: { gt: now } },
+      const revoked = await tx.agentEnrollmentToken.updateMany({
+        where: {
+          id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+          maxUses: token.maxUses,
+          useCount: token.useCount,
+        },
+        data: { revokedAt: now },
       });
-      if (deleted.count !== 1) {
+      if (revoked.count !== 1) {
         throw new ApiError(
           "ENROLLMENT_TOKEN_NOT_AVAILABLE",
           "El token ya no está disponible",
@@ -418,7 +515,11 @@ export class AgentsService {
           entityId: id,
           action: "revoked",
           actorId,
-          meta: { tokenRedacted: true },
+          meta: {
+            tokenRedacted: true,
+            maxUses: token.maxUses,
+            useCount: token.useCount,
+          },
         },
       });
       return { revoked: true as const, id };
@@ -449,7 +550,11 @@ export class AgentsService {
       prisma.agentDevice.findMany({
         where,
         select: deviceListSelect,
-        orderBy: [{ isActive: "desc" }, { lastSeenAt: "desc" }, { hostname: "asc" }],
+        orderBy: [
+          { isActive: "desc" },
+          { lastSeenAt: "desc" },
+          { hostname: "asc" },
+        ],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -468,26 +573,38 @@ export class AgentsService {
       select: deviceListSelect,
     });
     if (!device) {
-      throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+      throw new ApiError(
+        "AGENT_DEVICE_NOT_FOUND",
+        "Dispositivo agente no encontrado",
+        404,
+      );
     }
-    const [recentMetricsDesc, latestSnapshot, activeSessions] = await Promise.all([
-      prisma.agentMetricSample.findMany({
-        where: { deviceId: id, sampledAt: { gte: new Date(now.getTime() - 24 * 60 * 60_000) } },
-        select: metricSelect,
-        orderBy: { sampledAt: "desc" },
-        take: 288,
-      }),
-      prisma.agentInventorySnapshot.findFirst({
-        where: { deviceId: id },
-        select: { id: true, createdAt: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.remoteSession.findMany({
-        where: { deviceId: id, status: RemoteSessionStatus.ACTIVE, endedAt: null },
-        select: sessionSelect,
-        orderBy: { startedAt: "desc" },
-      }),
-    ]);
+    const [recentMetricsDesc, latestSnapshot, activeSessions] =
+      await Promise.all([
+        prisma.agentMetricSample.findMany({
+          where: {
+            deviceId: id,
+            sampledAt: { gte: new Date(now.getTime() - 24 * 60 * 60_000) },
+          },
+          select: metricSelect,
+          orderBy: { sampledAt: "desc" },
+          take: 288,
+        }),
+        prisma.agentInventorySnapshot.findFirst({
+          where: { deviceId: id },
+          select: { id: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+        }),
+        prisma.remoteSession.findMany({
+          where: {
+            deviceId: id,
+            status: RemoteSessionStatus.ACTIVE,
+            endedAt: null,
+          },
+          select: sessionSelect,
+          orderBy: { startedAt: "desc" },
+        }),
+      ]);
     return {
       ...serializeDevice(device, now),
       recentMetrics: recentMetricsDesc.reverse(),
@@ -496,7 +613,11 @@ export class AgentsService {
     };
   }
 
-  static async linkAsset(id: string, data: LinkAgentAssetRequest, actorId: string) {
+  static async linkAsset(
+    id: string,
+    data: LinkAgentAssetRequest,
+    actorId: string,
+  ) {
     try {
       return await runSerializable(async (tx) => {
         const current = await tx.agentDevice.findFirst({
@@ -504,7 +625,11 @@ export class AgentsService {
           select: { id: true, assetId: true, updatedAt: true },
         });
         if (!current) {
-          throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+          throw new ApiError(
+            "AGENT_DEVICE_NOT_FOUND",
+            "Dispositivo agente no encontrado",
+            404,
+          );
         }
         const expected = new Date(data.expectedUpdatedAt);
         if (current.updatedAt.getTime() !== expected.getTime()) {
@@ -531,7 +656,11 @@ export class AgentsService {
           select: deviceListSelect,
         });
         if (!updated) {
-          throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+          throw new ApiError(
+            "AGENT_DEVICE_NOT_FOUND",
+            "Dispositivo agente no encontrado",
+            404,
+          );
         }
         await tx.auditLog.create({
           data: {
@@ -612,11 +741,7 @@ export class AgentsService {
             );
           }
 
-          let asset = await createAssetInTransaction(
-            tx,
-            data.asset,
-            actorId,
-          );
+          let asset = await createAssetInTransaction(tx, data.asset, actorId);
           if (data.custody) {
             asset = await assignAssetInTransaction(
               tx,
@@ -673,11 +798,7 @@ export class AgentsService {
           return { device: serializeDevice(updated), asset };
         });
       } catch (error) {
-        if (
-          generatedTag &&
-          isGeneratedAssetTagConflict(error) &&
-          attempt < 4
-        ) {
+        if (generatedTag && isGeneratedAssetTagConflict(error) && attempt < 4) {
           continue;
         }
         const assetError = asAssetWriteError(error);
@@ -705,7 +826,11 @@ export class AgentsService {
         select: { id: true, isActive: true, updatedAt: true },
       });
       if (!current) {
-        throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+        throw new ApiError(
+          "AGENT_DEVICE_NOT_FOUND",
+          "Dispositivo agente no encontrado",
+          404,
+        );
       }
       const expected = new Date(data.expectedUpdatedAt);
       if (current.updatedAt.getTime() !== expected.getTime()) {
@@ -717,13 +842,20 @@ export class AgentsService {
       }
       if (current.isActive === activate) {
         throw new ApiError(
-          activate ? "AGENT_DEVICE_ALREADY_ACTIVE" : "AGENT_DEVICE_ALREADY_REVOKED",
+          activate
+            ? "AGENT_DEVICE_ALREADY_ACTIVE"
+            : "AGENT_DEVICE_ALREADY_REVOKED",
           activate ? "El agente ya está activo" : "El agente ya está revocado",
           409,
         );
       }
       const write = await tx.agentDevice.updateMany({
-        where: { id, deletedAt: null, updatedAt: expected, isActive: !activate },
+        where: {
+          id,
+          deletedAt: null,
+          updatedAt: expected,
+          isActive: !activate,
+        },
         data: {
           isActive: activate,
           connState: AgentConnState.OFFLINE,
@@ -738,7 +870,11 @@ export class AgentsService {
       }
       if (!activate) {
         await tx.remoteSession.updateMany({
-          where: { deviceId: id, status: RemoteSessionStatus.ACTIVE, endedAt: null },
+          where: {
+            deviceId: id,
+            status: RemoteSessionStatus.ACTIVE,
+            endedAt: null,
+          },
           data: {
             status: RemoteSessionStatus.ERROR,
             endedAt: new Date(),
@@ -751,7 +887,11 @@ export class AgentsService {
         select: deviceListSelect,
       });
       if (!updated) {
-        throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+        throw new ApiError(
+          "AGENT_DEVICE_NOT_FOUND",
+          "Dispositivo agente no encontrado",
+          404,
+        );
       }
       await tx.auditLog.create({
         data: {
@@ -766,11 +906,19 @@ export class AgentsService {
     });
   }
 
-  static activateDevice(id: string, data: AgentDeviceTransitionRequest, actorId: string) {
+  static activateDevice(
+    id: string,
+    data: AgentDeviceTransitionRequest,
+    actorId: string,
+  ) {
     return AgentsService.transitionDevice(id, data, actorId, true);
   }
 
-  static revokeDevice(id: string, data: AgentDeviceTransitionRequest, actorId: string) {
+  static revokeDevice(
+    id: string,
+    data: AgentDeviceTransitionRequest,
+    actorId: string,
+  ) {
     return AgentsService.transitionDevice(id, data, actorId, false);
   }
 
@@ -780,7 +928,11 @@ export class AgentsService {
       select: { id: true },
     });
     if (!device) {
-      throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+      throw new ApiError(
+        "AGENT_DEVICE_NOT_FOUND",
+        "Dispositivo agente no encontrado",
+        404,
+      );
     }
     const { page, pageSize } = filters;
     const where = { deviceId: id };
@@ -803,7 +955,11 @@ export class AgentsService {
       select: { id: true },
     });
     if (!device) {
-      throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+      throw new ApiError(
+        "AGENT_DEVICE_NOT_FOUND",
+        "Dispositivo agente no encontrado",
+        404,
+      );
     }
     const now = new Date();
     const from = filters.from
@@ -844,11 +1000,10 @@ export class AgentsService {
           select: {
             id: true,
             createdById: true,
-            usedAt: true,
+            maxUses: true,
+            useCount: true,
+            revokedAt: true,
             expiresAt: true,
-            usedByDevice: {
-              select: { id: true, machineId: true, secretHash: true },
-            },
           },
         });
         if (!token) {
@@ -858,11 +1013,18 @@ export class AgentsService {
             409,
           );
         }
-        if (token.usedAt) {
-          const sameEnrollment =
-            token.usedByDevice?.machineId === data.machineGuid &&
-            safeHashEquals(data.deviceSecret, token.usedByDevice.secretHash);
-          if (!sameEnrollment) {
+        const existing = await tx.agentDevice.findUnique({
+          where: { machineId: data.machineGuid },
+          select: {
+            id: true,
+            isActive: true,
+            deletedAt: true,
+            enrollmentTokenId: true,
+            secretHash: true,
+          },
+        });
+        if (existing?.enrollmentTokenId === token.id) {
+          if (!safeHashEquals(data.deviceSecret, existing.secretHash)) {
             throw new ApiError(
               "ENROLLMENT_TOKEN_NOT_AVAILABLE",
               "Token de enrolamiento inválido o no disponible",
@@ -870,11 +1032,15 @@ export class AgentsService {
             );
           }
           return {
-            deviceId: token.usedByDevice!.id,
+            deviceId: existing.id,
             nextHeartbeatSeconds: AGENT_HEARTBEAT_SECONDS,
           };
         }
-        if (token.expiresAt <= now) {
+        if (
+          token.revokedAt ||
+          token.useCount >= token.maxUses ||
+          token.expiresAt <= now
+        ) {
           throw new ApiError(
             "ENROLLMENT_TOKEN_NOT_AVAILABLE",
             "Token de enrolamiento inválido o no disponible",
@@ -882,14 +1048,14 @@ export class AgentsService {
           );
         }
 
-        const existing = await tx.agentDevice.findUnique({
-          where: { machineId: data.machineGuid },
-          select: {
-            id: true,
-            isActive: true,
-            deletedAt: true,
-          },
-        });
+        if (existing && token.maxUses > 1) {
+          throw new ApiError(
+            "AGENT_MACHINE_NOT_AVAILABLE",
+            "Los tokens por lote sólo pueden enrolar máquinas nuevas",
+            409,
+          );
+        }
+
         if (existing?.deletedAt) {
           throw new ApiError(
             "AGENT_MACHINE_NOT_AVAILABLE",
@@ -900,13 +1066,6 @@ export class AgentsService {
 
         let deviceId: string;
         if (existing) {
-          // El schema sólo permite que un token apunte al dispositivo. Se
-          // conserva usedAt/auditoría del token anterior, pero se libera su
-          // asociación antes de relacionar el token nuevo.
-          await tx.agentEnrollmentToken.updateMany({
-            where: { usedByDeviceId: existing.id },
-            data: { usedByDeviceId: null },
-          });
           const updated = await tx.agentDevice.update({
             where: { id: existing.id },
             data: {
@@ -917,6 +1076,7 @@ export class AgentsService {
               osVersion: data.osVersion,
               connState: AgentConnState.OFFLINE,
               lastEnrolledAt: now,
+              enrollmentTokenId: token.id,
               // isActive y assetId se preservan intencionalmente.
             },
             select: { id: true },
@@ -933,6 +1093,7 @@ export class AgentsService {
               osVersion: data.osVersion,
               connState: AgentConnState.OFFLINE,
               lastEnrolledAt: now,
+              enrollmentTokenId: token.id,
             },
             select: { id: true },
           });
@@ -940,8 +1101,14 @@ export class AgentsService {
         }
 
         const consumed = await tx.agentEnrollmentToken.updateMany({
-          where: { id: token.id, usedAt: null, expiresAt: { gt: now } },
-          data: { usedAt: now, usedByDeviceId: deviceId },
+          where: {
+            id: token.id,
+            revokedAt: null,
+            expiresAt: { gt: now },
+            maxUses: token.maxUses,
+            useCount: token.useCount,
+          },
+          data: { useCount: { increment: 1 }, usedAt: now },
         });
         if (consumed.count !== 1) {
           throw new ApiError(
@@ -958,6 +1125,8 @@ export class AgentsService {
             actorId: token.createdById,
             meta: {
               enrollmentTokenId: token.id,
+              enrollmentUse: token.useCount + 1,
+              enrollmentMaxUses: token.maxUses,
               machineIdentityRedacted: true,
               secretRedacted: true,
             },
@@ -1005,7 +1174,11 @@ export class AgentsService {
         // Comparación directa posterior al auth: expectedSecretHash y el
         // valor persistido ya son hashes, no secretos. El mensaje permanece
         // uniforme ante revocación/rotación concurrente.
-        throw new ApiError("AGENT_AUTH_INVALID", "Credenciales de agente inválidas", 401);
+        throw new ApiError(
+          "AGENT_AUTH_INVALID",
+          "Credenciales de agente inválidas",
+          401,
+        );
       }
       const primaryIp = usablePrimaryIp(data.ipAddresses);
       const primaryMac = [...new Set(data.macAddresses)][0] ?? null;
@@ -1040,7 +1213,11 @@ export class AgentsService {
         },
       });
       if (update.count !== 1) {
-        throw new ApiError("AGENT_AUTH_INVALID", "Credenciales de agente inválidas", 401);
+        throw new ApiError(
+          "AGENT_AUTH_INVALID",
+          "Credenciales de agente inválidas",
+          401,
+        );
       }
 
       const lastMetric = await tx.agentMetricSample.findFirst({
@@ -1048,7 +1225,10 @@ export class AgentsService {
         select: { sampledAt: true },
         orderBy: { sampledAt: "desc" },
       });
-      if (!lastMetric || now.getTime() - lastMetric.sampledAt.getTime() >= METRIC_INTERVAL_MS) {
+      if (
+        !lastMetric ||
+        now.getTime() - lastMetric.sampledAt.getTime() >= METRIC_INTERVAL_MS
+      ) {
         await tx.agentMetricSample.create({
           data: {
             deviceId,
@@ -1117,7 +1297,11 @@ export class AgentsService {
         },
       });
       if (!device) {
-        throw new ApiError("AGENT_DEVICE_NOT_FOUND", "Dispositivo agente no encontrado", 404);
+        throw new ApiError(
+          "AGENT_DEVICE_NOT_FOUND",
+          "Dispositivo agente no encontrado",
+          404,
+        );
       }
       if (deriveState(device, now) !== "ONLINE") {
         throw new ApiError(
@@ -1134,9 +1318,10 @@ export class AgentsService {
           409,
         );
       }
-      const target = device.primaryIp && isIP(device.primaryIp)
-        ? device.primaryIp
-        : device.hostname;
+      const target =
+        device.primaryIp && isIP(device.primaryIp)
+          ? device.primaryIp
+          : device.hostname;
       if (
         !isIP(target) &&
         !/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/.test(target)
@@ -1205,7 +1390,11 @@ export class AgentsService {
         select: { id: true, status: true, endedAt: true },
       });
       if (!current) {
-        throw new ApiError("REMOTE_SESSION_NOT_FOUND", "Sesión remota no encontrada", 404);
+        throw new ApiError(
+          "REMOTE_SESSION_NOT_FOUND",
+          "Sesión remota no encontrada",
+          404,
+        );
       }
       if (current.status !== RemoteSessionStatus.ACTIVE || current.endedAt) {
         throw new ApiError(
@@ -1216,7 +1405,11 @@ export class AgentsService {
       }
       const endedAt = new Date();
       const write = await tx.remoteSession.updateMany({
-        where: { id: sessionId, status: RemoteSessionStatus.ACTIVE, endedAt: null },
+        where: {
+          id: sessionId,
+          status: RemoteSessionStatus.ACTIVE,
+          endedAt: null,
+        },
         data: { status: RemoteSessionStatus.CLOSED, endedAt },
       });
       if (write.count !== 1) {
@@ -1231,7 +1424,11 @@ export class AgentsService {
         select: sessionSelect,
       });
       if (!session) {
-        throw new ApiError("REMOTE_SESSION_NOT_FOUND", "Sesión remota no encontrada", 404);
+        throw new ApiError(
+          "REMOTE_SESSION_NOT_FOUND",
+          "Sesión remota no encontrada",
+          404,
+        );
       }
       await tx.auditLog.create({
         data: {

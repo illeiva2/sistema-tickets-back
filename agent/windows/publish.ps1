@@ -68,7 +68,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish falló."
 }
 
-foreach ($fileName in @("install.ps1", "uninstall.ps1", "config.example.json", "README.md")) {
+foreach ($fileName in @(
+    "install.ps1",
+    "uninstall.ps1",
+    "deploy-remotely.ps1",
+    "config.example.json",
+    "README.md"
+)) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $fileName) -Destination $outputPath -Force
 }
 

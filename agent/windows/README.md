@@ -21,7 +21,7 @@ Una vez por día de forma predeterminada agrega inventario: fabricante/modelo/se
 
 - `baseUrl` debe ser HTTPS. Se usa la validación TLS normal de Windows (cadena, hostname, vigencia y confianza); no existe opción para aceptar certificados inválidos.
 - Los redirects HTTP están deshabilitados para que el token de enrolamiento nunca pueda redirigirse a otro host.
-- El token de un uso se solicita como `SecureString`; nunca se pasa en texto plano por la línea de comandos ni se imprime.
+- El token individual o por lote se solicita como `SecureString`; nunca se pasa en texto plano por la línea de comandos ni se imprime.
 - Antes del primer POST, el agente genera un secreto CSPRNG de 32 bytes y guarda un estado `pending` cifrado con DPAPI `LocalMachine`. Un crash o una respuesta perdida reutiliza exactamente el mismo token, `MachineGuid` y secreto.
 - Al confirmar el servidor, se guarda `deviceId` junto al secreto como estado `enrolled`, también cifrado con DPAPI, y se sobrescribe/elimina el archivo de token temporal.
 - El instalador asegura primero los ancestros `%ProgramData%\GRF` y `%ProgramFiles%\GRF`, y luego los directorios `ITAgent`, todos con herencia deshabilitada y acceso únicamente para `SYSTEM` y Administradores locales. Rechaza junctions/symlinks en cualquier componente y vuelve a validar las rutas antes de escribir archivos o registrar la tarea.
@@ -41,7 +41,7 @@ POST /api/agent/enroll
 
 ```json
 {
-  "token": "<one-use>",
+  "token": "<individual-or-batch>",
   "deviceSecret": "<base64url-43>",
   "machineGuid": "550e8400-e29b-41d4-a716-446655440000",
   "hostname": "PC-001",
@@ -95,7 +95,7 @@ Para generar el paquete self-contained:
 .\publish.ps1
 ```
 
-El resultado queda en `artifacts\win-x64` e incluye `GRF.ITAgent.exe`, instalador, desinstalador, configuración de ejemplo, este README y un SHA-256. `publish.ps1` ejecuta las pruebas antes de publicar; `-SkipTests` queda reservado para diagnóstico local, no para releases.
+El resultado queda en `artifacts\win-x64` e incluye `GRF.ITAgent.exe`, instalador, desinstalador, coordinador de despliegue remoto, configuración de ejemplo, este README y un SHA-256. `publish.ps1` ejecuta las pruebas antes de publicar; `-SkipTests` queda reservado para diagnóstico local, no para releases.
 
 ## Release gate .NET
 
@@ -113,7 +113,7 @@ El agente productivo apunta a `net10.0-windows` y se publica self-contained para
 .\install.ps1 -BaseUrl "https://sistema-tickets-back.onrender.com/"
 ```
 
-El script pedirá el token de un uso sin mostrarlo. También se puede preparar un `SecureString` interactivamente, sin texto plano en el historial:
+El script pedirá el token sin mostrarlo. También se puede preparar un `SecureString` interactivamente, sin texto plano en el historial:
 
 ```powershell
 $token = Read-Host "Token de enrolamiento" -AsSecureString
@@ -125,6 +125,75 @@ El instalador es idempotente: detiene la tarea existente, reemplaza el ejecutabl
 Una actualización desde la primera versión endurece automáticamente un ancestro `GRF` real con owner administrativo y conserva el leaf `ITAgent` ya protegido. Si `GRF` fue precreado por un usuario estándar, es un junction/symlink o el leaf no tiene ACL confiables, la instalación aborta antes de leer o escribir. En ese caso un administrador debe inspeccionar la ruta, retirar manualmente el objeto no confiable y ejecutar de nuevo el instalador; el script no intenta “reparar” un enlace potencialmente hostil.
 
 Para actualizar, copiar una publicación nueva y ejecutar de nuevo `install.ps1` con la misma URL. No se necesita un token nuevo mientras se conserve `credentials.dat`.
+
+## Despliegue masivo sin Active Directory
+
+`deploy-remotely.ps1` permite coordinar una primera instalación desde una PC de IT. Usa
+PowerShell Remoting/WinRM, solicita una sola vez la credencial de Administrador local y un
+token de enrolamiento **por lote**, y continúa con los demás equipos aunque uno falle.
+El token viaja como `SecureString` dentro de la sesión WinRM autenticada y cifrada: no se
+convierte a texto en la PC de IT, no aparece en argumentos de procesos ni se imprime.
+
+Requisitos previos:
+
+- generar un token por lote con un máximo de usos igual o algo mayor a los equipos elegidos;
+- ejecutar `publish.ps1` y usar su carpeta `artifacts\win-x64` como paquete local;
+- usar una cuenta que sea Administrador local en todos los equipos;
+- habilitar WinRM una vez en cada PC objetivo, desde PowerShell elevado:
+
+```powershell
+Enable-PSRemoting -Force
+```
+
+Sin AD no hay GPO para realizar esa preparación inicial. Si WinRM no está disponible, el
+resumen marca el equipo como `REMOTING_UNAVAILABLE`: en esa PC hace falta ejecutar el comando
+anterior localmente o hacer la primera instalación manual. El script no abre WinRM ni cambia
+el firewall de forma remota por un mecanismo alternativo.
+
+En la PC de IT, los equipos de un grupo de trabajo deben autenticarse por WinRM HTTPS o estar
+agregados de forma explícita a `TrustedHosts`. No se recomienda usar `*`. Ejemplo desde una
+consola elevada, ajustando la lista real:
+
+```powershell
+Set-Item WSMan:\localhost\Client\TrustedHosts `
+  -Value "PC-001,PC-002,192.168.1.25" -Concatenate -Force
+```
+
+Preparar `equipos.txt` con un hostname o IPv4 por línea. Primero verificar conectividad y
+permisos sin modificar los equipos:
+
+```powershell
+$equipos = Get-Content .\equipos.txt
+.\deploy-remotely.ps1 `
+  -ComputerName $equipos `
+  -PackagePath .\artifacts\win-x64 `
+  -BaseUrl "https://sistema-tickets-back.onrender.com/" `
+  -PreflightOnly
+```
+
+También se puede simular el flujo completo con `-WhatIf`; realiza el preflight de WinRM pero
+no crea staging, no copia archivos y no instala:
+
+```powershell
+.\deploy-remotely.ps1 `
+  -ComputerName $equipos `
+  -PackagePath .\artifacts\win-x64 `
+  -BaseUrl "https://sistema-tickets-back.onrender.com/" `
+  -WhatIf
+```
+
+Para instalar, ejecutar el mismo comando sin `-PreflightOnly`/`-WhatIf`. El script solicitará
+la `PSCredential` y el token de lote una sola vez. Por equipo crea un staging aleatorio bajo
+`%ProgramData%\GRF-ITAgentDeploy`, restringido a `SYSTEM` y Administradores; verifica el
+SHA-256 del ejecutable antes y después de transferirlo, invoca el `install.ps1` existente y
+elimina el staging mediante una limpieza acotada. El estado `INSTALLED` confirma la instalación
+local y la tarea programada; el enrolamiento contra la API ocurre en segundo plano. Si la copia
+o instalación falla, los demás equipos continúan y el resumen identifica fase y causa.
+
+Para WinRM sobre HTTPS, agregar `-UseSSL`. Si una cuenta administradora local personalizada
+llega con un token UAC filtrado, el preflight la rechazará; debe corregirse esa política en el
+equipo o usarse una cuenta local que reciba un token administrativo completo. El despliegue no
+modifica políticas UAC ni `TrustedHosts` automáticamente.
 
 ## Archivos locales
 
