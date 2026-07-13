@@ -15,7 +15,7 @@
     "db:down": "docker-compose down",
     "db:generate": "prisma generate",
     "db:baseline:staging": "prisma generate && tsx src/scripts/baseline-staging.ts",
-    "db:migrate": "prisma migrate deploy",
+    "db:migrate": "tsx src/scripts/migrate-deploy.ts",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/scripts/seed.ts",
     "db:studio": "prisma studio",
