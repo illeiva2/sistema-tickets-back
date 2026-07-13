@@ -23,23 +23,35 @@ export class OAuthController {
 
   // Callback de Google OAuth
   static googleCallback = (req: Request, res: Response, next: NextFunction) => {
-    logger.info("Google OAuth callback initiated");
-    logger.info(`Query params: ${JSON.stringify(req.query)}`);
+    const requestIdHeader = req.headers["x-request-id"];
+    const requestId = Array.isArray(requestIdHeader)
+      ? requestIdHeader[0]
+      : requestIdHeader || "missing";
+    const logContext = { requestId };
+
+    logger.info(logContext, "Google OAuth callback initiated");
 
     passport.authenticate(
       "google",
       { session: false },
-      (err: any, user: any, info: any) => {
-        logger.info("Passport authenticate callback executed");
-        logger.info(err ? err : "No Error", "Error:");
-        logger.info(`User: ${JSON.stringify(user)}`);
-        logger.info(`Info: ${JSON.stringify(info)}`);
+      (err: any, user: any) => {
+        const outcome = err ? "error" : user ? "user_received" : "no_user";
+        logger.info(
+          { ...logContext, outcome },
+          "Google OAuth passport callback completed",
+        );
 
         if (err || !user) {
           if (err) {
-            logger.error(err, "Google OAuth error:");
+            logger.error(
+              {
+                ...logContext,
+                errorType: err instanceof Error ? err.name : typeof err,
+              },
+              "Google OAuth authentication failed",
+            );
           } else {
-            logger.error("No user returned from Google OAuth");
+            logger.warn(logContext, "Google OAuth returned no user");
           }
 
           const redirectUrl = new URL(
@@ -62,7 +74,12 @@ export class OAuthController {
         }
 
         try {
-          logger.info(`Generando JWT tokens para usuario: ${user.email}`);
+          const userContext = {
+            ...logContext,
+            userId: user.id,
+            role: user.role,
+          };
+          logger.info(userContext, "Issuing Google OAuth JWTs");
           
           // Generar JWT tokens
           // @ts-ignore - JWT sign type compatibility issue
@@ -86,7 +103,7 @@ export class OAuthController {
             { expiresIn: oauthConfig.jwt.refreshExpiresIn || "7d" },
           );
 
-          logger.info("JWT tokens generados exitosamente");
+          logger.info(userContext, "Google OAuth JWTs issued");
 
           // Redirigir al frontend con tokens
           const redirectUrl = new URL(
@@ -109,13 +126,26 @@ export class OAuthController {
             }),
           );
 
-          logger.info(`Redirigiendo a: ${redirectUrl.toString()}`);
-          logger.info(`User ${user.email} authenticated via Google OAuth`);
+          logger.info(
+            {
+              ...userContext,
+              redirectOrigin: redirectUrl.origin,
+              redirectPath: redirectUrl.pathname,
+            },
+            "Google OAuth redirect prepared",
+          );
+          logger.info(userContext, "Google OAuth authentication succeeded");
           
           // Asegurar que la respuesta se envíe correctamente
           res.status(302).redirect(redirectUrl.toString());
         } catch (error) {
-          logger.error({ err: error }, "Error generating JWT tokens:");
+          logger.error(
+            {
+              ...logContext,
+              errorType: error instanceof Error ? error.name : typeof error,
+            },
+            "Google OAuth token generation failed",
+          );
           return next(
             new ApiError(
               "TOKEN_GENERATION_FAILED",

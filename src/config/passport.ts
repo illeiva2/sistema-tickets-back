@@ -5,6 +5,17 @@ import { oauthConfig } from "./oauth";
 import { logger } from "../lib/logger";
 import bcrypt from "bcryptjs";
 
+const googleLogContext = { provider: "google" } as const;
+
+const getSafeCallbackTarget = (callbackURL: string) => {
+  try {
+    const url = new URL(callbackURL);
+    return { callbackOrigin: url.origin, callbackPath: url.pathname };
+  } catch {
+    return { callbackOrigin: "invalid", callbackPath: "invalid" };
+  }
+};
+
 // Serializar usuario para la sesión
 passport.serializeUser((user: any, done) => {
   done(null, user.id);
@@ -31,11 +42,16 @@ passport.deserializeUser(async (id: string, done) => {
 });
 
 // Estrategia de Google OAuth
-logger.info("Configurando Google OAuth strategy...");
-logger.info(`Client ID: ${oauthConfig.google.clientID ? "Presente" : "FALTANTE"}`);
-logger.info(`Client Secret: ${oauthConfig.google.clientSecret ? "Presente" : "FALTANTE"}`);
-logger.info(`Callback URL: ${oauthConfig.google.callbackURL}`);
-logger.info(`Scope: ${oauthConfig.google.scope}`);
+logger.info(
+  {
+    ...googleLogContext,
+    clientConfigured: Boolean(oauthConfig.google.clientID),
+    secretConfigured: Boolean(oauthConfig.google.clientSecret),
+    ...getSafeCallbackTarget(oauthConfig.google.callbackURL),
+    scope: oauthConfig.google.scope,
+  },
+  "Configuring OAuth strategy",
+);
 
 // Solo configurar Google OAuth si las credenciales están disponibles
 if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
@@ -47,18 +63,18 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
         callbackURL: oauthConfig.google.callbackURL,
         scope: oauthConfig.google.scope,
       },
-      async (accessToken, refreshToken, profile, done) => {
+      async (_accessToken, _refreshToken, profile, done) => {
         try {
-          logger.info("=== GOOGLE OAUTH STRATEGY CALLBACK INICIADO ===");
-          logger.info("Google OAuth strategy callback executed");
-          logger.info(`Profile: ${JSON.stringify(profile, null, 2)}`);
-          logger.info(`Access token: ${accessToken ? "Present" : "Missing"}`);
-          logger.info(`Refresh token: ${refreshToken ? "Present" : "Missing"}`);
           logger.info(
-            `Google OAuth callback for user: ${profile.emails?.[0]?.value}`,
+            { ...googleLogContext, stage: "verify_callback" },
+            "OAuth strategy callback received",
           );
 
           if (!profile.emails || !profile.emails[0]) {
+            logger.warn(
+              { ...googleLogContext, outcome: "missing_email" },
+              "OAuth profile rejected",
+            );
             // passport tipa el segundo arg de done() como User; null/false son
             // valores válidos en runtime pero TS no lo modela.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,7 +90,10 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
             );
             
             if (!isAllowed) {
-              logger.warn(`Intento de login con dominio no permitido: ${email}`);
+              logger.warn(
+                { ...googleLogContext, outcome: "domain_not_allowed" },
+                "OAuth profile rejected",
+              );
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               return done(new Error(`Acceso denegado. Solo se permiten los dominios: ${oauthConfig.google.allowedDomains.join(", ")}`), false as any);
             }
@@ -110,7 +129,15 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
               });
             }
 
-            logger.info(`Existing user logged in via Google: ${user.email}`);
+            logger.info(
+              {
+                ...googleLogContext,
+                outcome: "existing_user",
+                userId: user.id,
+                role: user.role,
+              },
+              "OAuth authentication succeeded",
+            );
             return done(null, user);
           }
 
@@ -138,18 +165,32 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
             },
           });
 
-          logger.info(`New user created via Google OAuth: ${newUser.email}`);
+          logger.info(
+            {
+              ...googleLogContext,
+              outcome: "new_user",
+              userId: newUser.id,
+              role: newUser.role,
+            },
+            "OAuth authentication succeeded",
+          );
           return done(null, newUser);
         } catch (error) {
-          logger.error(error, "Error in Google OAuth strategy:");
+          logger.error(
+            {
+              ...googleLogContext,
+              errorType: error instanceof Error ? error.name : typeof error,
+            },
+            "OAuth strategy callback failed",
+          );
           return done(error, null);
         }
       },
     ),
   );
-  logger.info("Google OAuth strategy configurada exitosamente");
+  logger.info(googleLogContext, "OAuth strategy configured");
 } else {
-  logger.warn("Google OAuth no configurado - faltan credenciales");
+  logger.warn(googleLogContext, "OAuth strategy disabled: missing configuration");
 }
 
 export default passport;
