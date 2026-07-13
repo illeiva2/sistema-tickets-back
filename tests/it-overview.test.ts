@@ -31,7 +31,7 @@ describe("GET /api/it/overview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.$transaction.mockResolvedValue([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ] as any);
   });
 
@@ -48,38 +48,84 @@ describe("GET /api/it/overview", () => {
     expect(response.status).toBe(403);
   });
 
-  it("devuelve baseline real y cobertura separada para AGENT", async () => {
+  it("devuelve la superficie real sin doble conteo y cobertura v2 para AGENT", async () => {
+    prismaMock.$transaction.mockResolvedValueOnce([
+      90, 84, 130, 72, 3, 42, 88, 72, 4, 6, 2, 100, 88, 1, 21, 40, 54, 8, 5, 0,
+    ] as any);
+
     const response = await request(app)
       .get("/api/it/overview")
       .set(auth("AGENT"));
 
     expect(response.status).toBe(200);
-    expect(response.body.data.counts.people).toEqual({ total: 0, active: 0 });
-    expect(response.body.data.counts.assets.total).toBe(0);
+    expect(response.body.data.schemaVersion).toBe("it-management-v2");
+    expect(response.body.data.counts.people).toEqual({ total: 90, active: 84 });
+    expect(response.body.data.counts.assets.total).toBe(130);
+    expect(response.body.data.counts.managedDevices).toEqual({
+      total: 191,
+      workstations: 42,
+      phones: 88,
+      networkInfrastructure: 21,
+      cameras: 40,
+    });
+    expect(response.body.data.counts.networkDevices).toEqual({
+      total: 61,
+      active: 54,
+    });
     expect(response.body.data.coverage.apiSurface).toEqual({
       overview: "available",
-      crud: "assets,people",
+      crud: "assets,people,maintenances,procurement,network",
       agentGateway: "available",
-      remoteControl: "available_direct",
+      telemetry: "available",
+      remoteControl: "available_direct_lan_vpn",
     });
-    expect(response.body.data.coverage.crud).toEqual({
+    expect(response.body.data.coverage.modules).toEqual({
+      inventory: "available",
       people: "available",
-      assets: "available",
+      maintenance: "available",
+      procurement: "available",
+      network: "available",
+      monitoring: "available",
+      cameras: "limited",
+      phoneLines: "preparing",
     });
     expect(prismaMock.person.count).toHaveBeenNthCalledWith(1, {
-      where: { isActive: true },
+      where: { isActive: true, deletedAt: null },
     });
     expect(prismaMock.person.count).toHaveBeenNthCalledWith(2, {
-      where: { isActive: true, status: "ACTIVE" },
+      where: { isActive: true, deletedAt: null, status: "ACTIVE" },
     });
     expect(prismaMock.asset.count).toHaveBeenNthCalledWith(1, {
-      where: { isActive: true },
+      where: { isActive: true, deletedAt: null },
     });
     expect(prismaMock.asset.count).toHaveBeenNthCalledWith(2, {
-      where: { status: "ASSIGNED", isActive: true },
+      where: { status: "ASSIGNED", isActive: true, deletedAt: null },
     });
     expect(prismaMock.asset.count).toHaveBeenNthCalledWith(3, {
-      where: { status: "IN_REPAIR", isActive: true },
+      where: { status: "IN_REPAIR", isActive: true, deletedAt: null },
+    });
+    expect(prismaMock.asset.count).toHaveBeenNthCalledWith(4, {
+      where: {
+        isActive: true,
+        deletedAt: null,
+        type: { in: ["DESKTOP", "NOTEBOOK"] },
+      },
+    });
+    expect(prismaMock.asset.count).toHaveBeenNthCalledWith(5, {
+      where: { isActive: true, deletedAt: null, type: "PHONE" },
+    });
+    expect(prismaMock.phoneLine.count).toHaveBeenNthCalledWith(1, {
+      where: { isActive: true, deletedAt: null },
+    });
+    expect(prismaMock.networkDevice.count).toHaveBeenNthCalledWith(1, {
+      where: {
+        isActive: true,
+        deletedAt: null,
+        type: { not: "CAMERA" },
+      },
+    });
+    expect(prismaMock.networkDevice.count).toHaveBeenNthCalledWith(2, {
+      where: { isActive: true, deletedAt: null, type: "CAMERA" },
     });
     expect(prismaMock.agentDevice.count).toHaveBeenNthCalledWith(1, {
       where: { isActive: true, deletedAt: null },
