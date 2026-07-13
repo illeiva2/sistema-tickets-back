@@ -36,7 +36,8 @@ export const errorHandler = (
       error: error.code,
       message: error.message,
       statusCode: error.statusCode,
-      url: req.url,
+      // Query strings pueden contener códigos OAuth efímeros.
+      url: req.path,
       method: req.method,
     });
 
@@ -68,7 +69,7 @@ export const errorHandler = (
       requestId,
       error: multerCode,
       message,
-      url: req.url,
+      url: req.path,
       method: req.method,
     });
 
@@ -86,7 +87,7 @@ export const errorHandler = (
     logger.warn({
       requestId,
       error: "PAYLOAD_TOO_LARGE",
-      url: req.url,
+      url: req.path,
       method: req.method,
     });
     return res.status(413).json({
@@ -105,7 +106,7 @@ export const errorHandler = (
     error: error.name,
     message: error.message,
     stack: error.stack,
-    url: req.url,
+    url: req.path,
     method: req.method,
   });
 
@@ -125,7 +126,7 @@ export const notFoundHandler = (req: Request, res: Response) => {
   logger.warn({
     requestId,
     error: "NOT_FOUND",
-    url: req.url,
+    url: req.path,
     method: req.method,
   });
 

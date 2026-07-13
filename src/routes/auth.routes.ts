@@ -7,7 +7,6 @@ const router = Router();
 
 // Standard Auth
 router.post("/login", AuthController.login);
-router.post("/register", AuthController.register);
 router.post("/setup-password", AuthController.setupPassword);
 router.post("/refresh", AuthController.refreshToken);
 router.get("/me", authMiddleware, AuthController.me);
@@ -15,6 +14,7 @@ router.get("/me", authMiddleware, AuthController.me);
 // OAuth
 router.get("/google", OAuthController.initiateGoogleAuth);
 router.get("/google/callback", OAuthController.googleCallback);
+router.post("/google/exchange", OAuthController.exchangeGoogleCode);
 // Note: /refresh is duplicated in original index.ts (one for AuthController, one for OAuthController).
 // The OAuthController.refreshToken seems to be mapped to /api/auth/refresh in index.ts
 // while AuthController.refreshToken is mapped to /api/auth/refresh inside the router.

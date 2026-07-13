@@ -105,8 +105,23 @@ model User {
   remoteSessions        RemoteSession[]        @relation("RemoteSessionOperator")
   vncCredentialsEdited  DeviceVncCredential[]  @relation("VncCredentialEditor")
   uiPreference          UserUiPreference?
+  oauthExchangeCodes    OAuthExchangeCode[]
 
   @@map("users")
+}
+
+model OAuthExchangeCode {
+  id         String    @id @default(cuid())
+  codeHash   String    @unique @db.VarChar(64)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("oauth_exchange_codes")
 }
 
 model Resource {

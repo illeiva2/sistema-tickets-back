@@ -1,5 +1,4 @@
 import { Request, Response, NextFunction } from "express";
-import { config } from "../config";
 
 export interface CorsConfig {
   allowedOrigins: string[];
@@ -20,12 +19,14 @@ export const createCorsMiddleware = (): (req: Request, res: Response, next: Next
       envOrigins.push(process.env.FRONTEND_URL);
     }
 
-    const allowedOrigins = [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://localhost:3000",
-      ...envOrigins
-    ];
+    const localOrigins = process.env.NODE_ENV === "production"
+      ? []
+      : [
+          "http://localhost:5173",
+          "http://localhost:5174",
+          "http://localhost:3000",
+        ];
+    const allowedOrigins = [...localOrigins, ...envOrigins];
 
     const origin = req.headers.origin;
 
@@ -33,6 +34,10 @@ export const createCorsMiddleware = (): (req: Request, res: Response, next: Next
     if (!origin) {
       return next();
     }
+
+    // La respuesta varía según Origin. Esto evita que un proxy o CDN
+    // reutilice para otro origen una respuesta con ACAO ya calculado.
+    res.vary("Origin");
 
     // Verificar si el origen está permitido
     const isAllowed = allowedOrigins.some(allowedOrigin => {

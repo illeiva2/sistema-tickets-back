@@ -107,25 +107,27 @@ export const createApp = (): Application => {
     });
   });
 
-  // DB connection test.
-  app.get("/debug/db-connection", async (_req, res) => {
-    try {
-      await prisma.$queryRaw`SELECT 1 as test`;
-      res.status(200).json({
-        success: true,
-        message: "Database connection successful",
-        timestamp: new Date().toISOString(),
-        database: "PostgreSQL",
-      });
-    } catch (error) {
-      logger.error({ err: error }, "Database connection failed");
-      res.status(500).json({
-        success: false,
-        message: "Database connection failed",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  });
+  // Diagnóstico de DB sólo local: en staging/producción el detalle de un
+  // error de conexión no debe quedar expuesto en un endpoint público.
+  if (config.server.nodeEnv !== "production") {
+    app.get("/debug/db-connection", async (_req, res) => {
+      try {
+        await prisma.$queryRaw`SELECT 1 as test`;
+        res.status(200).json({
+          success: true,
+          message: "Database connection successful",
+          timestamp: new Date().toISOString(),
+          database: "PostgreSQL",
+        });
+      } catch (error) {
+        logger.error({ err: error }, "Database connection failed");
+        res.status(500).json({
+          success: false,
+          message: "Database connection failed",
+        });
+      }
+    });
+  }
 
   // Static uploads (protegidos).
   app.use(

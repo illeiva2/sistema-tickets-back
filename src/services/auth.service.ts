@@ -4,7 +4,6 @@ import { prisma } from "../lib/database";
 import { config } from "../config";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { UserRole } from "@prisma/client";
 
 export class AuthService {
   static async login(email: string, password: string) {
@@ -55,7 +54,10 @@ export class AuthService {
       { expiresIn: config.jwt.refreshExpiresIn } as SignOptions,
     );
 
-    logger.info(`User ${user.email} logged in successfully`);
+    logger.info(
+      { userId: user.id, role: user.role },
+      "User logged in successfully",
+    );
 
     return {
       accessToken,
@@ -70,135 +72,6 @@ export class AuthService {
         updatedAt: user.updatedAt,
       },
     };
-  }
-
-  static async register(name: string, email: string, role: string, googleAccessToken: string) {
-    try {
-      // Verificar que el token de Google sea válido
-      const googleUserInfo = await AuthService.verifyGoogleToken(googleAccessToken);
-      
-      if (!googleUserInfo) {
-        throw new ApiError("INVALID_GOOGLE_TOKEN", "Token de Google inválido", 401);
-      }
-
-      // Verificar que el email coincida con el token de Google
-      if (googleUserInfo.email !== email) {
-        throw new ApiError("EMAIL_MISMATCH", "El email no coincide con el token de Google", 400);
-      }
-
-      // Verificar dominio autorizado (solo en producción)
-      if (config.server.nodeEnv === "production") {
-        const allowedDomains = process.env.ALLOWED_EMAIL_DOMAINS?.split(",") || [];
-        const userDomain = email.split("@")[1];
-        
-        if (allowedDomains.length > 0 && !allowedDomains.includes(userDomain)) {
-          throw new ApiError(
-            "DOMAIN_NOT_AUTHORIZED", 
-            "Tu dominio de email no está autorizado para registrarse", 
-            403
-          );
-        }
-      }
-
-      // Verificar que el usuario no exista
-      const existingUser = await prisma.user.findUnique({
-        where: { email },
-      });
-
-      if (existingUser) {
-        throw new ApiError("USER_ALREADY_EXISTS", "El usuario ya existe", 409);
-      }
-
-      // Crear el nuevo usuario
-      const newUser = await prisma.user.create({
-        data: {
-          name,
-          email,
-          role: role as UserRole,
-          googleId: googleUserInfo.sub, // ID único de Google
-          mustChangePassword: true, // Debe configurar contraseña
-          passwordHash: "", // Contraseña vacía hasta que la configure
-        },
-      });
-
-      // Generar tokens JWT
-      const accessToken = jwt.sign(
-        {
-          id: newUser.id,
-          email: newUser.email,
-          role: newUser.role,
-          mustChangePassword: true,
-        },
-        config.jwt.secret,
-        { expiresIn: config.jwt.expiresIn } as SignOptions,
-      );
-
-      const refreshToken = jwt.sign(
-        { id: newUser.id, type: "refresh" },
-        config.jwt.secret,
-        { expiresIn: config.jwt.refreshExpiresIn } as SignOptions,
-      );
-
-      logger.info(`New user ${newUser.email} registered successfully via Google OAuth`);
-
-      return {
-        accessToken,
-        refreshToken,
-        user: {
-          id: newUser.id,
-          email: newUser.email,
-          name: newUser.name,
-          role: newUser.role,
-          mustChangePassword: true,
-          createdAt: newUser.createdAt,
-          updatedAt: newUser.updatedAt,
-        },
-      };
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      logger.error({ err: error }, "Error during user registration:");
-      throw new ApiError("REGISTRATION_FAILED", "Error durante el registro", 500);
-    }
-  }
-
-  static async verifyGoogleToken(accessToken: string) {
-    try {
-      // Verificar el token de Google usando la API de Google
-      const response = await fetch(
-        `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`
-      );
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const tokenInfo = await response.json() as {
-        aud?: string;
-        sub?: string;
-        email?: string;
-        email_verified?: boolean;
-        name?: string;
-        picture?: string;
-      };
-      
-      // Verificar que el token sea para nuestra aplicación
-      if (tokenInfo.aud !== process.env.GOOGLE_CLIENT_ID) {
-        return null;
-      }
-
-      return {
-        sub: tokenInfo.sub, // ID único de Google
-        email: tokenInfo.email,
-        email_verified: tokenInfo.email_verified,
-        name: tokenInfo.name,
-        picture: tokenInfo.picture,
-      };
-    } catch (error) {
-      logger.error({ err: error }, "Error verifying Google token:");
-      return null;
-    }
   }
 
   static async setupPassword(accessToken: string, newPassword: string) {
@@ -260,7 +133,10 @@ export class AuthService {
         { expiresIn: config.jwt.refreshExpiresIn } as SignOptions,
       );
 
-      logger.info(`User ${updatedUser.email} password setup completed successfully`);
+      logger.info(
+        { userId: updatedUser.id, role: updatedUser.role },
+        "User password setup completed successfully",
+      );
 
       return {
         accessToken: newAccessToken,

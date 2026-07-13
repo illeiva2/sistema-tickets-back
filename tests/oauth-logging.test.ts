@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { createHmac } from "crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   updateUser: vi.fn(),
   createUser: vi.fn(),
   createPreferences: vi.fn(),
+  createExchangeCode: vi.fn(),
   hash: vi.fn(),
 }));
 
@@ -50,6 +52,7 @@ vi.mock("../src/lib/database", () => ({
       create: mocks.createUser,
     },
     notificationPreferences: { create: mocks.createPreferences },
+    oAuthExchangeCode: { create: mocks.createExchangeCode },
   },
 }));
 
@@ -103,9 +106,15 @@ describe("OAuthController logging", () => {
     }
   });
 
-  it("correlaciona el callback sin registrar query, usuario ni JWTs", () => {
+  it("redirige solo con código one-time sin registrar secretos", async () => {
     const sensitiveCode = "google-one-time-code";
-    const sensitiveState = "oauth-state-secret";
+    const sensitiveState = "A".repeat(43);
+    const stateSignature = createHmac(
+      "sha256",
+      process.env.SESSION_SECRET!,
+    )
+      .update(`google-oauth-state:v1:${sensitiveState}`)
+      .digest("base64url");
     const sensitiveEmail = "sensitive.user@grf.com.ar";
     const user = {
       id: "user-safe-id",
@@ -126,25 +135,31 @@ describe("OAuthController logging", () => {
     );
 
     const req = {
-      headers: { "x-request-id": "req-oauth-123" },
+      headers: {
+        "x-request-id": "req-oauth-123",
+        cookie: `oauth_state=${sensitiveState}.${stateSignature}`,
+      },
       query: { code: sensitiveCode, state: sensitiveState },
     } as unknown as Request;
     const redirect = vi.fn();
     const res = {
       status: vi.fn().mockReturnThis(),
       redirect,
+      clearCookie: vi.fn(),
+      setHeader: vi.fn(),
     } as unknown as Response;
     const next = vi.fn();
 
     OAuthController.googleCallback(req, res, next);
+    await vi.waitFor(() => expect(redirect).toHaveBeenCalledOnce());
 
     expect(next).not.toHaveBeenCalled();
-    expect(redirect).toHaveBeenCalledOnce();
     const redirectUrl = new URL(redirect.mock.calls[0][0]);
-    const accessToken = redirectUrl.searchParams.get("accessToken");
-    const refreshToken = redirectUrl.searchParams.get("refreshToken");
-    expect(accessToken).toBeTruthy();
-    expect(refreshToken).toBeTruthy();
+    const exchangeCode = redirectUrl.searchParams.get("code");
+    expect(exchangeCode).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(redirectUrl.searchParams.has("accessToken")).toBe(false);
+    expect(redirectUrl.searchParams.has("refreshToken")).toBe(false);
+    expect(redirectUrl.searchParams.has("user")).toBe(false);
 
     const serializedLogs = serializeLogs();
 
@@ -158,8 +173,7 @@ describe("OAuthController logging", () => {
     expect(serializedLogs).not.toContain("Sensitive User");
     expect(serializedLogs).not.toContain("google-sensitive-id");
     expect(serializedLogs).not.toContain("passport-sensitive-info");
-    expect(serializedLogs).not.toContain(accessToken!);
-    expect(serializedLogs).not.toContain(refreshToken!);
+    expect(serializedLogs).not.toContain(exchangeCode!);
   });
 });
 
@@ -190,6 +204,7 @@ describe("Google Passport pipeline logging", () => {
     mocks.warn.mockClear();
     mocks.error.mockClear();
     mocks.findFirst.mockReset();
+    mocks.findUnique.mockReset().mockResolvedValue(null);
     mocks.updateUser.mockReset();
     mocks.createUser.mockReset();
     mocks.createPreferences.mockReset();
@@ -224,7 +239,7 @@ describe("Google Passport pipeline logging", () => {
     expect(done).toHaveBeenCalledWith(null, user);
     const logs = serializeLogs();
     expect(logs).toContain("existing-user-safe-id");
-    expect(logs).toContain("existing_user");
+    expect(logs).toContain("existing_it_user");
     expect(logs).not.toContain(sensitiveEmail);
     expect(logs).not.toContain(sensitiveProfileId);
     expect(logs).not.toContain(sensitiveDisplayName);
@@ -232,30 +247,69 @@ describe("Google Passport pipeline logging", () => {
     expect(logs).not.toContain(refreshToken);
   });
 
-  it("crea un usuario sin registrar PII ni tokens", async () => {
-    const newUser = {
-      id: "new-user-safe-id",
+  it("rechaza una cuenta existente desactivada con código estable", async () => {
+    mocks.findFirst.mockResolvedValue({
+      id: "disabled-user-id",
       email: sensitiveEmail,
       name: sensitiveDisplayName,
       googleId: sensitiveProfileId,
-      role: "USER",
-    };
-    mocks.findFirst.mockResolvedValue(null);
-    mocks.createUser.mockResolvedValue(newUser);
-    mocks.createPreferences.mockResolvedValue({ id: "preferences-id" });
+      role: "AGENT",
+      isActive: false,
+      deletedAt: null,
+    });
     const done = vi.fn();
 
     await mocks.strategyVerify(accessToken, refreshToken, profile(), done);
 
-    expect(done).toHaveBeenCalledWith(null, newUser);
+    expect(done).toHaveBeenCalledOnce();
+    expect(done.mock.calls[0][0]).toMatchObject({
+      message: "account_disabled",
+      code: "account_disabled",
+    });
+    expect(done.mock.calls[0][1]).toBe(false);
+  });
+
+  it("rechaza una cuenta del dominio que no fue provisionada por IT", async () => {
+    mocks.findFirst.mockResolvedValue(null);
+    const done = vi.fn();
+
+    await mocks.strategyVerify(accessToken, refreshToken, profile(), done);
+
+    expect(done).toHaveBeenCalledOnce();
+    expect(done.mock.calls[0][0]).toMatchObject({
+      message: "it_access_required",
+      code: "it_access_required",
+    });
+    expect(done.mock.calls[0][1]).toBe(false);
+    expect(mocks.createUser).not.toHaveBeenCalled();
     const logs = serializeLogs();
-    expect(logs).toContain("new-user-safe-id");
-    expect(logs).toContain("new_user");
+    expect(logs).toContain("it_access_required");
     expect(logs).not.toContain(sensitiveEmail);
     expect(logs).not.toContain(sensitiveProfileId);
     expect(logs).not.toContain(sensitiveDisplayName);
     expect(logs).not.toContain(accessToken);
     expect(logs).not.toContain(refreshToken);
+  });
+
+  it("rechaza un email reciclado ya vinculado a otro Google ID", async () => {
+    mocks.findFirst.mockResolvedValue({
+      id: "provisioned-it-user",
+      email: sensitiveEmail,
+      googleId: "different-google-subject",
+      role: "ADMIN",
+      isActive: true,
+      deletedAt: null,
+    });
+    const done = vi.fn();
+
+    await mocks.strategyVerify(accessToken, refreshToken, profile(), done);
+
+    expect(done).toHaveBeenCalledOnce();
+    expect(done.mock.calls[0][0]).toMatchObject({
+      code: "it_access_required",
+    });
+    expect(done.mock.calls[0][1]).toBe(false);
+    expect(serializeLogs()).toContain("identity_mismatch");
   });
 
   it("rechaza otro dominio sin registrar el email intentado", async () => {
