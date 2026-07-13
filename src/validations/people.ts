@@ -41,7 +41,7 @@ const workEmailSchema = z.preprocess(
 const nullableDate = z
   .union([
     z.string().datetime(),
-    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+    z.string().date("Fecha inválida"),
     z.literal(""),
     z.null(),
   ])

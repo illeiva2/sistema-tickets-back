@@ -139,6 +139,8 @@ const auditableFields = [
   "notes",
 ] as const;
 
+const redactedAuditFields = new Set(["workEmail", "workPhone", "notes"]);
+
 const normalizeComparable = (value: unknown): unknown => {
   if (value instanceof Date) return value.toISOString();
   if (value === undefined) return null;
@@ -179,7 +181,7 @@ const buildPersonAudit = (
     if (valuesEqual(before[field], after[field])) continue;
     fields.push(field);
     changes[field] =
-      field === "notes"
+      redactedAuditFields.has(field)
         ? { changed: true, redacted: true }
         : {
             from: toAuditScalar(before[field]),
@@ -195,11 +197,17 @@ const parseDate = (
 ): Date | null | undefined => {
   if (value === undefined) return undefined;
   if (value === null || value === "") return null;
-  return new Date(
-    /^\d{4}-\d{2}-\d{2}$/.test(value)
-      ? value + "T00:00:00.000Z"
-      : value,
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const parsed = new Date(
+    isDateOnly ? value + "T00:00:00.000Z" : value,
   );
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    (isDateOnly && parsed.toISOString().slice(0, 10) !== value)
+  ) {
+    throw new ApiError("PERSON_DATE_INVALID", "Fecha inválida", 400);
+  }
+  return parsed;
 };
 
 const todayUtc = (): Date => {
@@ -231,6 +239,21 @@ const buildCandidate = (
       field === "startDate" || field === "endDate"
         ? parseDate(value as string | null)
         : value;
+  }
+
+  const hasExplicitEndDate =
+    Object.prototype.hasOwnProperty.call(changes, "endDate") &&
+    changes.endDate !== null &&
+    changes.endDate !== "";
+  if (
+    hasExplicitEndDate &&
+    candidate.status !== EmploymentStatus.TERMINATED
+  ) {
+    throw new ApiError(
+      "PERSON_END_DATE_STATUS_INVALID",
+      "La fecha de egreso sólo corresponde a personal desvinculado",
+      400,
+    );
   }
 
   if (candidate.status === EmploymentStatus.TERMINATED) {
@@ -274,7 +297,14 @@ const translatePersonWriteError = (error: unknown): never => {
       409,
     );
   }
-  if (isKnownPrismaError(error, "P2003")) {
+  const foreignKeyField = isKnownPrismaError(error, "P2003")
+    ? error.meta?.field_name
+    : undefined;
+  if (
+    isKnownPrismaError(error, "P2003") &&
+    typeof foreignKeyField === "string" &&
+    foreignKeyField.toLowerCase().includes("department")
+  ) {
     throw new ApiError(
       "PERSON_DEPARTMENT_NOT_FOUND",
       "El sector indicado no existe",

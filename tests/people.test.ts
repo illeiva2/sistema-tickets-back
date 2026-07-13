@@ -19,6 +19,7 @@ import type { DeepMockProxy } from "vitest-mock-extended";
 import request from "supertest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/lib/database";
+import PeopleService from "../src/services/people.service";
 import { signAccessToken } from "./helpers";
 
 const prismaMock = prisma as unknown as DeepMockProxy<PrismaClient>;
@@ -68,6 +69,13 @@ const uniqueError = (field: string) =>
     code: "P2002",
     clientVersion: "6.15.0",
     meta: { target: [field] },
+  });
+
+const foreignKeyError = (fieldName: string) =>
+  new Prisma.PrismaClientKnownRequestError("Foreign key constraint failed", {
+    code: "P2003",
+    clientVersion: "6.15.0",
+    meta: { field_name: fieldName },
   });
 
 describe("API de personal IT", () => {
@@ -216,10 +224,50 @@ describe("API de personal IT", () => {
       changed: true,
       redacted: true,
     });
+    expect(auditMeta.changes.workEmail).toEqual({
+      changed: true,
+      redacted: true,
+    });
     expect(JSON.stringify(auditMeta)).not.toContain(
       "seguimiento laboral interno",
     );
+    expect(JSON.stringify(auditMeta)).not.toContain("beatriz@empresa.com");
   });
+
+  it.each(["2026-02-31", "2026-13-01"])(
+    "rechaza la fecha calendario inválida %s",
+    async (startDate) => {
+      const response = await request(app)
+        .post("/api/it/people")
+        .set(auth("ADMIN"))
+        .send({ firstName: "Ana", lastName: "Pérez", startDate });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+      expect(prismaMock.person.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["2026-02-31", "2026-13-01"])(
+    "protege el service ante la fecha inválida %s aunque se saltee Zod",
+    async (startDate) => {
+      await expect(
+        PeopleService.create(
+          {
+            firstName: "Ana",
+            lastName: "Pérez",
+            status: "ACTIVE",
+            startDate,
+          },
+          "actor-1",
+        ),
+      ).rejects.toMatchObject({
+        code: "PERSON_DATE_INVALID",
+        statusCode: 400,
+      });
+      expect(prismaMock.person.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("rechaza campos personales fuera del contrato estricto", async () => {
     const response = await request(app)
@@ -257,12 +305,50 @@ describe("API de personal IT", () => {
     expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it("actualiza sólo cambios reales y audita notes sin su contenido", async () => {
+  it("sólo traduce P2003 cuando identifica la FK de sector", async () => {
+    prismaMock.person.create.mockRejectedValueOnce(
+      foreignKeyError("audit_logs_actor_id_fkey (index)"),
+    );
+
+    await expect(
+      PeopleService.create(
+        {
+          firstName: "Ana",
+          lastName: "Pérez",
+          status: "ACTIVE",
+        },
+        "deleted-actor",
+      ),
+    ).rejects.toMatchObject({ code: "P2003" });
+
+    prismaMock.person.create.mockRejectedValueOnce(
+      foreignKeyError("people_department_id_fkey (index)"),
+    );
+
+    await expect(
+      PeopleService.create(
+        {
+          firstName: "Ana",
+          lastName: "Pérez",
+          status: "ACTIVE",
+          departmentId,
+        },
+        "actor-1",
+      ),
+    ).rejects.toMatchObject({
+      code: "PERSON_DEPARTMENT_NOT_FOUND",
+      statusCode: 400,
+    });
+  });
+
+  it("actualiza sólo cambios reales y redacta contactos y notes en auditoría", async () => {
     prismaMock.person.findFirst
       .mockResolvedValueOnce(makePerson() as any)
       .mockResolvedValueOnce(
         makePerson({
           lastName: "Pérez López",
+          workEmail: "ana.it@empresa.com",
+          workPhone: "+54 341 555-0002",
           notes: "nota laboral confidencial",
           updatedAt: nextVersion,
         }) as any,
@@ -277,6 +363,8 @@ describe("API de personal IT", () => {
         expectedUpdatedAt: version.toISOString(),
         firstName: " Ana ",
         lastName: "Pérez López",
+        workEmail: "ana.it@empresa.com",
+        workPhone: "+54 341 555-0002",
         notes: "nota laboral confidencial",
       });
 
@@ -285,21 +373,44 @@ describe("API de personal IT", () => {
       where: { id: personId, isActive: true, updatedAt: version },
       data: {
         lastName: "Pérez López",
+        workEmail: "ana.it@empresa.com",
+        workPhone: "+54 341 555-0002",
         notes: "nota laboral confidencial",
       },
     });
     const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
       .meta;
     expect(auditMeta).toEqual({
-      fields: ["lastName", "notes"],
+      fields: ["lastName", "workEmail", "workPhone", "notes"],
       changes: {
         lastName: { from: "Pérez", to: "Pérez López" },
+        workEmail: { changed: true, redacted: true },
+        workPhone: { changed: true, redacted: true },
         notes: { changed: true, redacted: true },
       },
     });
     expect(JSON.stringify(auditMeta)).not.toContain(
       "nota laboral confidencial",
     );
+    expect(JSON.stringify(auditMeta)).not.toContain("ana.it@empresa.com");
+    expect(JSON.stringify(auditMeta)).not.toContain("+54 341 555-0002");
+  });
+
+  it("rechaza endDate explícito si el estado resultante no es TERMINATED", async () => {
+    prismaMock.person.findFirst.mockResolvedValueOnce(makePerson() as any);
+
+    const response = await request(app)
+      .patch("/api/it/people/" + personId)
+      .set(auth("AGENT"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        endDate: "2026-07-01",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("PERSON_END_DATE_STATUS_INVALID");
+    expect(prismaMock.person.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled();
   });
 
   it("mantiene el conflicto optimista para versión vencida", async () => {
