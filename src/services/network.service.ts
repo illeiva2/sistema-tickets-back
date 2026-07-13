@@ -849,6 +849,7 @@ export class NetworkService {
           { deviceB: { name: { contains: q, mode: "insensitive" } } },
           { portA: { contains: q, mode: "insensitive" } },
           { portB: { contains: q, mode: "insensitive" } },
+          { vlans: { has: q } },
         ],
       });
     }

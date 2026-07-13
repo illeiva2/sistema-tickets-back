@@ -390,6 +390,28 @@ describe("API IT de red y topología", () => {
     );
   });
 
+  it("busca enlaces por etiqueta VLAN exacta", async () => {
+    prismaMock.networkLink.findMany.mockResolvedValueOnce([]);
+    prismaMock.networkLink.count.mockResolvedValueOnce(0);
+
+    const response = await request(app)
+      .get("/api/it/network/links?q=20-VoIP")
+      .set(auth("AGENT"));
+
+    expect(response.status).toBe(200);
+    expect(prismaMock.networkLink.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            expect.objectContaining({
+              OR: expect.arrayContaining([{ vlans: { has: "20-VoIP" } }]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it("hard-deletea enlace con CAS y auditoría sin notes", async () => {
     prismaMock.networkLink.findUnique.mockResolvedValueOnce(makeLink() as any);
     prismaMock.networkLink.deleteMany.mockResolvedValueOnce({ count: 1 });
