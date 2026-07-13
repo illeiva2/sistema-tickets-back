@@ -144,6 +144,14 @@ export const createAssetSchema = z
         message: "Usá el endpoint de asignación para marcar un activo como asignado",
       });
     }
+    if (data.status === "IN_REPAIR") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["status"],
+        message:
+          "Usá el módulo de mantenimientos para marcar un activo en reparación",
+      });
+    }
   });
 
 export const updateAssetSchema = z

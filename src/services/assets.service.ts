@@ -424,6 +424,13 @@ export class AssetsService {
     actorId: string,
     actorRole: UserRole,
   ) {
+    if (data.status === "IN_REPAIR") {
+      throw new ApiError(
+        "ASSET_STATUS_MANAGED",
+        "Usá el módulo de mantenimientos para marcar un activo en reparación",
+        400,
+      );
+    }
     const forbiddenFields = adminOnlyAssetFields.filter(
       (field) => data[field] !== undefined,
     );
@@ -548,9 +555,30 @@ export class AssetsService {
           );
         }
         if (
+          changes.status === "IN_REPAIR" &&
+          current.status !== "IN_REPAIR"
+        ) {
+          throw new ApiError(
+            "ASSET_STATUS_MANAGED",
+            "Usá el módulo de mantenimientos para marcar un activo en reparación",
+            400,
+          );
+        }
+        if (
           changes.status !== undefined &&
           changes.status !== current.status
         ) {
+          const maintenanceInProgress = await tx.maintenance.findFirst({
+            where: { assetId: id, status: "IN_PROGRESS" },
+            select: { id: true },
+          });
+          if (maintenanceInProgress) {
+            throw new ApiError(
+              "ASSET_MAINTENANCE_IN_PROGRESS",
+              "Cerrá o cancelá el mantenimiento en curso antes de cambiar el estado",
+              409,
+            );
+          }
           const activeAssignment = await tx.assetAssignment.findFirst({
             where: { assetId: id, endAt: null },
             select: { id: true },
@@ -805,7 +833,25 @@ export class AssetsService {
     actorId: string,
   ) {
     const asset = await runSerializable(async (tx) => {
-      await findActiveAsset(tx, id);
+      const current = await findActiveAsset(tx, id);
+      const maintenanceInProgress = await tx.maintenance.findFirst({
+        where: { assetId: id, status: "IN_PROGRESS" },
+        select: { id: true },
+      });
+      if (maintenanceInProgress || current.status === "IN_REPAIR") {
+        throw new ApiError(
+          "ASSET_MAINTENANCE_IN_PROGRESS",
+          "Cerrá o cancelá el mantenimiento en curso antes de devolver el activo",
+          409,
+        );
+      }
+      if (current.status !== "ASSIGNED") {
+        throw new ApiError(
+          "ASSET_NOT_ASSIGNED",
+          "El activo no está marcado como asignado",
+          409,
+        );
+      }
       const assignment = await tx.assetAssignment.findFirst({
         where: { assetId: id, endAt: null },
         orderBy: { startAt: "desc" },
