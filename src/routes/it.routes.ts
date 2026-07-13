@@ -9,8 +9,11 @@ import {
   SuppliersController,
 } from "../controllers/procurement.controller";
 import { authMiddleware, requireRole } from "../middleware/auth";
+import networkRouter from "./network.routes";
 
 const router = Router();
+
+router.use("/network", networkRouter);
 
 router.get(
   "/overview",
