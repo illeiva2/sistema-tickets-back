@@ -68,7 +68,14 @@ const managementIpSchema = z.preprocess(
     .trim()
     .max(45)
     .refine((value) => isIP(value) !== 0, "Dirección IP inválida")
-    .transform((value) => value.toLowerCase())
+    .transform((value) => {
+      if (isIP(value) !== 6) return value;
+      // WHATWG URL aplica la serialización canónica de IPv6 (RFC 5952-like),
+      // evitando que dos representaciones equivalentes eludan la unicidad.
+      return new URL(`http://[${value}]/`)
+        .hostname.replace(/^\[|\]$/g, "")
+        .toLowerCase();
+    })
     .nullable()
     .optional(),
 );

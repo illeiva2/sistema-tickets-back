@@ -273,6 +273,37 @@ describe("API IT de red y topología", () => {
     expect(response.body.error.code).toBe("NETWORK_IP_EXISTS");
   });
 
+  it("canoniza IPv6 antes de validar unicidad y persistir", async () => {
+    prismaMock.site.findFirst.mockResolvedValueOnce({ id: siteId } as any);
+    prismaMock.networkDevice.findFirst.mockResolvedValueOnce(null);
+    prismaMock.networkDevice.create.mockResolvedValueOnce(
+      makeDevice({ managementIp: "2001:db8::1" }) as any,
+    );
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const response = await request(app)
+      .post("/api/it/network/devices")
+      .set(auth("AGENT"))
+      .send({
+        name: "Core IPv6",
+        type: "ROUTER",
+        siteId,
+        managementIp: "2001:0db8:0:0:0:0:0:1",
+      });
+
+    expect(response.status).toBe(201);
+    expect(prismaMock.networkDevice.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ managementIp: "2001:db8::1" }),
+      }),
+    );
+    expect(prismaMock.networkDevice.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ managementIp: "2001:db8::1" }),
+      }),
+    );
+  });
+
   it("retira sin borrado lógico y protege CAS de dispositivo", async () => {
     prismaMock.networkDevice.findFirst
       .mockResolvedValueOnce(makeDevice() as any)
