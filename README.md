@@ -237,14 +237,27 @@ Ver [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 Actualmente desplegado en **Render**. Build command:
 
 ```
-prisma db push --accept-data-loss && prisma generate && tsc
+npm ci && npm run build
+```
+
+Pre-deploy command (debe ejecutarse una vez antes de arrancar la nueva
+versión):
+
+```
+npm run db:migrate
 ```
 
 Start command:
 
 ```
-node dist/index.js
+npm start
 ```
+
+`npm run build` nunca modifica la base. Las migraciones de staging y
+producción deben aplicarse exclusivamente con `prisma migrate deploy`; no usar
+`prisma db push` ni `--accept-data-loss` en esos entornos. Si el plan de Render
+no ofrece Pre-Deploy Command, ejecutar `npm run db:migrate` como tarea manual
+contra la `DATABASE_URL` correspondiente antes de desplegar el backend.
 
 Variables de entorno requeridas en Render: las mismas del `.env.example`
 local (con `NODE_ENV=production`).
