@@ -1,0 +1,14 @@
+{
+  "baseUrl": "https://it-api.grf.com.ar/",
+  "heartbeatSeconds": 60,
+  "inventoryIntervalMinutes": 1440,
+  "requestTimeoutSeconds": 15,
+  "maxRetries": 4,
+  "retryBaseDelaySeconds": 2,
+  "retryMaxDelaySeconds": 30,
+  "enrollmentTokenFile": "enrollment.token",
+  "credentialFile": "credentials.dat",
+  "stateFile": "state.json",
+  "logFile": "agent.log",
+  "lockFile": "agent.lock"
+}
