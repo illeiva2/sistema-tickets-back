@@ -78,7 +78,7 @@ La respuesta también usa el envelope `{ "success": true, "data": { ... } }` y d
 Requisitos de desarrollo:
 
 - Windows x64;
-- SDK .NET 8 instalado;
+- SDK .NET 10 instalado;
 - PowerShell 5.1 o superior.
 
 No hay paquetes NuGet ni dependencias de terceros. Las pruebas son un runner BCL propio, por lo que tampoco necesitan un framework descargable.
@@ -99,9 +99,7 @@ El resultado queda en `artifacts\win-x64` e incluye `GRF.ITAgent.exe`, instalado
 
 ## Release gate .NET
 
-Este primer entregable apunta a `net8.0-windows` porque es el único SDK disponible en el entorno actual y permite compilar/verificar ahora. **.NET 8 finaliza soporte el 10 de noviembre de 2026. Antes de desplegar en producción se debe migrar `TargetFramework` a `net10.0-windows`, publicar nuevamente y repetir las pruebas en Windows 10/11 y Windows Server 2016/2019.** .NET 10 LTS tiene soporte hasta el 14 de noviembre de 2028 y admite esos Windows Server.
-
-`publish.ps1` bloquea una publicación que todavía apunte a .NET 8 a partir de su fecha de fin de soporte y avisa durante los 30 días previos. Referencia: [política oficial de soporte de .NET](https://dotnet.microsoft.com/platform/support/policy/dotnet-core).
+El agente productivo apunta a `net10.0-windows` y se publica self-contained para `win-x64`. `publish.ps1` bloquea cualquier release que no use ese target. Las PCs administradas no necesitan tener un runtime .NET instalado. Referencia: [política oficial de soporte de .NET](https://dotnet.microsoft.com/platform/support/policy/dotnet-core).
 
 ## Instalación manual
 
@@ -112,14 +110,14 @@ Este primer entregable apunta a `net8.0-windows` porque es el único SDK disponi
 5. Ejecutar:
 
 ```powershell
-.\install.ps1 -BaseUrl "https://it-api.grf.com.ar/"
+.\install.ps1 -BaseUrl "https://sistema-tickets-back.onrender.com/"
 ```
 
 El script pedirá el token de un uso sin mostrarlo. También se puede preparar un `SecureString` interactivamente, sin texto plano en el historial:
 
 ```powershell
 $token = Read-Host "Token de enrolamiento" -AsSecureString
-.\install.ps1 -BaseUrl "https://it-api.grf.com.ar/" -EnrollmentToken $token
+.\install.ps1 -BaseUrl "https://sistema-tickets-back.onrender.com/" -EnrollmentToken $token
 ```
 
 El instalador es idempotente: detiene la tarea existente, reemplaza el ejecutable, conserva configuración/credenciales, vuelve a aplicar las ACL y registra la tarea `GRF-IT-Agent` como `SYSTEM`, con trigger al inicio y reinicio ante fallos. Si ya hay credencial o enrolamiento pendiente, no solicita ni reemplaza el token.

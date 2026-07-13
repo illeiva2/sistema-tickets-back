@@ -1,5 +1,5 @@
 {
-  "baseUrl": "https://it-api.grf.com.ar/",
+  "baseUrl": "https://sistema-tickets-back.onrender.com/",
   "heartbeatSeconds": 60,
   "inventoryIntervalMinutes": 1440,
   "requestTimeoutSeconds": 15,

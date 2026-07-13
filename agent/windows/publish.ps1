@@ -34,16 +34,8 @@ Assert-ChildPath -Parent $PSScriptRoot -Child $outputPath
 
 [xml]$project = Get-Content -LiteralPath $projectPath -Raw
 $targetFramework = [string]$project.Project.PropertyGroup.TargetFramework
-$net8EndOfSupport = [DateTimeOffset]::Parse("2026-11-10T00:00:00Z")
-if ($targetFramework.StartsWith("net8.0", [System.StringComparison]::OrdinalIgnoreCase)) {
-    Write-Warning "Artefacto de transición: .NET 8 no está aprobado para el despliegue productivo; migre y valide net10.0 primero."
-    if ([DateTimeOffset]::UtcNow -ge $net8EndOfSupport) {
-        throw "Release gate: .NET 8 quedó fuera de soporte. Migre y valide el agente con net10.0 antes de publicar."
-    }
-
-    if ([DateTimeOffset]::UtcNow -ge $net8EndOfSupport.AddDays(-30)) {
-        Write-Warning "Release gate próximo: migre el agente a net10.0 antes del 2026-11-10."
-    }
+if (-not $targetFramework.StartsWith("net10.0", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Release gate: el agente productivo debe apuntar a net10.0-windows."
 }
 
 if (-not $SkipTests) {
