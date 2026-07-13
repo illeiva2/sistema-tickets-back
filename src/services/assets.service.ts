@@ -99,7 +99,6 @@ const safeFieldNames = (data: Record<string, unknown>): string[] =>
 const adminOnlyAssetFields = [
   "assetTag",
   "secretsRef",
-  "purchaseItemId",
 ] as const;
 
 const auditableUpdateFields = [
@@ -341,6 +340,44 @@ const findActiveAsset = async (
   return asset;
 };
 
+const validatePurchaseItemCapacity = async (
+  tx: Prisma.TransactionClient,
+  purchaseItemId: string | null | undefined,
+) => {
+  if (!purchaseItemId) return;
+  const item = await tx.purchaseItem.findUnique({
+    where: { id: purchaseItemId },
+    select: {
+      id: true,
+      quantity: true,
+      purchase: { select: { status: true } },
+      _count: { select: { assets: true } },
+    },
+  });
+  if (!item) {
+    throw new ApiError(
+      "PURCHASE_ITEM_NOT_FOUND",
+      "El ítem de compra no existe",
+      400,
+    );
+  }
+  if (item.purchase.status !== "RECEIVED") {
+    throw new ApiError(
+      "PURCHASE_NOT_RECEIVED",
+      "Solo se pueden vincular activos a compras recibidas",
+      409,
+    );
+  }
+  if (item._count.assets >= item.quantity) {
+    throw new ApiError(
+      "PURCHASE_ITEM_CAPACITY_REACHED",
+      "Ya se registraron todos los activos previstos para este ítem",
+      409,
+      { quantity: item.quantity, linkedAssetsCount: item._count.assets },
+    );
+  }
+};
+
 export class AssetsService {
   static async list(filters: AssetFilters) {
     const {
@@ -437,7 +474,7 @@ export class AssetsService {
     if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
       throw new ApiError(
         "FORBIDDEN",
-        "Solo ADMIN puede definir código manual, referencia de secretos o compra",
+        "Solo ADMIN puede definir código manual o referencia de secretos",
         403,
         { fields: forbiddenFields },
       );
@@ -447,6 +484,7 @@ export class AssetsService {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         const asset = await runSerializable(async (tx) => {
+          await validatePurchaseItemCapacity(tx, data.purchaseItemId);
           const assetTag =
             data.assetTag ?? (await nextAssetTag(tx, data.type as AssetType));
           const created = await tx.asset.create({
@@ -527,12 +565,15 @@ export class AssetsService {
         const forbiddenFields = [
           ...(changesAssetTag ? ["assetTag"] : []),
           ...(changes.secretsRef !== undefined ? ["secretsRef"] : []),
-          ...(changes.purchaseItemId !== undefined ? ["purchaseItemId"] : []),
+          ...(changes.purchaseItemId !== undefined &&
+          changes.purchaseItemId !== current.purchaseItemId
+            ? ["purchaseItemId"]
+            : []),
         ];
         if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
           throw new ApiError(
             "FORBIDDEN",
-            "Solo ADMIN puede modificar código, referencia de secretos o compra",
+            "Solo ADMIN puede modificar código, referencia de secretos u origen de compra",
             403,
             { fields: forbiddenFields },
           );
@@ -543,6 +584,12 @@ export class AssetsService {
             "El activo fue modificado por otro usuario",
             409,
           );
+        }
+        if (
+          changes.purchaseItemId !== undefined &&
+          changes.purchaseItemId !== current.purchaseItemId
+        ) {
+          await validatePurchaseItemCapacity(tx, changes.purchaseItemId);
         }
         if (
           changes.status === "ASSIGNED" &&

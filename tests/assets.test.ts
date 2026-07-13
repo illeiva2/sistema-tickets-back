@@ -230,7 +230,7 @@ describe("API de inventario IT", () => {
     expect(JSON.stringify(auditMeta)).not.toContain("Core i7");
   });
 
-  it.each(["assetTag", "secretsRef", "purchaseItemId"])(
+  it.each(["assetTag", "secretsRef"])(
     "impide que AGENT defina el campo administrativo %s al crear",
     async (field) => {
       const values: Record<string, string> = {
@@ -250,6 +250,68 @@ describe("API de inventario IT", () => {
 
       expect(response.status).toBe(403);
       expect(response.body.error.code).toBe("FORBIDDEN");
+      expect(prismaMock.asset.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("permite a AGENT vincular al crear sólo si la compra fue recibida y tiene cupo", async () => {
+    const purchaseItemId = "cmh333aaaaaaaaaaaaaaaaaaa";
+    prismaMock.purchaseItem.findUnique.mockResolvedValueOnce({
+      id: purchaseItemId,
+      quantity: 2,
+      purchase: { status: "RECEIVED" },
+      _count: { assets: 1 },
+    } as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([] as any);
+    prismaMock.asset.create.mockResolvedValueOnce(
+      makeAsset({ purchaseItemId }) as any,
+    );
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const response = await request(app)
+      .post("/api/it/assets")
+      .set(auth("AGENT"))
+      .send({
+        type: "NOTEBOOK",
+        brand: "Lenovo",
+        model: "T14",
+        purchaseItemId,
+      });
+
+    expect(response.status).toBe(201);
+    expect(prismaMock.asset.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ purchaseItemId }),
+      }),
+    );
+  });
+
+  it.each([
+    ["APPROVED", 0, "PURCHASE_NOT_RECEIVED"],
+    ["RECEIVED", 2, "PURCHASE_ITEM_CAPACITY_REACHED"],
+  ])(
+    "rechaza vincular activos cuando status=%s o no hay cupo",
+    async (status, linkedAssetsCount, code) => {
+      const purchaseItemId = "cmh333aaaaaaaaaaaaaaaaaaa";
+      prismaMock.purchaseItem.findUnique.mockResolvedValueOnce({
+        id: purchaseItemId,
+        quantity: 2,
+        purchase: { status },
+        _count: { assets: linkedAssetsCount },
+      } as any);
+
+      const response = await request(app)
+        .post("/api/it/assets")
+        .set(auth("AGENT"))
+        .send({
+          type: "NOTEBOOK",
+          brand: "Lenovo",
+          model: "T14",
+          purchaseItemId,
+        });
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(code);
       expect(prismaMock.asset.create).not.toHaveBeenCalled();
     },
   );
@@ -441,7 +503,6 @@ describe("API de inventario IT", () => {
   it.each([
     ["assetTag", "NB-9000"],
     ["secretsRef", "vault:item:123"],
-    ["purchaseItemId", "cmh333aaaaaaaaaaaaaaaaaaa"],
   ])(
     "impide que AGENT modifique el campo administrativo %s",
     async (field, value) => {
@@ -460,6 +521,54 @@ describe("API de inventario IT", () => {
       expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
     },
   );
+
+  it("impide que AGENT corrija purchaseItemId después del alta", async () => {
+    prismaMock.asset.findFirst.mockResolvedValueOnce(makeAsset() as any);
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("AGENT"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        purchaseItemId: "cmh333aaaaaaaaaaaaaaaaaaa",
+      });
+
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("FORBIDDEN");
+    expect(prismaMock.asset.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("permite a ADMIN corregir purchaseItemId con CAS, compra recibida y cupo", async () => {
+    const purchaseItemId = "cmh333aaaaaaaaaaaaaaaaaaa";
+    prismaMock.asset.findFirst
+      .mockResolvedValueOnce(makeAsset() as any)
+      .mockResolvedValueOnce(
+        makeAsset({ purchaseItemId, updatedAt: nextVersion }) as any,
+      );
+    prismaMock.purchaseItem.findUnique.mockResolvedValueOnce({
+      id: purchaseItemId,
+      quantity: 2,
+      purchase: { status: "RECEIVED" },
+      _count: { assets: 1 },
+    } as any);
+    prismaMock.asset.updateMany.mockResolvedValueOnce({ count: 1 } as any);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const response = await request(app)
+      .patch("/api/it/assets/" + assetId)
+      .set(auth("ADMIN"))
+      .send({
+        expectedUpdatedAt: version.toISOString(),
+        purchaseItemId,
+      });
+
+    expect(response.status).toBe(200);
+    expect(prismaMock.asset.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ updatedAt: version }),
+        data: expect.objectContaining({ purchaseItemId }),
+      }),
+    );
+  });
 
   it("devuelve conflicto si expectedUpdatedAt quedó desactualizado", async () => {
     prismaMock.asset.findFirst.mockResolvedValueOnce(
@@ -527,30 +636,24 @@ describe("API de inventario IT", () => {
         notes: "nota confidencial",
         specs: { cpu: "Ryzen secreto" },
         secretsRef: "vault:item:123",
-        purchaseItemId: "cmh333aaaaaaaaaaaaaaaaaaa",
       });
 
     expect(response.status).toBe(200);
     const auditMeta = (prismaMock.auditLog.create.mock.calls[0][0] as any).data
       .meta;
     expect(auditMeta).toEqual({
-      fields: ["brand", "specs", "notes", "secretsRef", "purchaseItemId"],
+      fields: ["brand", "specs", "notes", "secretsRef"],
       changes: {
         brand: { from: "Lenovo", to: "Dell" },
         specs: { changed: true, redacted: true },
         notes: { changed: true, redacted: true },
         secretsRef: { changed: true, redacted: true },
-        purchaseItemId: {
-          from: null,
-          to: "cmh333aaaaaaaaaaaaaaaaaaa",
-        },
       },
     });
     const serialized = JSON.stringify(auditMeta);
     expect(serialized).not.toContain("nota confidencial");
     expect(serialized).not.toContain("Ryzen secreto");
     expect(serialized).not.toContain("vault:item:123");
-    expect(serialized).toContain("cmh333aaaaaaaaaaaaaaaaaaa");
     expect(serialized).not.toContain("model");
     expect(serialized).not.toContain("expectedUpdatedAt");
   });

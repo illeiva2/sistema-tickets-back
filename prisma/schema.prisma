@@ -789,7 +789,8 @@ model Supplier {
 }
 
 // Compra de equipamiento / insumos IT.
-// Flujo: REQUESTED -> APPROVED (ADMIN) -> ORDERED -> RECEIVED (alta de Assets).
+// Flujo: REQUESTED -> APPROVED (ADMIN) -> ORDERED -> RECEIVED. RECEIVED
+// habilita que IT dé de alta manualmente cada Asset vinculado al PurchaseItem.
 model Purchase {
   id             String         @id @default(cuid())
   purchaseNumber Int            @unique @default(autoincrement()) // "OC-123"
@@ -826,8 +827,8 @@ model Purchase {
   @@map("purchases")
 }
 
-// Renglón de la compra. Al marcar RECEIVED, el service genera N Assets
-// por cada item inventariable (los insumos no generan Asset).
+// Renglón de la compra. Al marcar RECEIVED no se generan activos en forma
+// automática: IT registra manualmente hasta quantity Assets vinculados.
 model PurchaseItem {
   id         String   @id @default(cuid())
   purchaseId String
