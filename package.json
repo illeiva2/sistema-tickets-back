@@ -14,6 +14,7 @@
     "db:up": "docker-compose up -d",
     "db:down": "docker-compose down",
     "db:generate": "prisma generate",
+    "db:baseline:staging": "prisma generate && tsx src/scripts/baseline-staging.ts",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/scripts/seed.ts",
@@ -69,6 +70,6 @@
     "vitest-mock-extended": "^4.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "22.x"
   }
 }
