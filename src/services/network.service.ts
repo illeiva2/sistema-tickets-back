@@ -477,7 +477,7 @@ export class NetworkService {
     const [sites, assets, devices] = await Promise.all([
       prisma.site.findMany({
         where: { isActive: true, deletedAt: null },
-        select: { id: true, name: true, slug: true },
+        select: siteListSelect,
         orderBy: { name: "asc" },
       }),
       prisma.asset.findMany({
@@ -505,7 +505,7 @@ export class NetworkService {
         take: 500,
       }),
     ]);
-    return { sites, assets, devices };
+    return { sites: sites.map((site) => serializeSite(site)), assets, devices };
   }
 
   static async listSites(filters: SiteFilters) {

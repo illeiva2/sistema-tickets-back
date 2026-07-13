@@ -144,6 +144,32 @@ describe("API IT de red y topología", () => {
     ).toBe(400);
   });
 
+  it("devuelve sitios completos en lookups para el fallback de edición", async () => {
+    prismaMock.site.findMany.mockResolvedValueOnce([makeSite()] as any);
+    prismaMock.asset.findMany.mockResolvedValueOnce([]);
+    prismaMock.networkDevice.findMany.mockResolvedValueOnce([]);
+
+    const response = await request(app)
+      .get("/api/it/network/lookups")
+      .set(auth("AGENT"));
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.sites[0]).toEqual(
+      expect.objectContaining({
+        id: siteId,
+        name: "Casa central",
+        slug: "casa-central",
+        address: null,
+        description: null,
+        isActive: true,
+        updatedAt: version.toISOString(),
+        devicesCount: 0,
+        topologyViewsCount: 0,
+      }),
+    );
+    expect(response.body.data.sites[0]._count).toBeUndefined();
+  });
+
   it("lista dispositivos incluyendo históricos y expone linksCount plural", async () => {
     prismaMock.networkDevice.findMany.mockResolvedValueOnce([
       makeDevice({ status: "RETIRED", isActive: false, _count: { linksA: 1, linksB: 2 } }),
