@@ -10,10 +10,12 @@ import {
 } from "../controllers/procurement.controller";
 import { authMiddleware, requireRole } from "../middleware/auth";
 import networkRouter from "./network.routes";
+import agentsRouter from "./agents.routes";
 
 const router = Router();
 
 router.use("/network", networkRouter);
+router.use("/agents", agentsRouter);
 
 router.get(
   "/overview",

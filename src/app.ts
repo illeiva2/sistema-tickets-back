@@ -16,6 +16,13 @@ import {
 import { prisma } from "./lib/database";
 import routes from "./routes";
 
+export const shouldSkipGlobalRateLimit = (pathName: string) =>
+  pathName === "/health" ||
+  pathName === "/api/auth/me" ||
+  pathName.startsWith("/api/agent/") ||
+  pathName.startsWith("/uploads") ||
+  pathName.startsWith("/thumbnails");
+
 /**
  * Construye la app Express con toda la configuración (middlewares, rutas,
  * error handlers). NO arranca el servidor: eso es responsabilidad de
@@ -58,17 +65,16 @@ export const createApp = (): Application => {
       message: tooManyRequests,
       skip: (req) => {
         const p = req.path;
-        return (
-          p === "/health" ||
-          p === "/api/auth/me" ||
-          p.startsWith("/uploads") ||
-          p.startsWith("/thumbnails")
-        );
+        return shouldSkipGlobalRateLimit(p);
       },
     });
     app.use(globalLimiter);
   }
 
+  // El gateway público del agente tiene un límite propio antes del parser
+  // general. express.json marca el request como parseado y el parser siguiente
+  // no vuelve a procesarlo.
+  app.use("/api/agent", express.json({ limit: "512kb" }));
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
 

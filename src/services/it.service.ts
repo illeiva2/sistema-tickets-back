@@ -1,4 +1,5 @@
 import { prisma } from "../lib/database";
+import { AGENT_ONLINE_THRESHOLD_MS } from "./agents.service";
 
 /**
  * Resumen operativo del schema de Gestión IT.
@@ -12,6 +13,7 @@ import { prisma } from "../lib/database";
  * snapshots del agente) ni existencia de credenciales cifradas.
  */
 export const getItOverview = async () => {
+  const agentOnlineAfter = new Date(Date.now() - AGENT_ONLINE_THRESHOLD_MS);
   const [
     peopleTotal,
     peopleActive,
@@ -53,9 +55,13 @@ export const getItOverview = async () => {
     prisma.networkDevice.count({
       where: { status: "ACTIVE", isActive: true },
     }),
-    prisma.agentDevice.count(),
+    prisma.agentDevice.count({ where: { isActive: true, deletedAt: null } }),
     prisma.agentDevice.count({
-      where: { connState: "ONLINE", isActive: true },
+      where: {
+        isActive: true,
+        deletedAt: null,
+        lastSeenAt: { gte: agentOnlineAfter },
+      },
     }),
     prisma.remoteSession.count({ where: { status: "ACTIVE" } }),
   ]);
@@ -107,8 +113,8 @@ export const getItOverview = async () => {
       apiSurface: {
         overview: "available",
         crud: "assets,people",
-        agentGateway: "not_exposed",
-        remoteControl: "not_exposed",
+        agentGateway: "available",
+        remoteControl: "available_direct",
       },
       intentionallyNotCounted: [
         "agentInventorySnapshots",

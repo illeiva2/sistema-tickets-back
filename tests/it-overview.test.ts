@@ -59,8 +59,8 @@ describe("GET /api/it/overview", () => {
     expect(response.body.data.coverage.apiSurface).toEqual({
       overview: "available",
       crud: "assets,people",
-      agentGateway: "not_exposed",
-      remoteControl: "not_exposed",
+      agentGateway: "available",
+      remoteControl: "available_direct",
     });
     expect(response.body.data.coverage.crud).toEqual({
       people: "available",
@@ -81,5 +81,18 @@ describe("GET /api/it/overview", () => {
     expect(prismaMock.asset.count).toHaveBeenNthCalledWith(3, {
       where: { status: "IN_REPAIR", isActive: true },
     });
+    expect(prismaMock.agentDevice.count).toHaveBeenNthCalledWith(1, {
+      where: { isActive: true, deletedAt: null },
+    });
+    expect(prismaMock.agentDevice.count).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          deletedAt: null,
+          lastSeenAt: { gte: expect.any(Date) },
+        }),
+      }),
+    );
   });
 });

@@ -12,6 +12,7 @@ import workshopsRoutes from "./workshops.routes";
 import projectsRoutes from "./projects.routes";
 import kbRoutes from "./kb.routes";
 import itRoutes from "./it.routes";
+import agentMachineRoutes from "./agent-machine.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
 const router = Router();
@@ -31,6 +32,7 @@ router.use("/workshops", workshopsRoutes);
 router.use("/projects", projectsRoutes);
 router.use("/kb", kbRoutes);
 router.use("/it", itRoutes);
+router.use("/agent", agentMachineRoutes);
 
 if (fileOrganizationRouter) {
     logger.info("Mounting file-organization routes");

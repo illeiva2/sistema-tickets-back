@@ -82,6 +82,23 @@ export const errorHandler = (
     });
   }
 
+  if ((error as Error & { type?: string }).type === "entity.too.large") {
+    logger.warn({
+      requestId,
+      error: "PAYLOAD_TOO_LARGE",
+      url: req.url,
+      method: req.method,
+    });
+    return res.status(413).json({
+      success: false,
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        message: "El cuerpo de la solicitud excede el tamaño permitido",
+        requestId,
+      },
+    });
+  }
+
   // Log unexpected errors.
   logger.error({
     requestId,
