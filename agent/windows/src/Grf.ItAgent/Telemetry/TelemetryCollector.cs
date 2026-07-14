@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using Grf.ItAgent.Contracts;
+using Grf.ItAgent.Updates;
 using Grf.ItAgent.Utilities;
 
 namespace Grf.ItAgent.Telemetry;
@@ -91,11 +92,37 @@ internal sealed class TelemetryCollector
 
 internal static class AgentVersion
 {
+    private const string SafeFallbackVersion = "0.1.0";
+
     public static string Current { get; } = GetVersion();
 
     private static string GetVersion()
     {
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        return StringLimiter.LimitRequired(version?.ToString(3), 100, "0.1.0");
+        var assembly = Assembly.GetExecutingAssembly();
+        return Select(
+            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            assembly.GetName().Version);
+    }
+
+    internal static string Select(string? informationalVersion, Version? assemblyVersion)
+    {
+        // AssemblyName.Version cannot represent prerelease/build metadata. The SDK-generated
+        // informational version can, so prefer it only when it is an exact, bounded SemVer.
+        if (informationalVersion is { Length: <= 100 }
+            && SemanticVersion.TryParse(informationalVersion, out _))
+        {
+            return informationalVersion;
+        }
+
+        if (assemblyVersion is { Major: >= 0, Minor: >= 0, Build: >= 0 })
+        {
+            var fallback = $"{assemblyVersion.Major}.{assemblyVersion.Minor}.{assemblyVersion.Build}";
+            if (SemanticVersion.TryParse(fallback, out _))
+            {
+                return fallback;
+            }
+        }
+
+        return SafeFallbackVersion;
     }
 }

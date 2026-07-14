@@ -1,5 +1,7 @@
 using Grf.ItAgent.Configuration;
 using Grf.ItAgent.Logging;
+using Grf.ItAgent.Telemetry;
+using Grf.ItAgent.Updates;
 
 namespace Grf.ItAgent;
 
@@ -7,11 +9,13 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        ProgramOptions options;
         string configPath;
         AgentConfiguration configuration;
         try
         {
-            configPath = ResolveConfigPath(args);
+            options = ParseOptions(args);
+            configPath = options.ConfigPath;
             configuration = ConfigurationLoader.Load(configPath);
         }
         catch
@@ -20,8 +24,18 @@ internal static class Program
             return 2;
         }
 
+        if (options.Mode == AgentRunMode.ValidateInstall)
+        {
+            return ValidateInstall();
+        }
+
         var logPath = ConfigurationLoader.ResolveDataFile(configPath, configuration.LogFile);
         var logger = new SafeFileLogger(logPath);
+        if (options.Mode == AgentRunMode.PrepareUpdate)
+        {
+            return await PrepareUpdateAsync(configuration, configPath, logger).ConfigureAwait(false);
+        }
+
         FileStream? instanceLock = null;
         try
         {
@@ -68,11 +82,49 @@ internal static class Program
 
     internal static string ResolveConfigPath(IReadOnlyList<string> args)
     {
+        return ParseOptions(args).ConfigPath;
+    }
+
+    internal static ProgramOptions ParseOptions(IReadOnlyList<string> args)
+    {
         string? configuredPath = null;
+        var mode = AgentRunMode.Run;
+        var explicitMode = false;
         for (var index = 0; index < args.Count; index++)
         {
             if (string.Equals(args[index], "--run", StringComparison.OrdinalIgnoreCase))
             {
+                if (explicitMode)
+                {
+                    throw new ConfigurationException("Sólo se permite un modo de ejecución.");
+                }
+
+                mode = AgentRunMode.Run;
+                explicitMode = true;
+                continue;
+            }
+
+            if (string.Equals(args[index], "--prepare-update", StringComparison.OrdinalIgnoreCase))
+            {
+                if (explicitMode)
+                {
+                    throw new ConfigurationException("Sólo se permite un modo de ejecución.");
+                }
+
+                mode = AgentRunMode.PrepareUpdate;
+                explicitMode = true;
+                continue;
+            }
+
+            if (string.Equals(args[index], "--validate-install", StringComparison.OrdinalIgnoreCase))
+            {
+                if (explicitMode)
+                {
+                    throw new ConfigurationException("Sólo se permite un modo de ejecución.");
+                }
+
+                mode = AgentRunMode.ValidateInstall;
+                explicitMode = true;
                 continue;
             }
 
@@ -87,10 +139,71 @@ internal static class Program
             throw new ConfigurationException("Argumentos no reconocidos.");
         }
 
-        return Path.GetFullPath(configuredPath ?? Path.Combine(
+        var configPath = Path.GetFullPath(configuredPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "GRF",
             "ITAgent",
             "config.json"));
+        return new ProgramOptions(mode, configPath);
+    }
+
+    private static int ValidateInstall()
+    {
+        try
+        {
+            _ = SemanticVersion.Parse(AgentVersion.Current);
+            var executablePath = Environment.ProcessPath
+                ?? throw new InvalidDataException("No se pudo determinar el ejecutable actual.");
+            UpdateArtifactPreparer.ValidateWindowsX64Executable(executablePath);
+            // This is a machine-readable contract consumed by update-agent.ps1. Keep stdout
+            // to one exact SemVer line; diagnostics belong on stderr and non-zero exit codes.
+            Console.Out.WriteLine(AgentVersion.Current);
+            return 0;
+        }
+        catch
+        {
+            return 2;
+        }
+    }
+
+    private static async Task<int> PrepareUpdateAsync(
+        AgentConfiguration configuration,
+        string configPath,
+        SafeFileLogger logger)
+    {
+        if (!configuration.Update.Enabled)
+        {
+            logger.Write(LogSeverity.Warning, "UpdateDisabled");
+            return 2;
+        }
+
+        try
+        {
+            var dataDirectory = Path.GetDirectoryName(Path.GetFullPath(configPath))
+                ?? throw new DirectoryNotFoundException("La configuración no tiene directorio.");
+            using var coordinator = new UpdateCoordinator(
+                configuration.Update,
+                dataDirectory,
+                new GithubUpdateTransport(TimeSpan.FromMinutes(10)));
+            var result = await coordinator
+                .CheckWhenDueAsync(AgentVersion.Current, CancellationToken.None)
+                .ConfigureAwait(false);
+            logger.Write(LogSeverity.Information, $"Update{result.Status}");
+            return result.Status == UpdateCheckStatus.Incompatible ? 3 : 0;
+        }
+        catch (Exception exception)
+        {
+            logger.Write(LogSeverity.Error, "UpdatePrepareFailed", exception);
+            return 1;
+        }
     }
 }
+
+internal enum AgentRunMode
+{
+    Run,
+    PrepareUpdate,
+    ValidateInstall,
+}
+
+internal sealed record ProgramOptions(AgentRunMode Mode, string ConfigPath);

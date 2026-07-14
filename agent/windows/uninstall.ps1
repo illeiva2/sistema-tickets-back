@@ -8,6 +8,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $TaskName = "GRF-IT-Agent"
+$UpdateTaskName = "GRF-IT-Agent-Updater"
 
 function Assert-Administrator {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -225,6 +226,70 @@ function Remove-DirectoryIfEmpty {
     }
 }
 
+function Remove-BoundedPhysicalTree {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$TrustedRoot,
+        [int]$MaximumItems = 256,
+        [int]$MaximumDepth = 4
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    Assert-NoReparseTraversal -TrustedRoot $TrustedRoot -Target $Path
+    Assert-RestrictedDirectoryAcl -Path $Path
+
+    $rootPath = [System.IO.Path]::GetFullPath($Path).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar)
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([PSCustomObject]@{ Path = $rootPath; Depth = 0 })
+    $directories = [System.Collections.Generic.List[string]]::new()
+    $files = [System.Collections.Generic.List[string]]::new()
+    [void]$directories.Add($rootPath)
+    $itemCount = 1
+
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        foreach ($item in @(Get-ChildItem -LiteralPath $current.Path -Force)) {
+            $itemCount++
+            if ($itemCount -gt $MaximumItems) {
+                throw "El directorio de actualizaciones excede el límite de limpieza segura."
+            }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Se rechazó limpiar un enlace o junction dentro de updates."
+            }
+            $fullName = [System.IO.Path]::GetFullPath($item.FullName)
+            $rootPrefix = $rootPath + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $fullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "La limpieza salió del directorio updates."
+            }
+            if ($item.PSIsContainer) {
+                $nextDepth = [int]$current.Depth + 1
+                if ($nextDepth -gt $MaximumDepth) {
+                    throw "El directorio de actualizaciones excede la profundidad permitida."
+                }
+                Assert-RestrictedDirectoryAcl -Path $fullName
+                [void]$directories.Add($fullName)
+                $queue.Enqueue([PSCustomObject]@{ Path = $fullName; Depth = $nextDepth })
+            }
+            else {
+                [void]$files.Add($fullName)
+            }
+        }
+    }
+
+    foreach ($filePath in $files) {
+        Assert-RegularFileOrMissing -Path $filePath
+        Set-RestrictedFileAcl -Path $filePath
+        Remove-Item -LiteralPath $filePath -Force
+    }
+    foreach ($directoryPath in @($directories | Sort-Object Length -Descending)) {
+        Set-RestrictedAcl -Path $directoryPath
+        Remove-DirectoryIfEmpty -Path $directoryPath
+    }
+}
+
 function Clear-PlaintextToken {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -315,11 +380,13 @@ Secure-ExistingAgentDirectory `
     -VendorRoot $dataVendorRoot `
     -AgentPath $dataPath
 
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($null -ne $task) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Wait-ScheduledTaskStopped -Name $TaskName
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+foreach ($scheduledTaskName in @($UpdateTaskName, $TaskName)) {
+    $task = Get-ScheduledTask -TaskName $scheduledTaskName -ErrorAction SilentlyContinue
+    if ($null -ne $task) {
+        Stop-ScheduledTask -TaskName $scheduledTaskName -ErrorAction SilentlyContinue
+        Wait-ScheduledTaskStopped -Name $scheduledTaskName
+        Unregister-ScheduledTask -TaskName $scheduledTaskName -Confirm:$false
+    }
 }
 
 if ($PurgeData -and (Test-Path -LiteralPath $dataPath -PathType Container)) {
@@ -345,10 +412,17 @@ Assert-SecureExistingAgentPaths `
     -TrustedRoot $env:ProgramFiles `
     -VendorRoot $installVendorRoot `
     -AgentPath $installPath
-Assert-RegularFileOrMissing -Path $executablePath
-if (Test-Path -LiteralPath $executablePath -PathType Leaf) {
-    Set-RestrictedFileAcl -Path $executablePath
-    Remove-Item -LiteralPath $executablePath -Force
+foreach ($installFilePath in @(
+    $executablePath,
+    "$executablePath.new",
+    "$executablePath.previous",
+    (Join-Path $installPath "update-agent.ps1")
+)) {
+    Assert-RegularFileOrMissing -Path $installFilePath
+    if (Test-Path -LiteralPath $installFilePath -PathType Leaf) {
+        Set-RestrictedFileAcl -Path $installFilePath
+        Remove-Item -LiteralPath $installFilePath -Force
+    }
 }
 Remove-DirectoryIfEmpty -Path $installPath
 
@@ -362,6 +436,8 @@ if ($PurgeData -and (Test-Path -LiteralPath $dataPath -PathType Container)) {
     Assert-RegularFileOrMissing -Path "$tokenPath.tmp"
     Clear-PlaintextToken -Path $tokenPath
     Clear-PlaintextToken -Path "$tokenPath.tmp"
+    $updatesPath = Join-Path $dataPath "updates"
+    Remove-BoundedPhysicalTree -Path $updatesPath -TrustedRoot $dataPath
     $filesToDelete = @(
         "config.json",
         "config.json.tmp",
@@ -371,7 +447,9 @@ if ($PurgeData -and (Test-Path -LiteralPath $dataPath -PathType Container)) {
         "$($dataFileNames.stateFile).tmp",
         $dataFileNames.logFile,
         "$($dataFileNames.logFile).1",
-        $dataFileNames.lockFile
+        $dataFileNames.lockFile,
+        "updater.log",
+        "updater.log.1"
     ) | Select-Object -Unique
     foreach ($fileName in $filesToDelete) {
         $path = Join-Path $dataPath $fileName

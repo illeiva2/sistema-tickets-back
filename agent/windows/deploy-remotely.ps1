@@ -55,6 +55,7 @@ begin {
             "GRF.ITAgent.exe",
             "config.example.json",
             "install.ps1",
+            "update-agent.ps1",
             "SHA256SUMS.txt"
         )) {
             if (-not (Test-Path -LiteralPath (Join-Path $fullPath $requiredName) -PathType Leaf)) {

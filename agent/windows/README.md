@@ -45,7 +45,7 @@ POST /api/agent/enroll
   "deviceSecret": "<base64url-43>",
   "machineGuid": "550e8400-e29b-41d4-a716-446655440000",
   "hostname": "PC-001",
-  "agentVersion": "0.1.0",
+  "agentVersion": "0.2.0",
   "osName": "Windows 11 Pro",
   "osVersion": "24H2"
 }
@@ -96,6 +96,41 @@ Para generar el paquete self-contained:
 ```
 
 El resultado queda en `artifacts\win-x64` e incluye `GRF.ITAgent.exe`, instalador, desinstalador, coordinador de despliegue remoto, configuración de ejemplo, este README y un SHA-256. `publish.ps1` ejecuta las pruebas antes de publicar; `-SkipTests` queda reservado para diagnóstico local, no para releases.
+
+## Actualización automática con GitHub Releases
+
+La actualización automática usa el repositorio público
+`illeiva2/grf-it-agent-releases`, sin token de GitHub ni un secreto por PC. La clave privada de
+firma nunca se distribuye a los equipos. Para generar un primer paquete piloto con la clave
+pública y el canal ya configurados:
+
+```powershell
+.\release\New-SigningKey.ps1
+.\publish.ps1 `
+  -UpdateChannel pilot `
+  -UpdatePublicKeyPath "C:\ProgramData\GRF\ITAgent\release-keys\agent-release-public.pem"
+```
+
+La creación y promoción de los tres adjuntos firmados se documenta en `release\README.md`.
+`config.example.json` permanece deshabilitado en el repositorio para evitar instalaciones
+accidentales sin una clave; `publish.ps1` sólo habilita la copia incluida en el paquete.
+
+Cada canal usa un tag fijo: `stable/manifest-stable.json` o
+`pilot/manifest-pilot.json`. Así un piloto no puede seguir accidentalmente el release estable.
+
+Al instalar con updates habilitados se registra `GRF-IT-Agent-Updater` como `SYSTEM`, una vez
+por día con demora aleatoria, `StartWhenAvailable` e instancias duplicadas ignoradas. El helper
+le pide al propio agente preparar y verificar el release HTTPS, valida nuevamente el plan,
+tamaño y SHA-256, prueba el candidato y recién entonces realiza el swap. Si la nueva tarea no
+permanece en estado `Running`, restaura automáticamente `GRF.ITAgent.exe.previous`. Un sentinel
+impide reintentar diariamente la misma versión fallida; una versión posterior sí puede avanzar.
+Config, credenciales DPAPI y token pendiente permanecen siempre bajo `%ProgramData%` y no se
+reemplazan durante el swap.
+
+La versión 0.2.0, que incorpora el actualizador, debe instalarse una sola vez con el instalador
+local o el despliegue masivo. En una PC ya enrolada conserva `credentials.dat` y no pide otro
+token. En PCs nuevas se puede reutilizar un único token de enrolamiento por lote; las
+actualizaciones posteriores sólo usan HTTPS anónimo hacia GitHub Releases.
 
 ## Release gate .NET
 
@@ -213,6 +248,8 @@ Directorio de datos protegido:
   state.json            fecha del último inventario aceptado
   agent.lock            lock exclusivo de instancia
   agent.log[.1]         eventos operativos sin datos sensibles
+  updater.log[.1]       log acotado del helper, sin URLs ni secretos
+  updates\              plan/candidato verificados y sentinel de versión fallida
 ```
 
 La configuración de ejemplo es deliberadamente estricta. Los nombres de archivos deben ser locales al directorio de datos; no se admiten rutas absolutas ni `..`.
@@ -220,6 +257,7 @@ La configuración de ejemplo es deliberadamente estricta. Los nombres de archivo
 ## Diagnóstico
 
 - Estado de la tarea: `Get-ScheduledTask -TaskName GRF-IT-Agent`.
+- Estado del updater: `Get-ScheduledTask -TaskName GRF-IT-Agent-Updater`.
 - Último resultado: `Get-ScheduledTaskInfo -TaskName GRF-IT-Agent`.
 - Eventos seguros: `%ProgramData%\GRF\ITAgent\agent.log`.
 - Código de salida `2`: configuración inválida.

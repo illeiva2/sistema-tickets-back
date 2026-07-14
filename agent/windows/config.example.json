@@ -10,5 +10,11 @@
   "credentialFile": "credentials.dat",
   "stateFile": "state.json",
   "logFile": "agent.log",
-  "lockFile": "agent.lock"
+  "lockFile": "agent.lock",
+  "update": {
+    "enabled": false,
+    "channel": "stable",
+    "manifestUrl": "https://github.com/illeiva2/grf-it-agent-releases/releases/download/stable/manifest-stable.json",
+    "publicKeyPem": ""
+  }
 }

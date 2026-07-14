@@ -1,0 +1,6 @@
+out/
+CryptoHelper/bin/
+CryptoHelper/obj/
+*.pem
+*.key
+*.pfx
