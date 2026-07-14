@@ -20,6 +20,8 @@ export const getItOverview = async () => {
     assetsTotal,
     assetsAssigned,
     assetsInRepair,
+    workstationsTotal,
+    phonesTotal,
     activeAssetAssignments,
     openMaintenances,
     activeSuppliers,
@@ -27,33 +29,65 @@ export const getItOverview = async () => {
     phoneLinesTotal,
     phoneLinesInUse,
     activeSites,
-    networkDevicesTotal,
+    networkInfrastructureTotal,
+    camerasTotal,
     networkDevicesActive,
     agentDevicesTotal,
     agentDevicesOnline,
     activeRemoteSessions,
   ] = await prisma.$transaction([
-    prisma.person.count({ where: { isActive: true } }),
+    prisma.person.count({ where: { isActive: true, deletedAt: null } }),
     prisma.person.count({
-      where: { isActive: true, status: "ACTIVE" },
+      where: { isActive: true, deletedAt: null, status: "ACTIVE" },
     }),
-    prisma.asset.count({ where: { isActive: true } }),
-    prisma.asset.count({ where: { status: "ASSIGNED", isActive: true } }),
-    prisma.asset.count({ where: { status: "IN_REPAIR", isActive: true } }),
-    prisma.assetAssignment.count({ where: { endAt: null } }),
+    prisma.asset.count({ where: { isActive: true, deletedAt: null } }),
+    prisma.asset.count({
+      where: { status: "ASSIGNED", isActive: true, deletedAt: null },
+    }),
+    prisma.asset.count({
+      where: { status: "IN_REPAIR", isActive: true, deletedAt: null },
+    }),
+    prisma.asset.count({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        type: { in: ["DESKTOP", "NOTEBOOK"] },
+      },
+    }),
+    prisma.asset.count({
+      where: { isActive: true, deletedAt: null, type: "PHONE" },
+    }),
+    prisma.assetAssignment.count({
+      where: {
+        endAt: null,
+        asset: { isActive: true, deletedAt: null },
+      },
+    }),
     prisma.maintenance.count({
-      where: { status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
+      where: {
+        status: { in: ["SCHEDULED", "IN_PROGRESS"] },
+        asset: { isActive: true, deletedAt: null },
+      },
     }),
-    prisma.supplier.count({ where: { isActive: true } }),
+    prisma.supplier.count({ where: { isActive: true, deletedAt: null } }),
     prisma.purchase.count({ where: { status: "REQUESTED" } }),
-    prisma.phoneLine.count(),
+    prisma.phoneLine.count({ where: { isActive: true, deletedAt: null } }),
     prisma.phoneLine.count({
-      where: { status: "ACTIVE", isActive: true },
+      where: { status: "ACTIVE", isActive: true, deletedAt: null },
     }),
-    prisma.site.count({ where: { isActive: true } }),
-    prisma.networkDevice.count(),
+    prisma.site.count({ where: { isActive: true, deletedAt: null } }),
     prisma.networkDevice.count({
-      where: { status: "ACTIVE", isActive: true },
+      where: {
+        isActive: true,
+        deletedAt: null,
+        type: { not: "CAMERA" },
+      },
+    }),
+    prisma.networkDevice.count({
+      where: { isActive: true, deletedAt: null, type: "CAMERA" },
+    }),
+    prisma.networkDevice.count({
+      where: { status: "ACTIVE", isActive: true, deletedAt: null },
     }),
     prisma.agentDevice.count({ where: { isActive: true, deletedAt: null } }),
     prisma.agentDevice.count({
@@ -63,11 +97,20 @@ export const getItOverview = async () => {
         lastSeenAt: { gte: agentOnlineAfter },
       },
     }),
-    prisma.remoteSession.count({ where: { status: "ACTIVE" } }),
+    prisma.remoteSession.count({
+      where: {
+        status: "ACTIVE",
+        device: { isActive: true, deletedAt: null },
+      },
+    }),
   ]);
 
+  const networkDevicesTotal = networkInfrastructureTotal + camerasTotal;
+  const managedDevicesTotal =
+    workstationsTotal + phonesTotal + networkInfrastructureTotal + camerasTotal;
+
   return {
-    schemaVersion: "it-management-v1",
+    schemaVersion: "it-management-v2",
     generatedAt: new Date().toISOString(),
     counts: {
       people: { total: peopleTotal, active: peopleActive },
@@ -75,6 +118,13 @@ export const getItOverview = async () => {
         total: assetsTotal,
         assigned: assetsAssigned,
         inRepair: assetsInRepair,
+      },
+      managedDevices: {
+        total: managedDevicesTotal,
+        workstations: workstationsTotal,
+        phones: phonesTotal,
+        networkInfrastructure: networkInfrastructureTotal,
+        cameras: camerasTotal,
       },
       assetAssignments: { active: activeAssetAssignments },
       maintenances: { open: openMaintenances },
@@ -97,6 +147,16 @@ export const getItOverview = async () => {
         people: "available",
         assets: "available",
       },
+      modules: {
+        inventory: "available",
+        people: "available",
+        maintenance: "available",
+        procurement: "available",
+        network: "available",
+        monitoring: "available",
+        cameras: "limited",
+        phoneLines: "available",
+      },
       modeledDomains: [
         "people",
         "assets",
@@ -112,9 +172,10 @@ export const getItOverview = async () => {
       ],
       apiSurface: {
         overview: "available",
-        crud: "assets,people",
+        crud: "assets,people,maintenances,procurement,network,phoneLines",
         agentGateway: "available",
-        remoteControl: "available_direct",
+        telemetry: "available",
+        remoteControl: "available_direct_lan_vpn",
       },
       intentionallyNotCounted: [
         "agentInventorySnapshots",

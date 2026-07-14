@@ -26,19 +26,32 @@ snapshot cuando está presente, conservando los últimos 30 por dispositivo.
 `GET /lookups` devuelve activos compatibles y todavía no vinculados:
 
 ```json
-{ "assets": [{ "id": "...", "assetTag": "NB-0001", "type": "NOTEBOOK", "status": "ASSIGNED", "brand": "Dell", "model": "Latitude" }] }
+{
+  "assets": [
+    {
+      "id": "...",
+      "assetTag": "NB-0001",
+      "type": "NOTEBOOK",
+      "status": "ASSIGNED",
+      "brand": "Dell",
+      "model": "Latitude"
+    }
+  ]
+}
 ```
 
 ### Tokens de enrolamiento
 
-- `GET /enrollment-tokens?status=AVAILABLE|USED|EXPIRED`
-- `POST /enrollment-tokens` con `{ "label"?: string, "expiresAt"?: ISO-8601 }`
+- `GET /enrollment-tokens?status=AVAILABLE|USED|EXPIRED|REVOKED`
+- `POST /enrollment-tokens` con `{ "label"?: string, "expiresAt"?: ISO-8601, "maxUses"?: 1..250 }`
 - `POST /enrollment-tokens/:id/revoke` con body vacío
 
 La creación devuelve `{ token, plainToken }`. `plainToken` tiene 256 bits y se
-muestra una sola vez; sólo su SHA-256 se persiste. El vencimiento permitido es
-de 10 minutos a 7 días. La revocación es un hard delete atómico y sólo procede
-si el token sigue vigente y nunca fue usado.
+muestra una sola vez; sólo su SHA-256 se persiste. `maxUses` vale 1 por defecto
+y permite enrolar un lote de hasta 250 equipos. La respuesta informa
+`useCount`, `remainingUses` y `enrolledDevices`. El vencimiento permitido es de
+10 minutos a 7 días. La revocación es lógica y atómica; puede cancelar los usos
+restantes de un lote parcialmente utilizado.
 
 ### Dispositivos
 
@@ -109,12 +122,13 @@ El agente genera `deviceSecret` mediante CSPRNG, lo conserva estable durante
 retries y lo protege localmente. La respuesta es
 `{ "deviceId": "...", "nextHeartbeatSeconds": 60 }`; el servidor nunca
 devuelve el secreto. Un retry del mismo token, MachineGuid y secreto es
-idempotente. Un token nuevo puede re-enrolar el mismo MachineGuid y rotar el
-secreto sin duplicar el dispositivo ni cambiar `assetId`/`isActive`.
-
-Por la relación 1:1 actual de Prisma, al re-enrolar se conserva `usedAt` del
-token anterior pero se pone su `usedByDeviceId` en null antes de asociar el
-nuevo. El AuditLog conserva la trazabilidad.
+idempotente, incluso si la respuesta anterior se perdió y el token luego venció,
+se agotó o fue revocado. Un token nuevo puede re-enrolar el mismo MachineGuid y
+rotar el secreto sin duplicar el dispositivo ni cambiar `assetId`/`isActive`,
+pero por seguridad ese token debe ser individual (`maxUses = 1`). Los tokens por
+lote sólo admiten máquinas nuevas y no pueden tomar control de agentes existentes.
+Cada dispositivo conserva `enrollmentTokenId`; el contador se consume mediante
+CAS dentro de una transacción SERIALIZABLE y el AuditLog conserva la trazabilidad.
 
 ### Heartbeat
 
@@ -147,11 +161,32 @@ Payload estricto:
   "agentVersion": "1.0.0",
   "inventory": {
     "collectedAt": "2026-07-13T10:00:00.000Z",
-    "hardware": { "manufacturer": "Dell", "model": "Latitude", "serialNumber": "...", "biosVersion": "..." },
+    "hardware": {
+      "manufacturer": "Dell",
+      "model": "Latitude",
+      "serialNumber": "...",
+      "biosVersion": "..."
+    },
     "cpu": { "model": "Intel", "cores": 8, "logicalProcessors": 16 },
-    "memoryModules": [{ "capacityBytes": 8589934592, "manufacturer": "...", "partNumber": "...", "serialNumber": "..." }],
-    "software": [{ "name": "Microsoft 365", "version": "1", "publisher": "Microsoft" }],
-    "networkAdapters": [{ "name": "Ethernet", "description": "...", "macAddress": "AA:BB:CC:DD:EE:FF", "ipAddresses": ["10.0.0.25"] }]
+    "memoryModules": [
+      {
+        "capacityBytes": 8589934592,
+        "manufacturer": "...",
+        "partNumber": "...",
+        "serialNumber": "..."
+      }
+    ],
+    "software": [
+      { "name": "Microsoft 365", "version": "1", "publisher": "Microsoft" }
+    ],
+    "networkAdapters": [
+      {
+        "name": "Ethernet",
+        "description": "...",
+        "macAddress": "AA:BB:CC:DD:EE:FF",
+        "ipAddresses": ["10.0.0.25"]
+      }
+    ]
   }
 }
 ```

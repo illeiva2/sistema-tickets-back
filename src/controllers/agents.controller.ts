@@ -15,6 +15,7 @@ import {
   machineEnrollSchema,
   machineHeartbeatSchema,
   metricFiltersSchema,
+  registerAgentAssetSchema,
   remoteSessionIdParamsSchema,
   snapshotFiltersSchema,
   startRemoteSessionSchema,
@@ -81,6 +82,28 @@ export class AgentsController {
     handle(
       async (req) => AgentsService.linkAsset(req.params.id, req.body, user(req).id),
       "device",
+    ),
+  ];
+
+  static registerAsset = [
+    validate(
+      z.object({
+        params: agentDeviceIdParamsSchema,
+        body: registerAgentAssetSchema,
+      }),
+    ),
+    handle(
+      async (req) => {
+        const actor = user(req);
+        return AgentsService.registerAsset(
+          req.params.id,
+          req.body,
+          actor.id,
+          actor.role,
+        );
+      },
+      undefined,
+      201,
     ),
   ];
 

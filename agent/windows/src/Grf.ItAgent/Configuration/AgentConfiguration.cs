@@ -14,4 +14,14 @@ internal sealed class AgentConfiguration
     public string StateFile { get; init; } = "state.json";
     public string LogFile { get; init; } = "agent.log";
     public string LockFile { get; init; } = "agent.lock";
+    public UpdateConfiguration Update { get; init; } = new();
+}
+
+internal sealed class UpdateConfiguration
+{
+    public bool Enabled { get; init; }
+    public string Channel { get; init; } = "stable";
+    public string ManifestUrl { get; init; } = string.Empty;
+    public string PublicKeyPem { get; init; } = string.Empty;
+    public int CheckIntervalMinutes { get; init; } = 360;
 }

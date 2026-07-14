@@ -238,29 +238,36 @@ const isUniqueFieldError = (error: unknown, field: string): boolean => {
   return typeof target === "string" && target.includes(field);
 };
 
-const translateAssetWriteError = (error: unknown): never => {
+export const isGeneratedAssetTagConflict = (error: unknown): boolean =>
+  isUniqueFieldError(error, "assetTag");
+
+export const asAssetWriteError = (error: unknown): ApiError | null => {
   if (isUniqueFieldError(error, "assetTag")) {
-    throw new ApiError(
+    return new ApiError(
       "ASSET_TAG_EXISTS",
       "Ya existe un activo con ese código",
       409,
     );
   }
   if (isUniqueFieldError(error, "serialNumber")) {
-    throw new ApiError(
+    return new ApiError(
       "SERIAL_NUMBER_EXISTS",
       "Ya existe un activo con ese número de serie",
       409,
     );
   }
   if (isKnownPrismaError(error, "P2003")) {
-    throw new ApiError(
+    return new ApiError(
       "INVALID_ASSET_REFERENCE",
       "La compra o referencia indicada no existe",
       400,
     );
   }
-  throw error;
+  return null;
+};
+
+const translateAssetWriteError = (error: unknown): never => {
+  throw asAssetWriteError(error) ?? error;
 };
 
 const runSerializable = async <T>(
@@ -378,6 +385,176 @@ const validatePurchaseItemCapacity = async (
   }
 };
 
+export const assertAssetCreateAllowed = (
+  data: CreateAssetRequest,
+  actorRole: UserRole,
+) => {
+  if (data.status === "IN_REPAIR") {
+    throw new ApiError(
+      "ASSET_STATUS_MANAGED",
+      "Usá el módulo de mantenimientos para marcar un activo en reparación",
+      400,
+    );
+  }
+  const forbiddenFields = adminOnlyAssetFields.filter(
+    (field) => data[field] !== undefined,
+  );
+  if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
+    throw new ApiError(
+      "FORBIDDEN",
+      "Solo ADMIN puede definir código manual o referencia de secretos",
+      403,
+      { fields: forbiddenFields },
+    );
+  }
+};
+
+export const createAssetInTransaction = async (
+  tx: Prisma.TransactionClient,
+  data: CreateAssetRequest,
+  actorId: string,
+) => {
+  const generatedTag = !data.assetTag;
+  await validatePurchaseItemCapacity(tx, data.purchaseItemId);
+  const assetTag =
+    data.assetTag ?? (await nextAssetTag(tx, data.type as AssetType));
+  const created = await tx.asset.create({
+    data: {
+      assetTag,
+      type: data.type,
+      status: data.status,
+      brand: data.brand,
+      model: data.model,
+      serialNumber: data.serialNumber,
+      specs: specsInput(data.specs),
+      notes: data.notes,
+      secretsRef: data.secretsRef,
+      location: data.location,
+      warrantyUntil: parseDate(data.warrantyUntil),
+      purchaseItemId: data.purchaseItemId,
+      retirementReason: data.retirementReason,
+      retiredAt: data.status === "RETIRED" ? new Date() : undefined,
+      createdById: actorId,
+    },
+    select: assetListSelect,
+  });
+
+  await tx.auditLog.create({
+    data: {
+      entity: "asset",
+      entityId: created.id,
+      action: "created",
+      actorId,
+      meta: {
+        fields: safeFieldNames({
+          ...data,
+          assetTag: undefined,
+        }),
+        assetTagGenerated: generatedTag,
+      },
+    },
+  });
+  return created;
+};
+
+export const assignAssetInTransaction = async (
+  tx: Prisma.TransactionClient,
+  id: string,
+  data: AssignAssetRequest,
+  actorId: string,
+) => {
+  const current = await findActiveAsset(tx, id);
+  const activeAssignment = await tx.assetAssignment.findFirst({
+    where: { assetId: id, endAt: null },
+    select: { id: true },
+  });
+  if (
+    activeAssignment ||
+    current.status === "ASSIGNED" ||
+    current.assignedPersonId ||
+    current.assignedDepartmentId
+  ) {
+    throw new ApiError(
+      "ASSET_ALREADY_ASSIGNED",
+      "El activo ya tiene una asignación vigente",
+      409,
+    );
+  }
+  if (current.status !== "IN_STOCK") {
+    throw new ApiError(
+      "ASSET_NOT_ASSIGNABLE",
+      "Solo se pueden asignar activos disponibles en stock",
+      409,
+    );
+  }
+
+  if (data.personId) {
+    const person = await tx.person.findFirst({
+      where: {
+        id: data.personId,
+        isActive: true,
+        status: "ACTIVE",
+      },
+      select: { id: true },
+    });
+    if (!person) {
+      throw new ApiError(
+        "PERSON_NOT_FOUND",
+        "Persona activa no encontrada",
+        404,
+      );
+    }
+  }
+  if (data.departmentId) {
+    const department = await tx.department.findUnique({
+      where: { id: data.departmentId },
+      select: { id: true },
+    });
+    if (!department) {
+      throw new ApiError(
+        "DEPARTMENT_NOT_FOUND",
+        "Sector no encontrado",
+        404,
+      );
+    }
+  }
+
+  const assignment = await tx.assetAssignment.create({
+    data: {
+      assetId: id,
+      personId: data.personId,
+      departmentId: data.departmentId,
+      assignedById: actorId,
+      note: data.note,
+    },
+    select: { id: true },
+  });
+  const updated = await tx.asset.update({
+    where: { id },
+    data: {
+      status: "ASSIGNED",
+      assignedPersonId: data.personId ?? null,
+      assignedDepartmentId: data.departmentId ?? null,
+    },
+    select: assetListSelect,
+  });
+  await tx.auditLog.create({
+    data: {
+      entity: "asset",
+      entityId: id,
+      action: "assigned",
+      actorId,
+      meta: {
+        assignmentId: assignment.id,
+        personId: data.personId ?? null,
+        departmentId: data.departmentId ?? null,
+        fields: ["assignedPersonId", "assignedDepartmentId", "status"],
+      },
+    },
+  });
+  return updated;
+};
+
 export class AssetsService {
   static async list(filters: AssetFilters) {
     const {
@@ -461,77 +638,21 @@ export class AssetsService {
     actorId: string,
     actorRole: UserRole,
   ) {
-    if (data.status === "IN_REPAIR") {
-      throw new ApiError(
-        "ASSET_STATUS_MANAGED",
-        "Usá el módulo de mantenimientos para marcar un activo en reparación",
-        400,
-      );
-    }
-    const forbiddenFields = adminOnlyAssetFields.filter(
-      (field) => data[field] !== undefined,
-    );
-    if (actorRole !== UserRole.ADMIN && forbiddenFields.length > 0) {
-      throw new ApiError(
-        "FORBIDDEN",
-        "Solo ADMIN puede definir código manual o referencia de secretos",
-        403,
-        { fields: forbiddenFields },
-      );
-    }
+    assertAssetCreateAllowed(data, actorRole);
     const generatedTag = !data.assetTag;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        const asset = await runSerializable(async (tx) => {
-          await validatePurchaseItemCapacity(tx, data.purchaseItemId);
-          const assetTag =
-            data.assetTag ?? (await nextAssetTag(tx, data.type as AssetType));
-          const created = await tx.asset.create({
-            data: {
-              assetTag,
-              type: data.type,
-              status: data.status,
-              brand: data.brand,
-              model: data.model,
-              serialNumber: data.serialNumber,
-              specs: specsInput(data.specs),
-              notes: data.notes,
-              secretsRef: data.secretsRef,
-              location: data.location,
-              warrantyUntil: parseDate(data.warrantyUntil),
-              purchaseItemId: data.purchaseItemId,
-              retirementReason: data.retirementReason,
-              retiredAt: data.status === "RETIRED" ? new Date() : undefined,
-              createdById: actorId,
-            },
-            select: assetListSelect,
-          });
-
-          await tx.auditLog.create({
-            data: {
-              entity: "asset",
-              entityId: created.id,
-              action: "created",
-              actorId,
-              meta: {
-                fields: safeFieldNames({
-                  ...data,
-                  assetTag: undefined,
-                }),
-                assetTagGenerated: generatedTag,
-              },
-            },
-          });
-          return created;
-        });
+        const asset = await runSerializable((tx) =>
+          createAssetInTransaction(tx, data, actorId),
+        );
 
         logger.info({ assetId: asset.id, actorId }, "Asset created");
         return asset;
       } catch (error) {
         if (
           generatedTag &&
-          isUniqueFieldError(error, "assetTag") &&
+          isGeneratedAssetTagConflict(error) &&
           attempt < 4
         ) {
           continue;
@@ -773,102 +894,9 @@ export class AssetsService {
     data: AssignAssetRequest,
     actorId: string,
   ) {
-    const asset = await runSerializable(async (tx) => {
-      const current = await findActiveAsset(tx, id);
-      const activeAssignment = await tx.assetAssignment.findFirst({
-        where: { assetId: id, endAt: null },
-        select: { id: true },
-      });
-      if (
-        activeAssignment ||
-        current.status === "ASSIGNED" ||
-        current.assignedPersonId ||
-        current.assignedDepartmentId
-      ) {
-        throw new ApiError(
-          "ASSET_ALREADY_ASSIGNED",
-          "El activo ya tiene una asignación vigente",
-          409,
-        );
-      }
-      if (current.status !== "IN_STOCK") {
-        throw new ApiError(
-          "ASSET_NOT_ASSIGNABLE",
-          "Solo se pueden asignar activos disponibles en stock",
-          409,
-        );
-      }
-
-      if (data.personId) {
-        const person = await tx.person.findFirst({
-          where: {
-            id: data.personId,
-            isActive: true,
-            status: "ACTIVE",
-          },
-          select: { id: true },
-        });
-        if (!person) {
-          throw new ApiError(
-            "PERSON_NOT_FOUND",
-            "Persona activa no encontrada",
-            404,
-          );
-        }
-      }
-      if (data.departmentId) {
-        const department = await tx.department.findUnique({
-          where: { id: data.departmentId },
-          select: { id: true },
-        });
-        if (!department) {
-          throw new ApiError(
-            "DEPARTMENT_NOT_FOUND",
-            "Sector no encontrado",
-            404,
-          );
-        }
-      }
-
-      const assignment = await tx.assetAssignment.create({
-        data: {
-          assetId: id,
-          personId: data.personId,
-          departmentId: data.departmentId,
-          assignedById: actorId,
-          note: data.note,
-        },
-        select: { id: true },
-      });
-      const updated = await tx.asset.update({
-        where: { id },
-        data: {
-          status: "ASSIGNED",
-          assignedPersonId: data.personId ?? null,
-          assignedDepartmentId: data.departmentId ?? null,
-        },
-        select: assetListSelect,
-      });
-      await tx.auditLog.create({
-        data: {
-          entity: "asset",
-          entityId: id,
-          action: "assigned",
-          actorId,
-          meta: {
-            assignmentId: assignment.id,
-            personId: data.personId ?? null,
-            departmentId: data.departmentId ?? null,
-            fields: [
-              "assignedPersonId",
-              "assignedDepartmentId",
-              "status",
-            ],
-          },
-        },
-      });
-      return updated;
-    });
+    const asset = await runSerializable((tx) =>
+      assignAssetInTransaction(tx, id, data, actorId),
+    );
 
     logger.info({ assetId: id, actorId }, "Asset assigned");
     return asset;

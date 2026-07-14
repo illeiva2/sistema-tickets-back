@@ -19,6 +19,11 @@ router.post(
 router.get("/devices", ...authorize, ...AgentsController.listDevices);
 router.get("/devices/:id", ...authorize, ...AgentsController.getDevice);
 router.patch("/devices/:id", ...authorize, ...AgentsController.linkAsset);
+router.post(
+  "/devices/:id/register-asset",
+  ...authorize,
+  ...AgentsController.registerAsset,
+);
 router.post("/devices/:id/activate", ...authorize, ...AgentsController.activateDevice);
 router.post("/devices/:id/revoke", ...authorize, ...AgentsController.revokeDevice);
 router.get("/devices/:id/snapshots", ...authorize, ...AgentsController.snapshots);

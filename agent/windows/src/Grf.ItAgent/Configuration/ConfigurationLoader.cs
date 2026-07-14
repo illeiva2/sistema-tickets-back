@@ -1,5 +1,7 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Grf.ItAgent.Updates;
 
 namespace Grf.ItAgent.Configuration;
 
@@ -114,6 +116,41 @@ internal static class ConfigurationLoader
         if (names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != names.Length)
         {
             throw new ConfigurationException("Los archivos de datos deben tener nombres distintos.");
+        }
+
+        ValidateUpdate(configuration.Update);
+    }
+
+    private static void ValidateUpdate(UpdateConfiguration update)
+    {
+        if (!UpdateValidation.IsValidChannel(update.Channel))
+        {
+            throw new ConfigurationException("update.channel no es válido.");
+        }
+
+        if (update.CheckIntervalMinutes is < 15 or > 10_080)
+        {
+            throw new ConfigurationException("update.checkIntervalMinutes debe estar entre 15 y 10080.");
+        }
+
+        if (!update.Enabled)
+        {
+            return;
+        }
+
+        if (!Uri.TryCreate(update.ManifestUrl, UriKind.Absolute, out var manifestUri)
+            || !GithubUriPolicy.IsAllowed(manifestUri))
+        {
+            throw new ConfigurationException("update.manifestUrl debe ser una URL HTTPS permitida de GitHub.");
+        }
+
+        try
+        {
+            UpdateSignatureVerifier.ValidatePublicKey(update.PublicKeyPem);
+        }
+        catch (CryptographicException exception)
+        {
+            throw new ConfigurationException("update.publicKeyPem no es una clave pública RSA válida.", exception);
         }
     }
 
