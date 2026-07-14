@@ -34,6 +34,20 @@ function Assert-Throws {
     Assert-True -Condition $threw -Message $Message
 }
 
+$releaseScriptPath = Join-Path $PSScriptRoot "New-AgentRelease.ps1"
+$releaseTokens = $null
+$releaseParseErrors = $null
+$releaseAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $releaseScriptPath,
+    [ref]$releaseTokens,
+    [ref]$releaseParseErrors)
+Assert-True `
+    -Condition ($releaseParseErrors.Count -eq 0) `
+    -Message "New-AgentRelease.ps1 debe parsear en Windows PowerShell 5.1"
+Assert-True `
+    -Condition ($releaseAst.ParamBlock.Extent.Text -notmatch '\$PSScriptRoot') `
+    -Message "Los defaults del param block no deben depender de PSScriptRoot en PowerShell 5.1"
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("grf-release-test-" + [guid]::NewGuid().ToString("N"))
 $publishedPath = Join-Path $tempRoot "published"
 $keysPath = Join-Path $tempRoot "keys"

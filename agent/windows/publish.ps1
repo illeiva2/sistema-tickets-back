@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "artifacts\win-x64"),
+    [string]$OutputDirectory,
     [switch]$SkipTests,
     [ValidateSet("stable", "pilot")]
     [string]$UpdateChannel,
@@ -11,6 +11,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $env:DOTNET_NOLOGO = "1"
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $PSScriptRoot "artifacts\win-x64"
+}
 
 function Get-CanonicalPath {
     param([Parameter(Mandatory = $true)][string]$Path)

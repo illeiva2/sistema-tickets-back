@@ -187,6 +187,9 @@ $publishAst = [System.Management.Automation.Language.Parser]::ParseFile(
 if ($publishParseErrors.Count -ne 0) {
     throw "publish.ps1 tiene errores de sintaxis."
 }
+if ($publishAst.ParamBlock.Extent.Text -match '\$PSScriptRoot') {
+    throw "publish.ps1 no puede usar PSScriptRoot en valores por defecto del param block en Windows PowerShell 5.1."
+}
 $publishFunctions = @($publishAst.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst]

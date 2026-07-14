@@ -19,13 +19,17 @@ param(
     [string]$PublicKeyPath,
     [string]$MinAgentVersion = "0.1.0",
     [datetime]$PublishedAt = [datetime]::UtcNow,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "out"),
+    [string]$OutputDirectory,
     [switch]$Force
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "Common.ps1")
+
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $PSScriptRoot "out"
+}
 
 Assert-SemVer -Value $Version -Name "Version"
 Assert-SemVer -Value $MinAgentVersion -Name "MinAgentVersion"
