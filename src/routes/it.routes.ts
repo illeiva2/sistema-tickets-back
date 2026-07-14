@@ -11,6 +11,7 @@ import {
 import { authMiddleware, requireRole } from "../middleware/auth";
 import networkRouter from "./network.routes";
 import agentsRouter from "./agents.routes";
+import PhoneLinesController from "../controllers/phoneLines.controller";
 
 const router = Router();
 
@@ -22,6 +23,61 @@ router.get(
   authMiddleware,
   requireRole([UserRole.AGENT, UserRole.ADMIN]),
   ItController.overview,
+);
+
+router.get(
+  "/phone-lines",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.list,
+);
+router.post(
+  "/phone-lines",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.create,
+);
+router.get(
+  "/phone-lines/:id",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.getOne,
+);
+router.patch(
+  "/phone-lines/:id",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.update,
+);
+router.delete(
+  "/phone-lines/:id",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.deleteLine,
+);
+router.post(
+  "/phone-lines/:id/assign",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.assign,
+);
+router.post(
+  "/phone-lines/:id/return",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.returnLine,
+);
+router.get(
+  "/phone-lines/:id/sim-changes",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.listSimChanges,
+);
+router.post(
+  "/phone-lines/:id/sim-changes",
+  authMiddleware,
+  requireRole([UserRole.AGENT, UserRole.ADMIN]),
+  ...PhoneLinesController.createSimChange,
 );
 
 router.get(

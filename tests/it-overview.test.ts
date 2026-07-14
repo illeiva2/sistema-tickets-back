@@ -74,7 +74,7 @@ describe("GET /api/it/overview", () => {
     });
     expect(response.body.data.coverage.apiSurface).toEqual({
       overview: "available",
-      crud: "assets,people,maintenances,procurement,network",
+      crud: "assets,people,maintenances,procurement,network,phoneLines",
       agentGateway: "available",
       telemetry: "available",
       remoteControl: "available_direct_lan_vpn",
@@ -87,7 +87,7 @@ describe("GET /api/it/overview", () => {
       network: "available",
       monitoring: "available",
       cameras: "limited",
-      phoneLines: "preparing",
+      phoneLines: "available",
     });
     expect(prismaMock.person.count).toHaveBeenNthCalledWith(1, {
       where: { isActive: true, deletedAt: null },

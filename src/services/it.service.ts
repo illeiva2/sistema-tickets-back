@@ -155,7 +155,7 @@ export const getItOverview = async () => {
         network: "available",
         monitoring: "available",
         cameras: "limited",
-        phoneLines: "preparing",
+        phoneLines: "available",
       },
       modeledDomains: [
         "people",
@@ -172,7 +172,7 @@ export const getItOverview = async () => {
       ],
       apiSurface: {
         overview: "available",
-        crud: "assets,people,maintenances,procurement,network",
+        crud: "assets,people,maintenances,procurement,network,phoneLines",
         agentGateway: "available",
         telemetry: "available",
         remoteControl: "available_direct_lan_vpn",

@@ -640,7 +640,7 @@ foreach ($dataFile in @(
 }
 if (-not (Test-Path -LiteralPath $credentialPath) -and -not (Test-Path -LiteralPath $tokenPath)) {
     if ($null -eq $EnrollmentToken) {
-        $EnrollmentToken = Read-Host "Token de enrolamiento de un uso" -AsSecureString
+        $EnrollmentToken = Read-Host "Token de enrolamiento individual o por lote" -AsSecureString
     }
     Write-EnrollmentToken -Token $EnrollmentToken -Path $tokenPath
     Assert-RegularFileOrMissing -Path $tokenPath

@@ -100,6 +100,7 @@ model User {
   purchaseAttachments   PurchaseAttachment[]   @relation("PurchaseAttachmentUploader")
   personProfile         Person?                @relation("PersonAccount")
   phoneAssignmentsMade  PhoneLineAssignment[]  @relation("PhoneAssignmentActor")
+  phoneSimChangesMade   PhoneLineSimChange[]   @relation("PhoneSimChangeActor")
   topologyViews         NetworkTopologyView[]  @relation("TopologyViewAuthor")
   enrollTokensCreated   AgentEnrollmentToken[] @relation("EnrollTokenCreator")
   remoteSessions        RemoteSession[]        @relation("RemoteSessionOperator")
@@ -888,30 +889,31 @@ model PurchaseAttachment {
 // Línea de celular corporativa. holder = Person que la usa HOY (el service
 // lo sincroniza con el assignment abierto). asset = celular que porta la SIM.
 model PhoneLine {
-  id             String          @id @default(cuid())
+  id              String          @id @default(cuid())
   // Formato E.164, ej "+5493415551234". Único: si la operadora recicla un
   // número dado de baja, se REACTIVA el registro CANCELLED (no fila nueva).
-  phoneNumber    String          @unique
-  carrier        PhoneCarrier
-  carrierOther   String?
-  planName       String?
-  monthlyCost    Decimal?        @db.Decimal(10, 2)
-  currency       Currency        @default(ARS) // enum compartido (fix del revisor)
-  simIccid       String?         @unique // ICCID de la SIM actual (19-20 dígitos)
+  phoneNumber     String          @unique
+  carrier         PhoneCarrier
+  carrierOther    String?
+  planName        String?
+  dataAllowanceGb Int? // gigas incluidos en el plan; null = no informado/ilimitado
+  monthlyCost     Decimal?        @db.Decimal(10, 2)
+  currency        Currency        @default(ARS) // enum compartido (fix del revisor)
+  simIccid        String?         @unique // ICCID de la SIM actual (19-20 dígitos)
   // PUK cifrado con crypto.service.ts (AES-256-GCM, clave IT_SECRETS_KEY).
   // Formato unificado cipherText/iv/authTag/keyVersion (fix del revisor).
   // NUNCA en respuestas de list/detail; revelado solo ADMIN + AuditLog.
-  pukCipherText  String?
-  pukIv          String?
-  pukAuthTag     String?
-  pukKeyVersion  Int             @default(1)
-  status         PhoneLineStatus @default(AVAILABLE)
-  contractEndsAt DateTime? // fin de permanencia / renovación
-  notes          String?         @db.Text
-  isActive       Boolean         @default(true)
-  deletedAt      DateTime?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  pukCipherText   String?
+  pukIv           String?
+  pukAuthTag      String?
+  pukKeyVersion   Int             @default(1)
+  status          PhoneLineStatus @default(AVAILABLE)
+  contractEndsAt  DateTime? // fin de permanencia / renovación
+  notes           String?         @db.Text
+  isActive        Boolean         @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   // Titular actual: Person (puede no tener cuenta de sistema).
   holderId String?
@@ -922,6 +924,7 @@ model PhoneLine {
   asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
 
   assignments PhoneLineAssignment[]
+  simChanges  PhoneLineSimChange[]
 
   @@index([status, carrier])
   @@index([holderId])
@@ -940,6 +943,7 @@ model PhoneLineAssignment {
   assignedAt   DateTime  @default(now())
   returnedAt   DateTime? // null = vigente
   note         String?
+  returnNote   String?
   assignedById String // operador IT (trazabilidad)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -952,6 +956,27 @@ model PhoneLineAssignment {
   @@index([phoneLineId, assignedAt])
   @@index([personId])
   @@map("phone_line_assignments")
+}
+
+// Historial estructurado de reemplazos de SIM. El service registra el cambio
+// y actualiza PhoneLine.simIccid dentro de la misma transacción serializable.
+model PhoneLineSimChange {
+  id            String   @id @default(cuid())
+  phoneLineId   String
+  previousIccid String?
+  newIccid      String
+  changedAt     DateTime @default(now())
+  reason        String?
+  notes         String?  @db.Text
+  changedById   String
+  createdAt     DateTime @default(now())
+
+  phoneLine PhoneLine @relation(fields: [phoneLineId], references: [id], onDelete: Cascade)
+  changedBy User      @relation("PhoneSimChangeActor", fields: [changedById], references: [id])
+
+  @@index([phoneLineId, changedAt])
+  @@index([changedById])
+  @@map("phone_line_sim_changes")
 }
 
 // ---------------------------------------------------------------------------
