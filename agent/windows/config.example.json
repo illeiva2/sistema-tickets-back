@@ -1,0 +1,20 @@
+{
+  "baseUrl": "https://sistema-tickets-back.onrender.com/",
+  "heartbeatSeconds": 60,
+  "inventoryIntervalMinutes": 1440,
+  "requestTimeoutSeconds": 15,
+  "maxRetries": 4,
+  "retryBaseDelaySeconds": 2,
+  "retryMaxDelaySeconds": 30,
+  "enrollmentTokenFile": "enrollment.token",
+  "credentialFile": "credentials.dat",
+  "stateFile": "state.json",
+  "logFile": "agent.log",
+  "lockFile": "agent.lock",
+  "update": {
+    "enabled": false,
+    "channel": "stable",
+    "manifestUrl": "https://github.com/illeiva2/grf-it-agent-releases/releases/download/stable/manifest-stable.json",
+    "publicKeyPem": ""
+  }
+}

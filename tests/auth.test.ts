@@ -17,6 +17,7 @@ vi.mock("nodemailer", () => ({
 
 import request from "supertest";
 import bcrypt from "bcryptjs";
+import { createHash } from "crypto";
 import { createApp } from "../src/app";
 import { prisma } from "../src/lib/database";
 import type { DeepMockProxy } from "vitest-mock-extended";
@@ -118,6 +119,73 @@ describe("POST /api/auth/login", () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/auth/register", () => {
+  it("no expone el registro OAuth legacy", async () => {
+    const res = await request(app).post("/api/auth/register").send({
+      name: "New User",
+      email: "new.user@grf.com.ar",
+      role: "ADMIN",
+      googleAccessToken: "google-access-token",
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+    expect(prismaMock.user.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/auth/google/exchange", () => {
+  const code = "B".repeat(43);
+  const codeHash = createHash("sha256").update(code).digest("hex");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("consume el hash atómicamente y entrega JWTs en JSON", async () => {
+    const user = makeUser({ id: "oauth-user-1", role: "AGENT" });
+    prismaMock.oAuthExchangeCode.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.oAuthExchangeCode.findUnique.mockResolvedValueOnce({
+      id: "exchange-code-1",
+      codeHash,
+      userId: user.id,
+      expiresAt: new Date(Date.now() + 60_000),
+      consumedAt: new Date(),
+      createdAt: new Date(),
+      user,
+    } as any);
+
+    const res = await request(app)
+      .post("/api/auth/google/exchange")
+      .send({ code });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.accessToken).toBeTruthy();
+    expect(res.body.data.refreshToken).toBeTruthy();
+    expect(res.body.data.user.id).toBe("oauth-user-1");
+    expect(prismaMock.oAuthExchangeCode.updateMany).toHaveBeenCalledWith({
+      where: {
+        codeHash,
+        consumedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+      },
+      data: { consumedAt: expect.any(Date) },
+    });
+  });
+
+  it("rechaza código desconocido, vencido o ya consumido", async () => {
+    prismaMock.oAuthExchangeCode.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    const res = await request(app)
+      .post("/api/auth/google/exchange")
+      .send({ code });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_OAUTH_CODE");
+    expect(prismaMock.oAuthExchangeCode.findUnique).not.toHaveBeenCalled();
   });
 });
 

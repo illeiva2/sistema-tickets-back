@@ -5,6 +5,7 @@ process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret-do-not-use-in-prod";
 process.env.JWT_EXPIRES_IN = "1h";
 process.env.JWT_REFRESH_EXPIRES_IN = "7d";
+process.env.SESSION_SECRET = "test-session-secret-do-not-use-in-prod";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 process.env.EMAIL_FROM = "noreply@test.local";
 process.env.EMAIL_USER = "test";

@@ -6,7 +6,7 @@
   "scripts": {
     "prebuild": "prisma generate",
     "dev": "tsx watch src/index.ts",
-    "build": "prisma db push --accept-data-loss && prisma generate && tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
     "test": "vitest run",
@@ -14,7 +14,8 @@
     "db:up": "docker-compose up -d",
     "db:down": "docker-compose down",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
+    "db:baseline:staging": "prisma generate && tsx src/scripts/baseline-staging.ts",
+    "db:migrate": "tsx src/scripts/migrate-deploy.ts",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx src/scripts/seed.ts",
     "db:studio": "prisma studio",
@@ -52,6 +53,7 @@
     "sharp": "^0.34.3",
     "streamifier": "^0.1.1",
     "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
     "uuid": "^9.0.1",
     "zod": "^3.22.4"
   },
@@ -64,11 +66,10 @@
     "@types/uuid": "^9.0.7",
     "@vitest/ui": "^4.1.5",
     "supertest": "^7.2.2",
-    "tsx": "^4.7.0",
     "vitest": "^4.1.5",
     "vitest-mock-extended": "^4.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "22.x"
   }
 }

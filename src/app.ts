@@ -16,6 +16,13 @@ import {
 import { prisma } from "./lib/database";
 import routes from "./routes";
 
+export const shouldSkipGlobalRateLimit = (pathName: string) =>
+  pathName === "/health" ||
+  pathName === "/api/auth/me" ||
+  pathName.startsWith("/api/agent/") ||
+  pathName.startsWith("/uploads") ||
+  pathName.startsWith("/thumbnails");
+
 /**
  * Construye la app Express con toda la configuración (middlewares, rutas,
  * error handlers). NO arranca el servidor: eso es responsabilidad de
@@ -58,17 +65,16 @@ export const createApp = (): Application => {
       message: tooManyRequests,
       skip: (req) => {
         const p = req.path;
-        return (
-          p === "/health" ||
-          p === "/api/auth/me" ||
-          p.startsWith("/uploads") ||
-          p.startsWith("/thumbnails")
-        );
+        return shouldSkipGlobalRateLimit(p);
       },
     });
     app.use(globalLimiter);
   }
 
+  // El gateway público del agente tiene un límite propio antes del parser
+  // general. express.json marca el request como parseado y el parser siguiente
+  // no vuelve a procesarlo.
+  app.use("/api/agent", express.json({ limit: "512kb" }));
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
 
@@ -101,25 +107,27 @@ export const createApp = (): Application => {
     });
   });
 
-  // DB connection test.
-  app.get("/debug/db-connection", async (_req, res) => {
-    try {
-      await prisma.$queryRaw`SELECT 1 as test`;
-      res.status(200).json({
-        success: true,
-        message: "Database connection successful",
-        timestamp: new Date().toISOString(),
-        database: "PostgreSQL",
-      });
-    } catch (error) {
-      logger.error({ err: error }, "Database connection failed");
-      res.status(500).json({
-        success: false,
-        message: "Database connection failed",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  });
+  // Diagnóstico de DB sólo local: en staging/producción el detalle de un
+  // error de conexión no debe quedar expuesto en un endpoint público.
+  if (config.server.nodeEnv !== "production") {
+    app.get("/debug/db-connection", async (_req, res) => {
+      try {
+        await prisma.$queryRaw`SELECT 1 as test`;
+        res.status(200).json({
+          success: true,
+          message: "Database connection successful",
+          timestamp: new Date().toISOString(),
+          database: "PostgreSQL",
+        });
+      } catch (error) {
+        logger.error({ err: error }, "Database connection failed");
+        res.status(500).json({
+          success: false,
+          message: "Database connection failed",
+        });
+      }
+    });
+  }
 
   // Static uploads (protegidos).
   app.use(

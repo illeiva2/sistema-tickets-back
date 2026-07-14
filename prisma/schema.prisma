@@ -39,36 +39,36 @@ enum TicketCategory {
 }
 
 enum ProjectStatus {
-  PLANNED       // planificado, aún no arrancó
-  IN_PROGRESS   // en curso
-  ON_HOLD       // en pausa
-  BLOCKED       // bloqueado por dependencia externa
-  COMPLETED     // terminado
-  CANCELLED     // descartado
+  PLANNED // planificado, aún no arrancó
+  IN_PROGRESS // en curso
+  ON_HOLD // en pausa
+  BLOCKED // bloqueado por dependencia externa
+  COMPLETED // terminado
+  CANCELLED // descartado
 }
 
 enum ResourceCategory {
-  HOW_TO          // tutoriales y cómo-hacer
-  POLICY          // políticas y normas internas
-  FAQ             // preguntas frecuentes
-  ANNOUNCEMENT    // avisos / anuncios
-  GLOSSARY        // glosario / definiciones
-  LINK            // links externos útiles
+  HOW_TO // tutoriales y cómo-hacer
+  POLICY // políticas y normas internas
+  FAQ // preguntas frecuentes
+  ANNOUNCEMENT // avisos / anuncios
+  GLOSSARY // glosario / definiciones
+  LINK // links externos útiles
   OTHER
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         UserRole @default(USER)
-  googleId     String?  @unique
-  mustChangePassword Boolean @default(false)
-  isActive     Boolean  @default(true)
-  deletedAt    DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  passwordHash       String
+  name               String
+  role               UserRole  @default(USER)
+  googleId           String?   @unique
+  mustChangePassword Boolean   @default(false)
+  isActive           Boolean   @default(true)
+  deletedAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   // Sector / area de la empresa. Opcional. Si el Department se borra,
   // el usuario queda sin sector (no se elimina).
@@ -76,50 +76,82 @@ model User {
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
   // Relations
-  requestedTickets Ticket[]  @relation("Requester")
-  assignedTickets  Ticket[]  @relation("Assignee")
-  comments         Comment[]
-  auditLogs        AuditLog[]
-  notifications    Notification[]
+  requestedTickets        Ticket[]                  @relation("Requester")
+  assignedTickets         Ticket[]                  @relation("Assignee")
+  comments                Comment[]
+  auditLogs               AuditLog[]
+  notifications           Notification[]
   notificationPreferences NotificationPreferences[]
-  authoredResources Resource[] @relation("ResourceAuthor")
-  ticketReads      TicketRead[]
-  ticketSharesReceived TicketShare[] @relation("ShareRecipient")
-  ticketSharesGiven    TicketShare[] @relation("ShareGiver")
-  workshopImports  WorkshopImport[]
-  ledProjects      Project[]  @relation("ProjectLead")
-  memberProjects   Project[]  @relation("ProjectTeam")
+  authoredResources       Resource[]                @relation("ResourceAuthor")
+  ticketReads             TicketRead[]
+  ticketSharesReceived    TicketShare[]             @relation("ShareRecipient")
+  ticketSharesGiven       TicketShare[]             @relation("ShareGiver")
+  workshopImports         WorkshopImport[]
+  ledProjects             Project[]                 @relation("ProjectLead")
+  memberProjects          Project[]                 @relation("ProjectTeam")
+
+  // --- Gestión IT (trazabilidad de operadores; la tenencia vive en Person) ---
+  createdAssets         Asset[]                @relation("AssetCreator")
+  assetAssignmentsGiven AssetAssignment[]      @relation("AssetAssignmentGiver")
+  maintenancesPerformed Maintenance[]          @relation("MaintenancePerformer")
+  maintenancesCreated   Maintenance[]          @relation("MaintenanceCreator")
+  purchasesRequested    Purchase[]             @relation("PurchaseRequester")
+  purchasesAuthorized   Purchase[]             @relation("PurchaseAuthorizer")
+  purchaseAttachments   PurchaseAttachment[]   @relation("PurchaseAttachmentUploader")
+  personProfile         Person?                @relation("PersonAccount")
+  phoneAssignmentsMade  PhoneLineAssignment[]  @relation("PhoneAssignmentActor")
+  phoneSimChangesMade   PhoneLineSimChange[]   @relation("PhoneSimChangeActor")
+  topologyViews         NetworkTopologyView[]  @relation("TopologyViewAuthor")
+  enrollTokensCreated   AgentEnrollmentToken[] @relation("EnrollTokenCreator")
+  remoteSessions        RemoteSession[]        @relation("RemoteSessionOperator")
+  vncCredentialsEdited  DeviceVncCredential[]  @relation("VncCredentialEditor")
+  uiPreference          UserUiPreference?
+  oauthExchangeCodes    OAuthExchangeCode[]
 
   @@map("users")
 }
 
+model OAuthExchangeCode {
+  id         String    @id @default(cuid())
+  codeHash   String    @unique @db.VarChar(64)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("oauth_exchange_codes")
+}
+
 model Resource {
-  id          String           @id @default(cuid())
-  slug        String           @unique
-  title       String
-  content     String           @db.Text   // markdown
-  excerpt     String?                       // resumen corto opcional
-  category    ResourceCategory @default(OTHER)
-  tags        String[]
-  isPublished   Boolean          @default(false)
+  id           String           @id @default(cuid())
+  slug         String           @unique
+  title        String
+  content      String           @db.Text // markdown
+  excerpt      String? // resumen corto opcional
+  category     ResourceCategory @default(OTHER)
+  tags         String[]
+  isPublished  Boolean          @default(false)
   // Clave externa opcional para idempotencia con sistemas externos.
   // Ej: "workshops:2026-05:dept-finanzas". Permite que un job de import
   // haga upsert sin duplicar.
-  externalKey   String?          @unique
-  isPinned      Boolean          @default(false)  // destacado / fijado
+  externalKey  String?          @unique
+  isPinned     Boolean          @default(false) // destacado / fijado
   // Si esta pinned y showAsModal=true, se muestra como modal flotante
   // al entrar a la app (no en el banner del dashboard).
-  showAsModal   Boolean          @default(false)
+  showAsModal  Boolean          @default(false)
   // Si pinExpiresAt no es null, el pin se considera vencido a partir de
   // esa fecha y deja de aparecer en banner / modal. null = no expira.
-  pinExpiresAt  DateTime?
-  viewCount     Int              @default(0)
-  authorId    String
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  pinExpiresAt DateTime?
+  viewCount    Int              @default(0)
+  authorId     String
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   // Relations
-  author User @relation("ResourceAuthor", fields: [authorId], references: [id])
+  author              User         @relation("ResourceAuthor", fields: [authorId], references: [id])
   // Audiencia opcional. Si el array está vacío, el recurso es público
   // (visible para todos). Si tiene sectores, solo USERs de esos sectores
   // (ADMIN y AGENT lo ven siempre).
@@ -132,29 +164,37 @@ model Resource {
 }
 
 model Ticket {
-  id          String         @id @default(cuid())
-  ticketNumber Int           @unique @default(autoincrement())
-  title       String
-  description String
-  status      TicketStatus   @default(OPEN)
-  priority    TicketPriority @default(MEDIUM)
-  category    TicketCategory?
-  isRead      Boolean        @default(false)
-  requesterId String
-  assigneeId  String?
-  dueAt       DateTime?
-  closedAt    DateTime?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id           String          @id @default(cuid())
+  ticketNumber Int             @unique @default(autoincrement())
+  title        String
+  description  String
+  status       TicketStatus    @default(OPEN)
+  priority     TicketPriority  @default(MEDIUM)
+  category     TicketCategory?
+  isRead       Boolean         @default(false)
+  requesterId  String
+  assigneeId   String?
+  dueAt        DateTime?
+  closedAt     DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  // --- Gestión IT: equipo vinculado al ticket (única columna nueva) ---
+  assetId String?
 
   // Relations
-  requester   User          @relation("Requester", fields: [requesterId], references: [id])
-  assignee    User?         @relation("Assignee", fields: [assigneeId], references: [id])
-  comments    Comment[]
-  attachments Attachment[]
-  reads       TicketRead[]
-  shares      TicketShare[]
+  requester    User          @relation("Requester", fields: [requesterId], references: [id])
+  assignee     User?         @relation("Assignee", fields: [assigneeId], references: [id])
+  asset        Asset?        @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  maintenances Maintenance[]
+  comments     Comment[]
+  attachments  Attachment[]
+  reads        TicketRead[]
+  shares       TicketShare[]
 
+  // FK sin índice automático en Postgres: la ficha de Asset (GET /assets/:id)
+  // lista los tickets vinculados filtrando por assetId.
+  @@index([assetId])
   @@map("tickets")
 }
 
@@ -162,16 +202,16 @@ model Ticket {
 // sin ser el assignee. NO es asignacion: el assignee sigue siendo quien
 // trabaja el ticket. Solo da acceso de lectura + comentario.
 model TicketShare {
-  id             String   @id @default(cuid())
-  ticketId       String
-  sharedWithId   String
-  sharedById     String
-  message        String?  // Nota opcional al compartir ("mira esto, lo viste antes?")
-  createdAt      DateTime @default(now())
+  id           String   @id @default(cuid())
+  ticketId     String
+  sharedWithId String
+  sharedById   String
+  message      String? // Nota opcional al compartir ("mira esto, lo viste antes?")
+  createdAt    DateTime @default(now())
 
-  ticket       Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  sharedWith   User   @relation("ShareRecipient", fields: [sharedWithId], references: [id], onDelete: Cascade)
-  sharedBy     User   @relation("ShareGiver", fields: [sharedById], references: [id], onDelete: Cascade)
+  ticket     Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sharedWith User   @relation("ShareRecipient", fields: [sharedWithId], references: [id], onDelete: Cascade)
+  sharedBy   User   @relation("ShareGiver", fields: [sharedById], references: [id], onDelete: Cascade)
 
   @@unique([ticketId, sharedWithId])
   @@index([sharedWithId])
@@ -223,19 +263,19 @@ model Attachment {
   updatedAt  DateTime @updatedAt
 
   // Relations
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket        Ticket             @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   organizations FileOrganization[]
 
   @@map("attachments")
 }
 
 model AuditLog {
-  id       String   @id @default(cuid())
-  entity   String   // "ticket", "user", etc.
-  entityId String
-  action   String   // "created", "updated", "deleted", etc.
-  actorId  String
-  meta     Json?    // Additional metadata
+  id        String   @id @default(cuid())
+  entity    String // "ticket", "user", etc.
+  entityId  String
+  action    String // "created", "updated", "deleted", etc.
+  actorId   String
+  meta      Json? // Additional metadata
   createdAt DateTime @default(now())
 
   // Relations
@@ -247,12 +287,12 @@ model AuditLog {
 model Notification {
   id        String   @id @default(cuid())
   userId    String
-  type      String   // "ticket_assigned", "status_changed", "comment_added", "priority_changed"
+  type      String // "ticket_assigned", "status_changed", "comment_added", "priority_changed"
   title     String
   message   String
   read      Boolean  @default(false)
   ticketId  String?
-  metadata  Json?    // Additional data like old/new values
+  metadata  Json? // Additional data like old/new values
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -263,14 +303,14 @@ model Notification {
 }
 
 model NotificationPreferences {
-  id              String @id @default(cuid())
-  userId          String @unique
-  email           Boolean @default(true)
-  inApp           Boolean @default(true)
-  ticketAssigned  Boolean @default(true)
-  statusChanged   Boolean @default(true)
-  commentAdded    Boolean @default(true)
-  priorityChanged Boolean @default(true)
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  email           Boolean  @default(true)
+  inApp           Boolean  @default(true)
+  ticketAssigned  Boolean  @default(true)
+  statusChanged   Boolean  @default(true)
+  commentAdded    Boolean  @default(true)
+  priorityChanged Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -291,8 +331,8 @@ model FileCategory {
   updatedAt   DateTime @updatedAt
 
   // Relations
-  parent     FileCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children   FileCategory[] @relation("CategoryHierarchy")
+  parent        FileCategory?      @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children      FileCategory[]     @relation("CategoryHierarchy")
   organizations FileOrganization[]
 
   @@map("file_categories")
@@ -319,7 +359,7 @@ model FileOrganization {
   updatedAt    DateTime @updatedAt
 
   // Relations
-  attachment Attachment   @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  attachment Attachment    @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
   category   FileCategory? @relation(fields: [categoryId], references: [id])
 
   @@map("file_organizations")
@@ -334,14 +374,19 @@ model Department {
   name      String   @unique
   slug      String   @unique
   // Atributos visuales opcionales para usarse en chips/badges del front.
-  color     String?  // hex string ej "#3B82F6"
-  icon      String?  // emoji o nombre de icono
+  color     String? // hex string ej "#3B82F6"
+  icon      String? // emoji o nombre de icono
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users                    User[]
-  targetedResources        Resource[] @relation("ResourceAudience")
+  users                       User[]
+  targetedResources           Resource[]                   @relation("ResourceAudience")
   workshopClassificationRules WorkshopClassificationRule[]
+
+  // --- Gestión IT ---
+  assignedAssets   Asset[]           @relation("AssetDepartment")
+  assetAssignments AssetAssignment[] @relation("AssetAssignmentDepartment")
+  people           Person[]
 
   @@map("departments")
 }
@@ -366,7 +411,7 @@ model WorkshopClassificationRule {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
 
   @@index([departmentId, enabled])
   @@map("workshop_classification_rules")
@@ -377,15 +422,15 @@ model WorkshopImport {
   id                 String   @id @default(cuid())
   // "2026-05" para modo mensual, "2026-W20" para semanal.
   period             String
-  mode               String   // "weekly" | "monthly"
+  mode               String // "weekly" | "monthly"
   sheetUrl           String
   totalRows          Int
-  importedRows       Int      // tras filtrar CUPO AGOTADO / EVENTO CERRADO / fecha pasada
-  generatedResources Int      // cuántos Resources tocados (create + update)
+  importedRows       Int // tras filtrar CUPO AGOTADO / EVENTO CERRADO / fecha pasada
+  generatedResources Int // cuántos Resources tocados (create + update)
   importedById       String
   importedAt         DateTime @default(now())
 
-  importer           User     @relation(fields: [importedById], references: [id])
+  importer User @relation(fields: [importedById], references: [id])
 
   @@index([period])
   @@index([importedAt])
@@ -399,8 +444,8 @@ model Project {
   id              String        @id @default(cuid())
   slug            String        @unique
   title           String
-  description     String        @db.Text  // markdown completo
-  excerpt         String?                  // resumen 1-2 líneas para la card
+  description     String        @db.Text // markdown completo
+  excerpt         String? // resumen 1-2 líneas para la card
   status          ProjectStatus @default(PLANNED)
   // 0-100. null = no aplica (no queremos mostrar barra).
   progressPercent Int?
@@ -408,7 +453,7 @@ model Project {
   expectedEndAt   DateTime?
   completedAt     DateTime?
   isPublished     Boolean       @default(false)
-  isPinned        Boolean       @default(false)  // arriba en la lista
+  isPinned        Boolean       @default(false) // arriba en la lista
   leadId          String
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -420,4 +465,822 @@ model Project {
   @@index([isPinned, updatedAt])
   @@index([slug])
   @@map("projects")
+}
+
+// ============================================================================
+// MÓDULOS DE GESTIÓN IT — SCHEMA UNIFICADO (100% aditivo, un solo db push)
+// Única columna nueva en tablas existentes: tickets.asset_id (nullable).
+// Ver docs/IT_MANAGEMENT_DESIGN.md para el diseño completo.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum AssetType {
+  DESKTOP // PC de escritorio
+  NOTEBOOK
+  PHONE // celular corporativo
+  TABLET
+  MONITOR
+  PRINTER
+  PERIPHERAL // teclado, mouse, headset, webcam, etc.
+  NETWORK_DEVICE // router, switch, access point (capa patrimonial)
+  SERVER
+  OTHER
+}
+
+enum AssetStatus {
+  IN_STOCK // en depósito IT, sin asignar
+  ASSIGNED // asignado a persona y/o sector
+  IN_REPAIR // en mantenimiento / reparación
+  RETIRED // dado de baja
+  LOST // extraviado o robado
+}
+
+enum MaintenanceType {
+  PREVENTIVE
+  CORRECTIVE
+  UPGRADE
+}
+
+enum MaintenanceStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// Enum ÚNICO de moneda: lo consumen Purchase, Maintenance y PhoneLine.
+enum Currency {
+  ARS
+  USD
+}
+
+enum PurchaseStatus {
+  REQUESTED // cargada, pendiente de autorización
+  APPROVED // autorizada por ADMIN
+  ORDERED // pedida al proveedor
+  RECEIVED // recibida: habilita el alta de Assets desde los items
+  CANCELLED
+}
+
+enum EmploymentStatus {
+  ACTIVE // trabajando actualmente
+  ON_LEAVE // licencia prolongada
+  TERMINATED // desvinculado (se conserva por historial de asignaciones)
+}
+
+enum PhoneCarrier {
+  CLARO
+  MOVISTAR
+  PERSONAL
+  TUENTI
+  OTHER // usar carrierOther para el nombre
+}
+
+enum PhoneLineStatus {
+  ACTIVE // operativa y en uso
+  AVAILABLE // operativa pero sin titular (pool disponible)
+  SUSPENDED // suspendida temporalmente ante la operadora
+  CANCELLED // dada de baja definitiva ante la operadora
+}
+
+enum NetworkDeviceType {
+  ROUTER
+  SWITCH
+  ACCESS_POINT
+  FIREWALL
+  SERVER
+  NAS
+  PRINTER // impresora de red
+  CAMERA // cámara IP
+  UPS
+  OTHER
+}
+
+enum NetworkDeviceStatus {
+  ACTIVE // operativo
+  INACTIVE // apagado / fuera de servicio temporal
+  MAINTENANCE // en mantenimiento
+  RETIRED // dado de baja (se conserva como histórico)
+}
+
+enum NetworkLinkType {
+  ETHERNET // cobre
+  FIBER // fibra óptica
+  WIFI // enlace inalámbrico
+  WAN // enlace de proveedor entre sitios
+  VPN // túnel lógico
+  VIRTUAL // LAG / trunk lógico u otro enlace no físico
+  OTHER
+}
+
+enum AgentConnState {
+  ONLINE
+  OFFLINE
+}
+
+enum RemoteSessionKind {
+  SSH
+  VNC
+}
+
+enum RemoteSessionStatus {
+  ACTIVE
+  CLOSED
+  ERROR
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO PERSONAL (base de la tenencia física de equipos y líneas)
+// ---------------------------------------------------------------------------
+
+// Persona física que trabaja en la empresa. NO todas tienen cuenta en el
+// sistema: userId es opcional (1:1). Minimización de datos (Ley 25.326):
+// SOLO datos laborales. NO cargar DNI, domicilio, contacto personal ni
+// datos de salud. El contacto registrado es el laboral.
+model Person {
+  id             String           @id @default(cuid())
+  employeeNumber String?          @unique // legajo RRHH; opcional (externos)
+  firstName      String
+  lastName       String
+  jobTitle       String?
+  workEmail      String?          @unique
+  workPhone      String?
+  status         EmploymentStatus @default(ACTIVE)
+  startDate      DateTime? // ingreso (onboarding IT)
+  endDate        DateTime? // egreso (dispara devolución de línea/equipo)
+  notes          String?          @db.Text // UI: leyenda "no volcar datos sensibles"
+  isActive       Boolean          @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  // Cuenta del sistema (opcional, única por persona).
+  userId String? @unique
+  user   User?   @relation("PersonAccount", fields: [userId], references: [id], onDelete: SetNull)
+
+  // Tenencia unificada (fix del revisor): la persona es quien TIENE
+  // el equipo y la línea, tenga o no cuenta de sistema.
+  assignedAssets       Asset[]               @relation("AssetHolder")
+  assetAssignments     AssetAssignment[]
+  phoneLines           PhoneLine[]           @relation("LineHolder")
+  phoneLineAssignments PhoneLineAssignment[]
+
+  @@index([departmentId, status])
+  @@index([lastName, firstName])
+  @@map("people")
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO INVENTARIO + MANTENIMIENTOS + COMPRAS + PROVEEDORES
+// ---------------------------------------------------------------------------
+
+// Equipo físico del inventario IT (capa PATRIMONIAL: compra, garantía,
+// serie, asignación). Lo operativo de red vive en NetworkDevice.
+model Asset {
+  id            String      @id @default(cuid())
+  // Código interno único (etiqueta física). Lo genera el service:
+  // prefijo por tipo + correlativo, ej "NB-0042". Editable solo por ADMIN.
+  assetTag      String      @unique
+  type          AssetType
+  status        AssetStatus @default(IN_STOCK)
+  brand         String
+  model         String
+  serialNumber  String?     @unique
+  // Specs flexibles: { cpu, ramGb, storage, os, imei, mac, ... }.
+  // PROHIBIDO guardar contraseñas/credenciales acá (usar secretsRef).
+  // PROHIBIDO guardar número de línea / ICCID acá (viven en PhoneLine;
+  // la validación Zod rechaza claves linea/phoneNumber/iccid).
+  // El IMEI SÍ va acá: es atributo del aparato, no de la línea.
+  specs         Json?
+  notes         String?     @db.Text
+  // Referencia externa al gestor de secretos (ej. id de item en
+  // Bitwarden/Vault). Nunca la credencial en sí.
+  secretsRef    String?
+  location      String? // ubicación física libre
+  warrantyUntil DateTime? // vencimiento de garantía
+
+  // Asignación VIGENTE denormalizada (historial completo en AssetAssignment).
+  // Tenencia unificada en Person (fix del revisor).
+  assignedPersonId     String?
+  assignedPerson       Person?     @relation("AssetHolder", fields: [assignedPersonId], references: [id], onDelete: SetNull)
+  assignedDepartmentId String?
+  assignedDepartment   Department? @relation("AssetDepartment", fields: [assignedDepartmentId], references: [id], onDelete: SetNull)
+
+  // Origen de compra (null = alta manual de inventario preexistente).
+  purchaseItemId String?
+  purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id], onDelete: SetNull)
+
+  // Baja de ciclo de vida (RETIRED queda visible; deletedAt es para
+  // cargas erróneas).
+  retiredAt        DateTime?
+  retirementReason String?
+
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+
+  createdById String
+  createdBy   User     @relation("AssetCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assignments  AssetAssignment[]
+  maintenances Maintenance[]
+  tickets      Ticket[]
+
+  // Back-relations que asumen los otros módulos (fix del revisor:
+  // centralizadas acá, campos de relación puros, sin columna).
+  phoneLines           PhoneLine[]
+  phoneLineAssignments PhoneLineAssignment[]
+  networkDevice        NetworkDevice?
+  agentDevice          AgentDevice?
+
+  @@index([status, type])
+  @@index([assignedPersonId])
+  @@index([assignedDepartmentId])
+  @@index([warrantyUntil])
+  @@map("assets")
+}
+
+// Historial de asignaciones. endAt = null es la vigente (a lo sumo una
+// por asset, lo garantiza el service dentro de $transaction).
+model AssetAssignment {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  // Persona y/o sector: al menos uno de los dos (lo valida Zod/service).
+  personId     String?
+  person       Person?     @relation(fields: [personId], references: [id], onDelete: SetNull)
+  departmentId String?
+  department   Department? @relation("AssetAssignmentDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+
+  // Operador IT que registró el movimiento (siempre tiene cuenta → User).
+  assignedById String
+  assignedBy   User   @relation("AssetAssignmentGiver", fields: [assignedById], references: [id])
+
+  startAt    DateTime  @default(now())
+  endAt      DateTime? // null = vigente
+  note       String?
+  returnNote String? // estado al devolver
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([assetId, endAt])
+  @@index([personId])
+  @@index([departmentId])
+  @@map("asset_assignments")
+}
+
+// Mantenimiento preventivo / correctivo / upgrade sobre un Asset.
+model Maintenance {
+  id      String @id @default(cuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  type   MaintenanceType
+  status MaintenanceStatus @default(SCHEDULED)
+
+  scheduledAt DateTime? // planificada (preventivos)
+  performedAt DateTime? // ejecución real
+  description String    @db.Text
+
+  // Quién lo hizo: técnico interno (User) y/o proveedor externo.
+  performedById String?
+  performedBy   User?     @relation("MaintenancePerformer", fields: [performedById], references: [id], onDelete: SetNull)
+  supplierId    String?
+  supplier      Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  costAmount Decimal? @db.Decimal(14, 2)
+  currency   Currency @default(ARS)
+  parts      Json? // repuestos: [{ name, qty, cost }]
+
+  // Ticket que originó el correctivo (opcional).
+  ticketId String?
+  ticket   Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  createdById String
+  createdBy   User     @relation("MaintenanceCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([assetId, performedAt])
+  @@index([status, scheduledAt])
+  @@index([supplierId])
+  // FK sin índice automático en Postgres: el detalle de Ticket lista sus
+  // mantenimientos (relación Ticket.maintenances) filtrando por ticketId.
+  @@index([ticketId])
+  @@map("maintenances")
+}
+
+// Proveedor de hardware, insumos o servicio técnico.
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  cuit        String?  @unique
+  contactName String?
+  email       String?
+  phone       String?
+  website     String?
+  address     String?
+  categories  String[] // ["hardware", "insumos", "servicio técnico"]
+  notes       String?  @db.Text
+
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  purchases    Purchase[]
+  maintenances Maintenance[]
+
+  @@index([isActive])
+  @@map("suppliers")
+}
+
+// Compra de equipamiento / insumos IT.
+// Flujo: REQUESTED -> APPROVED (ADMIN) -> ORDERED -> RECEIVED. RECEIVED
+// habilita que IT dé de alta manualmente cada Asset vinculado al PurchaseItem.
+model Purchase {
+  id             String         @id @default(cuid())
+  purchaseNumber Int            @unique @default(autoincrement()) // "OC-123"
+  status         PurchaseStatus @default(REQUESTED)
+
+  supplierId String?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  currency     Currency @default(ARS)
+  totalAmount  Decimal  @db.Decimal(14, 2) // denormalizado, lo recalcula el service
+  exchangeRate Decimal? @db.Decimal(12, 4) // cotización ARS/USD de referencia
+
+  justification String  @db.Text // obligatoria: por qué se decidió comprar
+  invoiceNumber String?
+  notes         String? @db.Text
+
+  requestedById  String
+  requestedBy    User      @relation("PurchaseRequester", fields: [requestedById], references: [id])
+  authorizedById String?
+  authorizedBy   User?     @relation("PurchaseAuthorizer", fields: [authorizedById], references: [id], onDelete: SetNull)
+  authorizedAt   DateTime?
+
+  orderedAt  DateTime?
+  receivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items       PurchaseItem[]
+  attachments PurchaseAttachment[]
+
+  @@index([status, createdAt])
+  @@index([supplierId])
+  @@map("purchases")
+}
+
+// Renglón de la compra. Al marcar RECEIVED no se generan activos en forma
+// automática: IT registra manualmente hasta quantity Assets vinculados.
+model PurchaseItem {
+  id         String   @id @default(cuid())
+  purchaseId String
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  description String
+  quantity    Int     @default(1)
+  unitPrice   Decimal @db.Decimal(14, 2)
+  assets      Asset[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([purchaseId])
+  @@map("purchase_items")
+}
+
+// Adjuntos de la compra (factura, presupuesto, remito). Modelo aparte
+// porque el Attachment existente está atado a Ticket con FK obligatoria.
+model PurchaseAttachment {
+  id         String   @id @default(cuid())
+  purchaseId String
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  storageUrl String
+
+  uploadedById String
+  uploadedBy   User     @relation("PurchaseAttachmentUploader", fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@index([purchaseId])
+  @@map("purchase_attachments")
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO LÍNEAS DE CELULAR
+// ---------------------------------------------------------------------------
+
+// Línea de celular corporativa. holder = Person que la usa HOY (el service
+// lo sincroniza con el assignment abierto). asset = celular que porta la SIM.
+model PhoneLine {
+  id              String          @id @default(cuid())
+  // Formato E.164, ej "+5493415551234". Único: si la operadora recicla un
+  // número dado de baja, se REACTIVA el registro CANCELLED (no fila nueva).
+  phoneNumber     String          @unique
+  carrier         PhoneCarrier
+  carrierOther    String?
+  planName        String?
+  dataAllowanceGb Int? // gigas incluidos en el plan; null = no informado/ilimitado
+  monthlyCost     Decimal?        @db.Decimal(10, 2)
+  currency        Currency        @default(ARS) // enum compartido (fix del revisor)
+  simIccid        String?         @unique // ICCID de la SIM actual (19-20 dígitos)
+  // PUK cifrado con crypto.service.ts (AES-256-GCM, clave IT_SECRETS_KEY).
+  // Formato unificado cipherText/iv/authTag/keyVersion (fix del revisor).
+  // NUNCA en respuestas de list/detail; revelado solo ADMIN + AuditLog.
+  pukCipherText   String?
+  pukIv           String?
+  pukAuthTag      String?
+  pukKeyVersion   Int             @default(1)
+  status          PhoneLineStatus @default(AVAILABLE)
+  contractEndsAt  DateTime? // fin de permanencia / renovación
+  notes           String?         @db.Text
+  isActive        Boolean         @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Titular actual: Person (puede no tener cuenta de sistema).
+  holderId String?
+  holder   Person? @relation("LineHolder", fields: [holderId], references: [id], onDelete: SetNull)
+
+  // Celular que porta la SIM.
+  assetId String?
+  asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  assignments PhoneLineAssignment[]
+  simChanges  PhoneLineSimChange[]
+
+  @@index([status, carrier])
+  @@index([holderId])
+  @@index([assetId])
+  @@map("phone_lines")
+}
+
+// Historial de asignación de líneas. Invariante (service, en transacción):
+// a lo sumo UNA fila con returnedAt = null por línea. El hard delete de una
+// Person (derecho de supresión, Ley 25.326) cascadea su historial.
+model PhoneLineAssignment {
+  id           String    @id @default(cuid())
+  phoneLineId  String
+  personId     String
+  assetId      String? // celular al momento de la asignación (snapshot)
+  assignedAt   DateTime  @default(now())
+  returnedAt   DateTime? // null = vigente
+  note         String?
+  returnNote   String?
+  assignedById String // operador IT (trazabilidad)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  phoneLine  PhoneLine @relation(fields: [phoneLineId], references: [id], onDelete: Cascade)
+  person     Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
+  asset      Asset?    @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assignedBy User      @relation("PhoneAssignmentActor", fields: [assignedById], references: [id])
+
+  @@index([phoneLineId, assignedAt])
+  @@index([personId])
+  @@map("phone_line_assignments")
+}
+
+// Historial estructurado de reemplazos de SIM. El service registra el cambio
+// y actualiza PhoneLine.simIccid dentro de la misma transacción serializable.
+model PhoneLineSimChange {
+  id            String   @id @default(cuid())
+  phoneLineId   String
+  previousIccid String?
+  newIccid      String
+  changedAt     DateTime @default(now())
+  reason        String?
+  notes         String?  @db.Text
+  changedById   String
+  createdAt     DateTime @default(now())
+
+  phoneLine PhoneLine @relation(fields: [phoneLineId], references: [id], onDelete: Cascade)
+  changedBy User      @relation("PhoneSimChangeActor", fields: [changedById], references: [id])
+
+  @@index([phoneLineId, changedAt])
+  @@index([changedById])
+  @@map("phone_line_sim_changes")
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO RED + TOPOLOGÍA
+// ---------------------------------------------------------------------------
+
+// Sitio físico: planta, sucursal, depósito. El service rechaza el borrado
+// si el sitio tiene dispositivos activos.
+model Site {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  address     String?
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  devices       NetworkDevice[]
+  topologyViews NetworkTopologyView[]
+
+  @@map("sites")
+}
+
+// Capa OPERATIVA de red (IP, VLANs, puertos, topología). Regla de doble
+// capa (fix del revisor): Asset = patrimonial, NetworkDevice = operativo.
+// Al crear un NetworkDevice el drawer ofrece vincular un Asset existente;
+// el service emite warning (no bloqueante) si queda sin assetId.
+model NetworkDevice {
+  id           String              @id @default(cuid())
+  name         String // hostname o nombre descriptivo
+  type         NetworkDeviceType
+  status       NetworkDeviceStatus @default(ACTIVE)
+  managementIp String? // unicidad por sitio validada en service (solo activos)
+  macAddress   String? // normalizada AA:BB:CC:DD:EE:FF en el service
+  vlans        String[] // ej ["10", "20-VoIP"], formato validado en Zod
+  location     String? // rack, sala, piso
+  adminUrl     String? // Zod: solo http/https
+  notes        String?             @db.Text
+  // Nombre unificado con Asset.secretsRef (fix del revisor). Referencia a
+  // la entrada del gestor de contraseñas. NUNCA usuario/clave en esta base.
+  secretsRef   String?
+
+  siteId String
+  site   Site   @relation(fields: [siteId], references: [id])
+
+  // Vínculo 1:1 opcional con la capa patrimonial.
+  assetId String? @unique
+  asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  linksA        NetworkLink[]                 @relation("LinkDeviceA")
+  linksB        NetworkLink[]                 @relation("LinkDeviceB")
+  nodePositions NetworkTopologyNodePosition[]
+
+  @@index([siteId, type])
+  @@index([isActive, status])
+  @@index([managementIp])
+  @@index([macAddress])
+  @@map("network_devices")
+}
+
+// Enlace entre dos dispositivos. No direccional a nivel de negocio; el
+// service normaliza deviceAId < deviceBId y rechaza self-links. Hard
+// delete (el AuditLog conserva snapshot en meta).
+model NetworkLink {
+  id        String          @id @default(cuid())
+  deviceAId String
+  deviceBId String
+  portA     String? // ej "Gi0/1", "SFP+ 2"
+  portB     String?
+  type      NetworkLinkType @default(ETHERNET)
+  vlans     String[]
+  speedMbps Int?
+  notes     String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  deviceA NetworkDevice @relation("LinkDeviceA", fields: [deviceAId], references: [id], onDelete: Cascade)
+  deviceB NetworkDevice @relation("LinkDeviceB", fields: [deviceBId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceAId, deviceBId, portA, portB])
+  @@index([deviceAId])
+  @@index([deviceBId])
+  @@map("network_links")
+}
+
+// Vista de topología del editor React Flow. siteId null = vista global.
+model NetworkTopologyView {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  siteId      String?
+  isDefault   Boolean  @default(false)
+  viewport    Json? // { x, y, zoom } de React Flow
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  site      Site?                         @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  createdBy User                          @relation("TopologyViewAuthor", fields: [createdById], references: [id])
+  nodes     NetworkTopologyNodePosition[]
+
+  @@index([siteId])
+  @@map("network_topology_views")
+}
+
+// Posición x,y de un dispositivo en una vista (upsert masivo transaccional).
+model NetworkTopologyNodePosition {
+  id       String @id @default(cuid())
+  viewId   String
+  deviceId String
+  x        Float
+  y        Float
+
+  view   NetworkTopologyView @relation(fields: [viewId], references: [id], onDelete: Cascade)
+  device NetworkDevice       @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([viewId, deviceId])
+  @@index([deviceId])
+  @@map("network_topology_node_positions")
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO AGENTE DE MONITOREO + ACCESO REMOTO
+// ---------------------------------------------------------------------------
+
+// Equipo con agente instalado. Identidad estable + secreto HASHEADO + set
+// denormalizado "último valor conocido" que se sobreescribe por heartbeat.
+model AgentDevice {
+  id              String         @id @default(cuid())
+  // MachineGuid de Windows (HKLM Cryptography/MachineGuid): permite
+  // re-enrolar sin duplicar el equipo.
+  machineId       String         @unique
+  hostname        String
+  // Secreto del agente para el WebSocket, HASHEADO (sha256). El valor
+  // plano se muestra UNA sola vez al enrolar.
+  secretHash      String
+  agentVersion    String?
+  osName          String? // "Windows 11 Pro"
+  osVersion       String? // "10.0.26100"
+  connState       AgentConnState @default(OFFLINE)
+  lastSeenAt      DateTime?
+  lastEnrolledAt  DateTime       @default(now())
+  // --- Último valor conocido (overwrite, no genera filas) ---
+  loggedInUser    String?
+  primaryIp       String?
+  primaryMac      String?
+  uptimeSec       Int?
+  cpuPct          Float?
+  ramUsedMb       Int?
+  ramTotalMb      Int?
+  batteryPct      Int?
+  batteryCharging Boolean?
+  vncRunning      Boolean        @default(false) // UltraVNC detectado
+  sshRunning      Boolean        @default(false) // OpenSSH Server detectado
+  // --- Gestión ---
+  isActive        Boolean        @default(true) // false = agente revocado
+  deletedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // Vínculo 1:1 opcional con la capa patrimonial.
+  assetId String? @unique
+  asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  snapshots       AgentInventorySnapshot[]
+  metrics         AgentMetricSample[]
+  sessions        RemoteSession[]
+  vncCredential   DeviceVncCredential?
+  enrollmentTokenId String?
+  enrollmentToken   AgentEnrollmentToken?    @relation("TokenEnrollments", fields: [enrollmentTokenId], references: [id], onDelete: SetNull)
+
+  @@index([connState])
+  @@index([hostname])
+  @@index([lastSeenAt])
+  @@index([enrollmentTokenId])
+  @@map("agent_devices")
+}
+
+// Token de enrolamiento individual o por lote. Se guarda HASHEADO (sha256);
+// el plano se muestra 1 sola vez. Vencimiento corto (ej 7 días).
+model AgentEnrollmentToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  label       String? // ej "Lote Contaduría 2026"
+  expiresAt   DateTime
+  maxUses     Int       @default(1)
+  useCount    Int       @default(0)
+  usedAt      DateTime? // última utilización exitosa
+  revokedAt   DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  createdBy       User          @relation("EnrollTokenCreator", fields: [createdById], references: [id])
+  enrolledDevices AgentDevice[] @relation("TokenEnrollments")
+
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@map("agent_enrollment_tokens")
+}
+
+// Inventario COMPLETO periódico como JSON. Retención por cron
+// (últimos 30 por equipo).
+model AgentInventorySnapshot {
+  id        String   @id @default(cuid())
+  deviceId  String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  device AgentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, createdAt])
+  @@map("agent_inventory_snapshots")
+}
+
+// Serie temporal DOWNSAMPLEADA (1 muestra cada 5 min). Única tabla que
+// crece con el tiempo; se poda por cron (14 días).
+model AgentMetricSample {
+  id          String   @id @default(cuid())
+  deviceId    String
+  cpuPct      Float?
+  ramUsedMb   Int?
+  diskUsedPct Float?
+  batteryPct  Int?
+  sampledAt   DateTime @default(now())
+
+  device AgentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, sampledAt])
+  @@map("agent_metric_samples")
+}
+
+// Auditoría de cada sesión de acceso remoto. Complementa al AuditLog
+// genérico (además se escribe ahí).
+model RemoteSession {
+  id         String              @id @default(cuid())
+  deviceId   String
+  userId     String // operador IT que inició la sesión
+  kind       RemoteSessionKind
+  status     RemoteSessionStatus @default(ACTIVE)
+  clientIp   String? // IP del operador
+  targetHost String? // ip/host destino al momento de conectar
+  startedAt  DateTime            @default(now())
+  endedAt    DateTime?
+  bytesIn    BigInt?
+  bytesOut   BigInt?
+  errorMsg   String?
+
+  device AgentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  user   User        @relation("RemoteSessionOperator", fields: [userId], references: [id])
+
+  @@index([deviceId, startedAt])
+  @@index([userId, startedAt])
+  @@index([status])
+  @@map("remote_sessions")
+}
+
+// Password de UltraVNC CIFRADA con crypto.service.ts (AES-256-GCM, clave
+// única IT_SECRETS_KEY — fix del revisor). Nunca se devuelve por la API.
+model DeviceVncCredential {
+  id          String   @id @default(cuid())
+  deviceId    String   @unique
+  cipherText  String // base64
+  iv          String // base64, nonce único por credencial
+  authTag     String // base64, tag GCM
+  keyVersion  Int      @default(1) // habilita rotación de clave maestra
+  vncPort     Int      @default(5900)
+  updatedById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  device    AgentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  updatedBy User        @relation("VncCredentialEditor", fields: [updatedById], references: [id])
+
+  @@map("device_vnc_credentials")
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULO FRONT: PREFERENCIAS DE UI
+// ---------------------------------------------------------------------------
+
+model UserUiPreference {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // "quiet-pro" | "workshop" | "dystopia" — validado con Zod en el service;
+  // String (no enum) para sumar themes sin migración.
+  theme String @default("quiet-pro")
+
+  // null = seguir preferencia del sistema operativo.
+  darkMode Boolean?
+
+  // Orden/visibilidad de widgets del dashboard IT. JSON validado con Zod.
+  itDashboardLayout Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_ui_preferences")
 }

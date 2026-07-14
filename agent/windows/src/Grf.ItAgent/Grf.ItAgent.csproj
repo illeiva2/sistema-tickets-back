@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>GRF.ITAgent</AssemblyName>
+    <RootNamespace>Grf.ItAgent</RootNamespace>
+    <Version>0.2.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Authors>GRF IT</Authors>
+    <Description>Agente de inventario y salud para estaciones Windows de GRF.</Description>
+  </PropertyGroup>
+</Project>

@@ -36,7 +36,8 @@ export const errorHandler = (
       error: error.code,
       message: error.message,
       statusCode: error.statusCode,
-      url: req.url,
+      // Query strings pueden contener códigos OAuth efímeros.
+      url: req.path,
       method: req.method,
     });
 
@@ -68,7 +69,7 @@ export const errorHandler = (
       requestId,
       error: multerCode,
       message,
-      url: req.url,
+      url: req.path,
       method: req.method,
     });
 
@@ -82,13 +83,30 @@ export const errorHandler = (
     });
   }
 
+  if ((error as Error & { type?: string }).type === "entity.too.large") {
+    logger.warn({
+      requestId,
+      error: "PAYLOAD_TOO_LARGE",
+      url: req.path,
+      method: req.method,
+    });
+    return res.status(413).json({
+      success: false,
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        message: "El cuerpo de la solicitud excede el tamaño permitido",
+        requestId,
+      },
+    });
+  }
+
   // Log unexpected errors.
   logger.error({
     requestId,
     error: error.name,
     message: error.message,
     stack: error.stack,
-    url: req.url,
+    url: req.path,
     method: req.method,
   });
 
@@ -108,7 +126,7 @@ export const notFoundHandler = (req: Request, res: Response) => {
   logger.warn({
     requestId,
     error: "NOT_FOUND",
-    url: req.url,
+    url: req.path,
     method: req.method,
   });
 

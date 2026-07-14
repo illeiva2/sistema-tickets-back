@@ -63,7 +63,8 @@ export const requireRole = (roles: UserRole[]) => {
 
     if (!roles.includes(req.user.role)) {
       logger.warn(
-        `User ${req.user.email} attempted to access restricted endpoint`,
+        { userId: req.user.id, role: req.user.role, path: req.path },
+        "User attempted to access restricted endpoint",
       );
       return next(new ApiError("FORBIDDEN", "Permisos insuficientes", 403));
     }
