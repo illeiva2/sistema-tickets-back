@@ -9,6 +9,7 @@ import {
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { prisma } from "../lib/database";
+import { SERIALIZABLE_TX_OPTIONS } from "../lib/txOptions";
 import { ApiError } from "../lib/errors";
 import {
   asAssetWriteError,
@@ -165,6 +166,7 @@ const runSerializable = async <T>(
     try {
       return await prisma.$transaction(work, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        ...SERIALIZABLE_TX_OPTIONS,
       });
     } catch (error) {
       if (!knownError(error, "P2034")) throw error;
