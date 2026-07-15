@@ -5,6 +5,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { prisma } from "../lib/database";
+import { SERIALIZABLE_TX_OPTIONS } from "../lib/txOptions";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
 import type {
@@ -255,6 +256,7 @@ const runSerializable = async <T>(
     try {
       return await prisma.$transaction(work, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        ...SERIALIZABLE_TX_OPTIONS,
       });
     } catch (error) {
       if (!isKnownPrismaError(error, "P2034")) throw error;
