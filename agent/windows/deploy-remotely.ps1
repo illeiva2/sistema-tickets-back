@@ -385,6 +385,13 @@ end {
                         throw "El hash del agente cambió durante la transferencia."
                     }
 
+                    # Invocar un archivo .ps1 está sujeto a la política de ejecución
+                    # del equipo destino (Restricted por defecto en clientes). Bypass
+                    # con alcance Process: vale sólo para esta sesión remota y no
+                    # persiste ningún cambio en el equipo. Mismo criterio que la tarea
+                    # de actualización que registra install.ps1.
+                    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
                     $InformationPreference = "SilentlyContinue"
                     & $installer `
                         -BaseUrl $RemoteBaseUrl `
