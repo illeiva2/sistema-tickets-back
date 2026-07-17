@@ -239,7 +239,7 @@ describe("Google Passport pipeline logging", () => {
     expect(done).toHaveBeenCalledWith(null, user);
     const logs = serializeLogs();
     expect(logs).toContain("existing-user-safe-id");
-    expect(logs).toContain("existing_it_user");
+    expect(logs).toContain("existing_user");
     expect(logs).not.toContain(sensitiveEmail);
     expect(logs).not.toContain(sensitiveProfileId);
     expect(logs).not.toContain(sensitiveDisplayName);
@@ -269,21 +269,31 @@ describe("Google Passport pipeline logging", () => {
     expect(done.mock.calls[0][1]).toBe(false);
   });
 
-  it("rechaza una cuenta del dominio que no fue provisionada por IT", async () => {
+  it("autoprovisiona una cuenta nueva del dominio sin registrar datos sensibles", async () => {
     mocks.findFirst.mockResolvedValue(null);
+    mocks.createUser.mockResolvedValue({
+      id: "provisioned-user-safe-id",
+      email: sensitiveEmail,
+      name: sensitiveDisplayName,
+      googleId: sensitiveProfileId,
+      role: "USER",
+      isActive: true,
+      deletedAt: null,
+    });
     const done = vi.fn();
 
     await mocks.strategyVerify(accessToken, refreshToken, profile(), done);
 
     expect(done).toHaveBeenCalledOnce();
-    expect(done.mock.calls[0][0]).toMatchObject({
-      message: "it_access_required",
-      code: "it_access_required",
+    expect(done.mock.calls[0][0]).toBeNull();
+    expect(done.mock.calls[0][1]).toMatchObject({
+      id: "provisioned-user-safe-id",
+      role: "USER",
     });
-    expect(done.mock.calls[0][1]).toBe(false);
-    expect(mocks.createUser).not.toHaveBeenCalled();
+    expect(mocks.createUser).toHaveBeenCalledOnce();
     const logs = serializeLogs();
-    expect(logs).toContain("it_access_required");
+    expect(logs).toContain("user_provisioned");
+    expect(logs).toContain("provisioned-user-safe-id");
     expect(logs).not.toContain(sensitiveEmail);
     expect(logs).not.toContain(sensitiveProfileId);
     expect(logs).not.toContain(sensitiveDisplayName);
