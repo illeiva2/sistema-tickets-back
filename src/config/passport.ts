@@ -1,5 +1,7 @@
+import { randomBytes } from "crypto";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import bcrypt from "bcryptjs";
 import { prisma } from "../lib/database";
 import { oauthConfig } from "./oauth";
 import { logger } from "../lib/logger";
@@ -134,13 +136,48 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
 
           const user = googleUser || emailUser;
 
-          if (!user || (user.role !== "AGENT" && user.role !== "ADMIN")) {
-            logger.warn(
-              { ...googleLogContext, outcome: "it_access_required" },
-              "OAuth profile rejected",
+          // Cualquier cuenta de los dominios permitidos entra con Google;
+          // si no existe, se provisiona con rol USER (los paneles de IT y
+          // administración siguen protegidos por rol en front y back). Sin
+          // allowlist configurada no se autocrea: sólo cuentas ya dadas de
+          // alta (fail closed).
+          if (!user) {
+            if (oauthConfig.google.allowedDomains.length === 0) {
+              logger.warn(
+                { ...googleLogContext, outcome: "provisioning_disabled" },
+                "OAuth profile rejected",
+              );
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              return done(oauthAccessError("it_access_required"), false as any);
+            }
+
+            const name =
+              profile.displayName || profile.name?.givenName || "Usuario";
+            const provisionedUser = await prisma.user.create({
+              data: {
+                email,
+                name,
+                googleId,
+                // La cuenta entra sólo por Google; contraseña aleatoria
+                // irrecuperable para que el login local no quede abierto.
+                passwordHash: await bcrypt.hash(
+                  randomBytes(32).toString("base64url"),
+                  12,
+                ),
+                role: "USER",
+              },
+            });
+
+            logger.info(
+              {
+                ...googleLogContext,
+                outcome: "user_provisioned",
+                userId: provisionedUser.id,
+                role: provisionedUser.role,
+              },
+              "OAuth authentication succeeded",
             );
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            return done(oauthAccessError("it_access_required"), false as any);
+            return done(null, provisionedUser);
           }
 
           if (user.isActive === false || user.deletedAt) {
@@ -169,7 +206,7 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
           logger.info(
             {
               ...googleLogContext,
-              outcome: "existing_it_user",
+              outcome: "existing_user",
               userId: authenticatedUser.id,
               role: authenticatedUser.role,
             },
