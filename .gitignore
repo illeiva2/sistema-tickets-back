@@ -1,4 +1,5 @@
 # Environment variables
+.env.migration
 .env
 .env.local
 .env.development.local
