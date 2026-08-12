@@ -36,6 +36,7 @@ vi.mock("web-push", () => ({
 
 import PushService, { __resetVapidForTests } from "../src/services/push.service";
 import { NotificationsService } from "../src/services/notifications.service";
+import { subscribeSchema } from "../src/routes/push.routes";
 
 const ENV_KEYS = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const;
 const originalEnv = Object.fromEntries(
@@ -63,6 +64,25 @@ describe("Web Push", () => {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
     }
+  });
+
+  it("subscribeSchema acepta el JSON completo del navegador (con expirationTime)", () => {
+    // PushSubscription.toJSON() de Chrome/Firefox incluye expirationTime.
+    const browserPayload = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc123",
+      expirationTime: null,
+      keys: { p256dh: "clave-p256dh", auth: "clave-auth" },
+    };
+    expect(subscribeSchema.safeParse(browserPayload).success).toBe(true);
+
+    const withoutExpiration = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc123",
+      keys: { p256dh: "clave-p256dh", auth: "clave-auth" },
+    };
+    expect(subscribeSchema.safeParse(withoutExpiration).success).toBe(true);
+
+    const unknownField = { ...withoutExpiration, evil: true };
+    expect(subscribeSchema.safeParse(unknownField).success).toBe(false);
   });
 
   it("getPublicKey devuelve null cuando el canal no está configurado", () => {

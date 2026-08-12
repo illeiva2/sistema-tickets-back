@@ -12,9 +12,12 @@ const requireUser = (req: AuthenticatedRequest) => {
   return req.user;
 };
 
-const subscribeSchema = z
+export const subscribeSchema = z
   .object({
     endpoint: z.string().url().max(1000),
+    // PushSubscription.toJSON() incluye expirationTime (null en la práctica);
+    // se acepta y descarta para no rechazar la suscripción del navegador.
+    expirationTime: z.number().nullable().optional(),
     keys: z
       .object({
         p256dh: z.string().min(1).max(300),
