@@ -2,6 +2,7 @@ import { prisma } from "../lib/database";
 import { config } from "../config";
 import { createTransporter } from "../config/email";
 import { logger } from "../lib/logger";
+import PushService from "./push.service";
 
 export interface EmailData {
   to: string;
@@ -17,6 +18,9 @@ export interface NotificationData {
   message: string;
   ticketId?: string;
   metadata?: Record<string, any>;
+  // Algunos avisos son de alto volumen (ej: ticket nuevo para todo el
+  // staff) y no deben generar email aunque el usuario lo tenga activado.
+  emailEnabled?: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -177,7 +181,15 @@ export class NotificationsService {
         },
       });
 
-      if (preferences.email) {
+      // Web Push a los dispositivos suscriptos del usuario. Fire-and-forget:
+      // el canal es tolerante y nunca corta el flujo de la notificación.
+      void PushService.sendToUser(data.userId, {
+        title: data.title,
+        body: data.message,
+        url: data.ticketId ? `/tickets/${data.ticketId}` : "/notifications",
+      });
+
+      if (preferences.email && data.emailEnabled !== false) {
         const user = await prisma.user.findUnique({
           where: { id: data.userId },
           select: { email: true, name: true, isActive: true },
@@ -335,9 +347,57 @@ export class NotificationsService {
       status_changed: "statusChanged",
       comment_added: "commentAdded",
       priority_changed: "priorityChanged",
+      // El aviso de ticket nuevo al staff se gobierna con la preferencia
+      // general de notificaciones in-app.
+      ticket_created: "inApp",
     };
 
     return preferenceMap[type] || "ticketAssigned";
+  }
+
+  /**
+   * Avisar a todo el staff activo (AGENT/ADMIN) que se creó un ticket.
+   * In-app + push, deliberadamente sin email: es el aviso de mayor
+   * volumen y el correo ya está saturado.
+   */
+  static async notifyTicketCreated(ticketId: string): Promise<void> {
+    try {
+      const ticket = await prisma.ticket.findUnique({
+        where: { id: ticketId },
+        include: { requester: { select: { id: true, name: true } } },
+      });
+      if (!ticket) return;
+
+      const staff = await prisma.user.findMany({
+        where: {
+          role: { in: ["AGENT", "ADMIN"] },
+          isActive: true,
+          deletedAt: null,
+          id: { not: ticket.requesterId },
+        },
+        select: { id: true },
+      });
+
+      await Promise.all(
+        staff.map((member) =>
+          this.createNotification({
+            userId: member.id,
+            type: "ticket_created",
+            title: `Nuevo ticket #${ticket.ticketNumber ?? ""}`.trim(),
+            message: `${ticket.requester.name}: "${ticket.title}"`,
+            ticketId,
+            metadata: {
+              ticketTitle: ticket.title,
+              requesterName: ticket.requester.name,
+              priority: ticket.priority,
+            },
+            emailEnabled: false,
+          }),
+        ),
+      );
+    } catch (error) {
+      logger.error({ err: error, ticketId }, "notifyTicketCreated failed");
+    }
   }
 
   /**

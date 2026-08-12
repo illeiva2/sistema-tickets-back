@@ -455,6 +455,10 @@ export class TicketsService {
       },
     });
 
+    // Aviso al staff (in-app + push, sin email). Fire-and-forget: nunca
+    // demora ni corta la creación del ticket.
+    void NotificationsService.notifyTicketCreated(ticket.id);
+
     logger.info(`Ticket created: ${ticket.id} by user: ${userId}`);
     return ticket;
   }
