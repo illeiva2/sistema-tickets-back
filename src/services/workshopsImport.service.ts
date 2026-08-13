@@ -1,5 +1,6 @@
 import { prisma } from "../lib/database";
 import { logger } from "../lib/logger";
+import { NotificationsService } from "./notifications.service";
 import { slugify, ensureUniqueSlug } from "../lib/slug";
 import {
   fetchSheetCsv,
@@ -87,6 +88,41 @@ const loadContext = async (): Promise<ImportContext> => {
     transversalesDeptId: transversales?.id ?? null,
     deptNameBySlug,
   };
+};
+
+// Aviso in-app + push a los miembros activos del sector cuando aparece un
+// lote de workshops NUEVO (no en cada re-import que sólo actualiza el
+// mismo Resource). Deliberadamente sin email: la vía elegida para esto es
+// la app, no la bandeja de entrada. Nunca lanza: un fallo de notificación
+// no debe tumbar el import.
+export const notifyDepartmentNewWorkshops = async (
+  departmentId: string,
+  resourceSlug: string,
+  excerpt: string,
+): Promise<void> => {
+  try {
+    const members = await prisma.user.findMany({
+      where: { departmentId, isActive: true, deletedAt: null },
+      select: { id: true },
+    });
+    await Promise.all(
+      members.map((member) =>
+        NotificationsService.createNotification({
+          userId: member.id,
+          type: "workshop_available",
+          title: "Nuevos workshops para tu sector",
+          message: excerpt,
+          url: `/resources/${resourceSlug}`,
+          emailEnabled: false,
+        }),
+      ),
+    );
+  } catch (error) {
+    logger.error(
+      { err: error, departmentId, resourceSlug },
+      "notifyDepartmentNewWorkshops failed",
+    );
+  }
 };
 
 // Helper para asegurar slug único para el Resource. Si ya existe un
@@ -277,6 +313,10 @@ export class WorkshopsImportService {
           upserted.createdAt.getTime() === upserted.updatedAt.getTime()
             ? "created"
             : "updated";
+
+        if (action === "created") {
+          void notifyDepartmentNewWorkshops(deptId, slug, excerpt);
+        }
 
         byGroup.push({
           departmentId: deptId,
