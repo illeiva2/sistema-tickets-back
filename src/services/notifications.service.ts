@@ -21,6 +21,9 @@ export interface NotificationData {
   // Algunos avisos son de alto volumen (ej: ticket nuevo para todo el
   // staff) y no deben generar email aunque el usuario lo tenga activado.
   emailEnabled?: boolean;
+  // Deep link para push/in-app cuando el destino no es un ticket (ej: un
+  // recurso). Si no se pasa, se deriva de ticketId.
+  url?: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -186,7 +189,9 @@ export class NotificationsService {
       void PushService.sendToUser(data.userId, {
         title: data.title,
         body: data.message,
-        url: data.ticketId ? `/tickets/${data.ticketId}` : "/notifications",
+        url:
+          data.url ??
+          (data.ticketId ? `/tickets/${data.ticketId}` : "/notifications"),
       });
 
       if (preferences.email && data.emailEnabled !== false) {
@@ -347,9 +352,10 @@ export class NotificationsService {
       status_changed: "statusChanged",
       comment_added: "commentAdded",
       priority_changed: "priorityChanged",
-      // El aviso de ticket nuevo al staff se gobierna con la preferencia
-      // general de notificaciones in-app.
+      // El aviso de ticket nuevo al staff y el de workshops nuevos por
+      // sector se gobiernan con la preferencia general de in-app.
       ticket_created: "inApp",
+      workshop_available: "inApp",
     };
 
     return preferenceMap[type] || "ticketAssigned";

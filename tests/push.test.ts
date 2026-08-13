@@ -195,6 +195,38 @@ describe("Web Push", () => {
     sendEmail.mockRestore();
   });
 
+  it("createNotification usa data.url por encima del derivado de ticketId", async () => {
+    mocks.preferencesFindUnique.mockResolvedValue({
+      email: true,
+      inApp: true,
+      ticketAssigned: true,
+      statusChanged: true,
+      commentAdded: true,
+      priorityChanged: true,
+    });
+    mocks.notificationCreate.mockResolvedValue({ id: "notif-2" });
+    mocks.subFindMany.mockResolvedValue([]);
+
+    const sendToUser = vi.spyOn(PushService, "sendToUser").mockResolvedValue();
+
+    await NotificationsService.createNotification({
+      userId: "user-1",
+      type: "workshop_available",
+      title: "Nuevos workshops para tu sector",
+      message: "3 workshops disponibles.",
+      url: "/resources/workshops-imas-ventas",
+      emailEnabled: false,
+    });
+
+    expect(sendToUser).toHaveBeenCalledWith("user-1", {
+      title: "Nuevos workshops para tu sector",
+      body: "3 workshops disponibles.",
+      url: "/resources/workshops-imas-ventas",
+    });
+
+    sendToUser.mockRestore();
+  });
+
   it("notifyTicketCreated avisa al staff activo menos el solicitante, sin email", async () => {
     mocks.ticketFindUnique.mockResolvedValue({
       id: "ticket-9",
