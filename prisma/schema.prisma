@@ -6,8 +6,14 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Supabase free: el host directo sólo da IPv6, así que "directo" acá es
+  // el pooler en modo session (5432) en vez de transaction (6543). Prisma
+  // necesita esta conexión aparte para migrate deploy/status: el pooler
+  // transaccional no sostiene los advisory locks que usa el motor de
+  // migraciones y esas operaciones se cuelgan.
+  directUrl = env("DIRECT_URL")
 }
 
 enum UserRole {
