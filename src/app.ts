@@ -19,6 +19,14 @@ import routes from "./routes";
 export const shouldSkipGlobalRateLimit = (pathName: string) =>
   pathName === "/health" ||
   pathName === "/api/auth/me" ||
+  // El flujo de Google (initiate + callback + exchange) no debe competir
+  // por el balde compartido de 300 req/15min: toda la oficina sale a
+  // internet por la misma IP (NAT), así que el uso normal del resto del
+  // staff puede agotarlo y un login legítimo recibe un 429 en pleno
+  // redirect de Google — no un problema de credenciales, sino de cuota
+  // compartida. El propio state firmado + código de intercambio de un
+  // solo uso ya protegen este flujo sin necesitar throttling por IP.
+  pathName.startsWith("/api/auth/google") ||
   pathName.startsWith("/api/agent/") ||
   pathName.startsWith("/uploads") ||
   pathName.startsWith("/thumbnails");
