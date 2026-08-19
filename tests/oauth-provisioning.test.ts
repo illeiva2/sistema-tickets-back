@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 
 /**
  * Cobertura del verify callback de la estrategia Google: quién entra,
@@ -219,5 +220,53 @@ describe("acceso por Google (verify callback)", () => {
     expect((error as { code?: string })?.code).toBe("it_access_required");
     expect(resolved).toBe(false);
     expect(mocks.userCreate).not.toHaveBeenCalled();
+  });
+
+  it("recupera la carrera cuando dos intentos casi simultáneos crean la misma cuenta nueva", async () => {
+    // Doble click / reintento rápido: dos requests para el mismo email
+    // nuevo llegan casi juntas. La que pierde la carrera choca contra el
+    // email único que la otra ya insertó — no debe fallar el login.
+    const verify = await loadVerify({
+      GOOGLE_WORKSPACE_DOMAINS: "grf.com.ar",
+    });
+    const racedUser = activeUser({ id: "user-raced", role: "USER" });
+    mocks.userFindUnique.mockResolvedValue(null);
+    mocks.userFindFirst
+      .mockResolvedValueOnce(null) // lookup inicial por email: todavía no existe
+      .mockResolvedValueOnce(racedUser); // recuperación tras el P2002
+    mocks.userCreate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "6.15.0",
+        meta: { target: ["email"] },
+      }),
+    );
+
+    const [error, resolved] = await runVerify(
+      verify,
+      "aldana.reynoso@grf.com.ar",
+    );
+
+    expect(error).toBeNull();
+    expect(resolved).toMatchObject({ id: "user-raced", role: "USER" });
+    expect(mocks.userFindFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it("no oculta un error de creación que no sea una colisión de carrera", async () => {
+    const verify = await loadVerify({
+      GOOGLE_WORKSPACE_DOMAINS: "grf.com.ar",
+    });
+    mocks.userFindUnique.mockResolvedValue(null);
+    mocks.userFindFirst.mockResolvedValue(null);
+    const dbDown = new Error("db caída");
+    mocks.userCreate.mockRejectedValue(dbDown);
+
+    const [error, resolved] = await runVerify(
+      verify,
+      "aldana.reynoso@grf.com.ar",
+    );
+
+    expect(error).toBe(dbDown);
+    expect(resolved).toBeNull();
   });
 });

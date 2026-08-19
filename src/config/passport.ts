@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { oauthConfig } from "./oauth";
 import { logger } from "../lib/logger";
@@ -134,7 +135,8 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
             return done(oauthAccessError("it_access_required"), false as any);
           }
 
-          const user = googleUser || emailUser;
+          let user = googleUser || emailUser;
+          let provisioned = false;
 
           // Cualquier cuenta de los dominios permitidos entra con Google;
           // si no existe, se provisiona con rol USER (los paneles de IT y
@@ -153,31 +155,47 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
 
             const name =
               profile.displayName || profile.name?.givenName || "Usuario";
-            const provisionedUser = await prisma.user.create({
-              data: {
-                email,
-                name,
-                googleId,
-                // La cuenta entra sólo por Google; contraseña aleatoria
-                // irrecuperable para que el login local no quede abierto.
-                passwordHash: await bcrypt.hash(
-                  randomBytes(32).toString("base64url"),
-                  12,
-                ),
-                role: "USER",
-              },
-            });
+            try {
+              user = await prisma.user.create({
+                data: {
+                  email,
+                  name,
+                  googleId,
+                  // La cuenta entra sólo por Google; contraseña aleatoria
+                  // irrecuperable para que el login local no quede abierto.
+                  passwordHash: await bcrypt.hash(
+                    randomBytes(32).toString("base64url"),
+                    12,
+                  ),
+                  role: "USER",
+                },
+              });
+            } catch (error) {
+              // Dos intentos casi simultáneos (doble click, reintento
+              // rápido) de la MISMA cuenta nueva compiten por el mismo
+              // email único: el que pierde la carrera no debe fallar el
+              // login, sino recuperar la fila que ya insertó el otro.
+              const isConcurrentDuplicate =
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === "P2002";
+              if (!isConcurrentDuplicate) throw error;
 
-            logger.info(
-              {
-                ...googleLogContext,
-                outcome: "user_provisioned",
-                userId: provisionedUser.id,
-                role: provisionedUser.role,
-              },
-              "OAuth authentication succeeded",
-            );
-            return done(null, provisionedUser);
+              const racedUser = await prisma.user.findFirst({
+                where: { email: { equals: email, mode: "insensitive" } },
+              });
+              if (!racedUser) throw error;
+
+              logger.info(
+                {
+                  ...googleLogContext,
+                  outcome: "provisioning_race_recovered",
+                  userId: racedUser.id,
+                },
+                "OAuth provisioning race recovered",
+              );
+              user = racedUser;
+            }
+            provisioned = true;
           }
 
           if (user.isActive === false || user.deletedAt) {
@@ -206,7 +224,7 @@ if (oauthConfig.google.clientID && oauthConfig.google.clientSecret) {
           logger.info(
             {
               ...googleLogContext,
-              outcome: "existing_user",
+              outcome: provisioned ? "user_provisioned" : "existing_user",
               userId: authenticatedUser.id,
               role: authenticatedUser.role,
             },
