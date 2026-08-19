@@ -195,6 +195,18 @@ describe("API de agentes de monitoreo IT", () => {
     );
   });
 
+  it("exime el flujo de Google OAuth del rate limit global compartido", () => {
+    // Toda la oficina sale por la misma IP (NAT): el balde global no debe
+    // poder dejar a alguien afuera de un login legítimo con Google por el
+    // uso normal del resto del staff.
+    expect(shouldSkipGlobalRateLimit("/api/auth/google")).toBe(true);
+    expect(shouldSkipGlobalRateLimit("/api/auth/google/callback")).toBe(true);
+    expect(shouldSkipGlobalRateLimit("/api/auth/google/exchange")).toBe(true);
+    // El login por email/password sí debe seguir limitado (tiene su propio
+    // loginLimiter más estricto, pensado para eso).
+    expect(shouldSkipGlobalRateLimit("/api/auth/login")).toBe(false);
+  });
+
   it("protege gestión humana para AGENT/ADMIN y valida filtros strict", async () => {
     expect(AGENT_ENROLL_RATE_LIMIT).toBeGreaterThanOrEqual(60);
     expect(shouldSkipGlobalRateLimit("/api/agent/heartbeat")).toBe(true);
