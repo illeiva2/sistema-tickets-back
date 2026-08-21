@@ -16,6 +16,12 @@ declare global {
 
     interface Request {
       requestId?: string;
+      // Lo setea el middleware requireModule() cuando el acceso al modulo fue
+      // concedido, para que el controller sepa con que nivel entro el usuario.
+      moduleAccess?: {
+        moduleKey: string;
+        level: "VIEWER" | "QC" | "MANAGEMENT";
+      };
     }
   }
 }
