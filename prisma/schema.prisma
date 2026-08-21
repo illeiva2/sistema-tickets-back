@@ -113,6 +113,8 @@ model User {
   remoteSessions        RemoteSession[]        @relation("RemoteSessionOperator")
   vncCredentialsEdited  DeviceVncCredential[]  @relation("VncCredentialEditor")
   uiPreference          UserUiPreference?
+  moduleGrants          ModuleGrant[]          @relation("ModuleGrantUser")
+  moduleGrantsGiven     ModuleGrant[]          @relation("ModuleGrantGranter")
   oauthExchangeCodes    OAuthExchangeCode[]
 
   @@map("users")
@@ -1309,4 +1311,38 @@ model UserUiPreference {
   updatedAt DateTime @updatedAt
 
   @@map("user_ui_preferences")
+}
+
+
+/// Permiso de acceso a un modulo de la plataforma, por usuario.
+///
+/// Existe porque la autorizacion por `role` (USER/AGENT/ADMIN) es demasiado
+/// gruesa para decidir quien entra a cada modulo: hoy hace falta poder habilitar
+/// el laboratorio (GlutenLab) a una persona sin volverla AGENT de todo.
+///
+/// Decisiones de diseño:
+/// - `moduleKey` y `level` son String y no enum, igual que `UserUiPreference.theme`:
+///   sumar un modulo o un nivel no deberia costar una migracion. Se validan con Zod.
+/// - Baja LOGICA con `revokedAt`, nunca DELETE: hace falta poder auditar quien tuvo
+///   acceso a datos de calidad y hasta cuando.
+/// - Por eso NO lleva `@@unique([userId, moduleKey])`: seria incompatible con el soft
+///   delete (re-otorgar pisaria el historial). La unicidad de la concesion ACTIVA se
+///   garantiza con un indice unico parcial (`WHERE revoked_at IS NULL`) creado a mano
+///   en el migration.sql, porque Prisma no sabe declararlos.
+model ModuleGrant {
+  id          String    @id @default(cuid())
+  userId      String
+  moduleKey   String    @db.VarChar(40)
+  level       String    @default("VIEWER")
+  grantedById String?
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+  revokedById String?
+
+  user      User  @relation("ModuleGrantUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("ModuleGrantGranter", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@index([userId, moduleKey, revokedAt])
+  @@index([moduleKey])
+  @@map("module_grants")
 }
