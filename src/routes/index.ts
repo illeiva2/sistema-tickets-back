@@ -15,6 +15,7 @@ import assistantRoutes from "./assistant.routes";
 import pushRoutes from "./push.routes";
 import itRoutes from "./it.routes";
 import modulesRoutes from "./modules.routes";
+import labRoutes from "./lab.routes";
 import agentMachineRoutes from "./agent-machine.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
@@ -38,6 +39,7 @@ router.use("/assistant", assistantRoutes);
 router.use("/push", pushRoutes);
 router.use("/it", itRoutes);
 router.use("/modules", modulesRoutes);
+router.use("/glutenlab", labRoutes);
 router.use("/agent", agentMachineRoutes);
 
 if (fileOrganizationRouter) {

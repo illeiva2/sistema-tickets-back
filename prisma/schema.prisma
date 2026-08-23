@@ -1346,3 +1346,133 @@ model ModuleGrant {
   @@index([moduleKey])
   @@map("module_grants")
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modulo Laboratorio (GlutenLab): espejo en la nube de las mediciones que los
+// instrumentos escriben a SQL Server en el molino.
+//
+// La fuente de verdad sigue siendo ese SQL on-premise: los Glutomatic escriben
+// ahi con credenciales intocables. Un agente en la planta empuja el delta a la
+// API por HTTPS saliente; aca nunca se conecta nadie a la planta.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum LabSource {
+  GLUTOMATIC
+  NIR
+}
+
+model LabMeasurement {
+  id String @id @default(cuid())
+
+  source LabSource
+  /// PK del registro en el origen (Sample.ID / NirMeasurement.NirMeasurementId).
+  /// La identidad NUNCA se deriva de (serial, fecha): si alguien corrige el reloj
+  /// del instrumento, o el backfill formatea la fecha distinto que la corrida
+  /// incremental, una clave derivada del timestamp produce duplicados
+  /// permanentes que inflan los promedios para siempre.
+  sourceId String @db.VarChar(60)
+
+  instrumentSerial String? @db.VarChar(64)
+  productCode      String? @db.VarChar(40)
+  sampleRef        String? @db.VarChar(80)
+
+  /// Reloj del INSTRUMENTO. Sirve para ordenar y graficar.
+  analyzedAt DateTime
+  /// Reloj del SERVIDOR. La frescura del dato se calcula SIEMPRE contra este:
+  /// un instrumento con la hora corrida no puede fabricar un falso "al dia".
+  ingestedAt DateTime @default(now())
+
+  deletedAt DateTime?
+
+  params LabParameter[]
+
+  @@unique([source, sourceId])
+  /// Indice, deliberadamente NO unique: el origen ya garantiza esa unicidad, y
+  /// replicarla aca solo agrega una P2002 capaz de abortar el lote entero,
+  /// congelar el cursor y dejar el heartbeat en verde mientras nada avanza.
+  @@index([instrumentSerial, analyzedAt])
+  @@index([source, analyzedAt])
+  @@index([productCode, analyzedAt])
+  @@map("lab_measurements")
+}
+
+model LabParameter {
+  measurementId String
+  /// Nombre del parametro tal como viene del instrumento ("Humedad AsIs").
+  code  String  @db.VarChar(40)
+  value Float
+  unit  String? @db.VarChar(16)
+
+  /// Predicciones fuera del rango de calibracion (ej. Zeleny = -1705). Se
+  /// marcan, no se borran: son evidencia de un problema de calibracion. Se
+  /// excluyen de promedios por defecto, con un toggle para verlas en QC.
+  isImplausible Boolean @default(false)
+
+  measurement LabMeasurement @relation(fields: [measurementId], references: [id], onDelete: Cascade)
+
+  @@id([measurementId, code])
+  @@index([code, isImplausible])
+  @@map("lab_parameters")
+}
+
+/// Rangos de calibracion por producto y parametro. En base y no en codigo, para
+/// que corregir un rango no obligue a reenviar nada.
+model LabParameterRange {
+  productCode String @db.VarChar(40)
+  code        String @db.VarChar(40)
+  minValue    Float
+  maxValue    Float
+
+  @@id([productCode, code])
+  @@map("lab_parameter_ranges")
+}
+
+/// Una fila por origen. Es el objeto que hace VISIBLE el silencio: sin esto, un
+/// sync muerto se ve igual que un domingo sin mediciones.
+model LabFeed {
+  source LabSource @id
+
+  /// Lo escribe el agente en CADA corrida, haya o no mediciones nuevas. Es todo
+  /// el truco: separa "estoy vivo" de "traje datos".
+  lastHeartbeatAt DateTime?
+  lastIngestAt    DateTime?
+  /// analyzedAt de la medicion mas nueva recibida. Sirve para el texto
+  /// "sin novedades desde las 14:20", NO para decidir si el sync esta sano.
+  lastSourceAnalyzedAt DateTime?
+
+  /// Cursor sobre el IDENTITY de inserción del origen, jamas sobre la fecha: el
+  /// importador del NIR mete rutinariamente analisis con fecha anterior al
+  /// ultimo sincronizado, y con cursor por fecha esas filas caen debajo del
+  /// agua y se pierden en silencio.
+  cursorId String? @db.VarChar(60)
+
+  pendingCount  Int     @default(0)
+  sqlReachable  Boolean @default(true)
+  lastErrorCode String?
+  agentVersion  String?
+
+  lastReconciledAt DateTime?
+
+  alertOpenTicketId   String?
+  alertLastNotifiedAt DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("lab_feeds")
+}
+
+/// Credencial de servicio para el agente de la planta. Clon del modelo de
+/// agent_devices: el secreto se guarda hasheado, nunca en claro.
+model ServiceClient {
+  id         String    @id @default(cuid())
+  slug       String    @unique
+  secretHash String
+  scopes     String[]
+  isActive   Boolean   @default(true)
+  lastSeenAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@map("service_clients")
+}
