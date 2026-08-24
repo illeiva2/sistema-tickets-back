@@ -11,7 +11,10 @@ export const LAB_FEED_OK_MS = 15 * 60 * 1000;
 export const LAB_FEED_STALE_MS = 25 * 60 * 1000;
 
 /** Horas sin mediciones, en día hábil y horario de planta, antes de sospechar del instrumento. */
-export const LAB_SOURCE_QUIET_HOURS = 4;
+export /** Margen antes de llamar "reloj corrido" a un desfasaje. Cubre skew normal. */
+const CLOCK_SKEW_TOLERANCE_HOURS = 1;
+
+const LAB_SOURCE_QUIET_HOURS = 4;
 
 export type LabFeedState = "OK" | "STALE" | "DOWN";
 
@@ -88,7 +91,26 @@ export const isSourceQuiet = (
   if (!enHorarioDePlanta) return false;
   if (!lastSourceAnalyzedAt) return true;
   const hours = (now.getTime() - lastSourceAnalyzedAt.getTime()) / 3_600_000;
+  // Un reloj adelantado en el instrumento hace la resta negativa y deja esta
+  // alarma apagada PARA SIEMPRE, en silencio. No se puede distinguir de "recién
+  // midió", así que se trata como sospechoso — ver clockSkewHours, que es lo que
+  // le pone nombre al problema en el aviso.
+  if (hours < -CLOCK_SKEW_TOLERANCE_HOURS) return true;
   return hours > LAB_SOURCE_QUIET_HOURS;
+};
+
+/**
+ * Cuánto se adelantó el reloj del instrumento respecto del servidor, en horas.
+ * Cero si viene bien o si no hay dato. Sirve para que el aviso diga lo que pasa
+ * de verdad en vez de "el origen no produce mediciones", que sería falso.
+ */
+export const clockSkewHours = (
+  lastSourceAnalyzedAt: Date | null,
+  now = new Date(),
+): number => {
+  if (!lastSourceAnalyzedAt) return 0;
+  const adelanto = (lastSourceAnalyzedAt.getTime() - now.getTime()) / 3_600_000;
+  return adelanto > CLOCK_SKEW_TOLERANCE_HOURS ? adelanto : 0;
 };
 
 // ─── Contratos de ingesta ────────────────────────────────────────────────────

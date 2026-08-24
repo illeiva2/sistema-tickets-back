@@ -1,7 +1,7 @@
 import { LabSource } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { logger } from "../lib/logger";
-import LabService, { deriveFeedState, isSourceQuiet } from "./lab.service";
+import LabService, { clockSkewHours, deriveFeedState, isSourceQuiet } from "./lab.service";
 import PushService from "./push.service";
 import { TicketsService } from "./tickets.service";
 
@@ -55,6 +55,19 @@ export class LabWatchdog {
         logger.warn(
           { source: feed.source, lastErrorCode: feed.lastErrorCode },
           "El agente late pero su ultima corrida fallo: no esta entrando nada",
+        );
+      } else if (clockSkewHours(feed.lastSourceAnalyzedAt, now) > 0) {
+        // Se chequea ANTES que el origen quieto: con el reloj adelantado, "hace
+        // cuanto que no mide" es una cuenta sin sentido, y avisar de silencio
+        // seria mandar a buscar el problema al lugar equivocado.
+        action = "aviso_reloj_del_instrumento";
+        logger.warn(
+          {
+            source: feed.source,
+            lastSourceAnalyzedAt: feed.lastSourceAnalyzedAt,
+            adelantoHoras: Math.round(clockSkewHours(feed.lastSourceAnalyzedAt, now) * 10) / 10,
+          },
+          "El instrumento marca mediciones en el futuro: tiene el reloj adelantado",
         );
       } else if (isSourceQuiet(feed.lastSourceAnalyzedAt, now)) {
         // Warn-only a propósito: es otro problema (el instrumento o el
