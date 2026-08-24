@@ -1,6 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import LabController from "../controllers/lab.controller";
+import LabQueryController from "../controllers/lab.query.controller";
 import LabWatchdog from "../services/lab.watchdog";
 import { serviceAuthMiddleware } from "../middleware/serviceAuth";
 import { authMiddleware } from "../middleware/auth";
@@ -76,5 +77,29 @@ router.get(
   requireModule("glutenlab"),
   LabController.health,
 );
+
+// Las consultas del panel comparten la misma puerta. Se declara UNA vez con
+// router.use y no repetida en cada ruta: asi no se puede agregar un endpoint
+// nuevo y olvidarse del requireModule. Ese olvido no daria ningun error, solo
+// dejaria los datos del laboratorio abiertos a cualquier usuario logueado.
+router.use(authMiddleware, requireModule("glutenlab"));
+
+router.get("/equipment", LabQueryController.equipos);
+router.get("/methods", LabQueryController.metodos);
+router.get("/dashboard/summary", LabQueryController.resumen);
+
+router.get("/measurements", LabQueryController.mediciones);
+router.get("/measurements/stats", LabQueryController.estadisticas);
+router.get("/measurements/flour-stats", LabQueryController.harinas);
+router.get("/measurements/trend", LabQueryController.tendenciaDiaria);
+router.get("/measurements/trend/monthly", LabQueryController.tendenciaMensual);
+// Va DESPUES de las rutas literales: si fuera antes, "/measurements/stats"
+// entraria por aca con id = "stats".
+router.get("/measurements/:id/details", LabQueryController.detalle);
+
+router.get("/nir/products", LabQueryController.nirProductos);
+router.get("/nir/measurements", LabQueryController.nirMediciones);
+router.get("/nir/stats", LabQueryController.nirEstadisticas);
+router.get("/nir/trend", LabQueryController.nirTendencia);
 
 export default router;
