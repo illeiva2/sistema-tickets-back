@@ -1418,6 +1418,26 @@ model LabParameter {
 
 /// Rangos de calibracion por producto y parametro. En base y no en codigo, para
 /// que corregir un rango no obligue a reenviar nada.
+/// Nombre visible de cada instrumento. En el molino esto vivia en
+/// dbo.EquipmentMapping, que no viaja en el espejo: el agente manda el serial y
+/// nada mas. Sin esta tabla el panel mostraria "2415480" en lugar de
+/// "Laboratorio molino".
+///
+/// Lleva `source` a proposito. En el sistema viejo, GetEquipmentAsync unia el
+/// mapeo con los seriales de la vista de gluten, asi que agregar ahi el serial
+/// del NIR lo hacia aparecer como un equipo fantasma con 0 mediciones. Con la
+/// columna, el filtro es explicito y ese error no se puede repetir.
+model LabInstrument {
+  serial      String    @id @db.VarChar(64)
+  source      LabSource
+  displayName String    @db.VarChar(80)
+  location    String?   @db.VarChar(80)
+  isActive    Boolean   @default(true)
+
+  @@index([source, isActive])
+  @@map("lab_instruments")
+}
+
 model LabParameterRange {
   productCode String @db.VarChar(40)
   code        String @db.VarChar(40)
