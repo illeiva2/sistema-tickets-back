@@ -1,4 +1,4 @@
-import { LabSource } from "@prisma/client";
+import { LabSource, TicketCategory, TicketPriority } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { logger } from "../lib/logger";
 import LabService, { clockSkewHours, deriveFeedState, isSourceQuiet } from "./lab.service";
@@ -112,11 +112,21 @@ export class LabWatchdog {
     },
     now: Date,
   ): Promise<string> {
+    // El freno depende SOLO de cuando se aviso, nunca de que exista el ticket.
+    //
+    // Antes exigia las dos cosas (`alertOpenTicketId && yaAvisado`), y eso
+    // convirtio una falla del ticket en una tormenta: la creacion venia fallando
+    // por un valor de categoria invalido, alertOpenTicketId quedaba en null para
+    // siempre, y el watchdog re-escalaba en CADA corrida — push a todos los
+    // admins cada 5 minutos. Justo la fatiga de alertas que este diseno intenta
+    // evitar, y causada por el mismo codigo que separa ticket y push para que
+    // una falla no silencie a la otra: el throttle estaba atado al camino que
+    // puede fallar.
     const yaAvisado = feed.alertLastNotifiedAt
       ? now.getTime() - feed.alertLastNotifiedAt.getTime() < RE_ESCALATE_MS
       : false;
 
-    if (feed.alertOpenTicketId && yaAvisado) return "ya_escalado";
+    if (yaAvisado) return "ya_escalado";
 
     const admins = await prisma.user.findMany({
       where: { role: "ADMIN", isActive: true, deletedAt: null },
@@ -141,8 +151,13 @@ export class LabWatchdog {
               `El espejo de mediciones dejó de recibir datos.\n\n${detalle}\n\n` +
               `Revisar en el servidor del molino: la tarea programada del pusher, ` +
               `el enlace a internet y que SQL Server esté respondiendo.`,
-            priority: "HIGH",
-            category: "Infraestructura",
+            // Via los enums de Prisma y no con strings sueltos: createTicket
+            // recibe `data: any`, asi que un literal mal escrito compila igual y
+            // falla en runtime. Aca venia "Infraestructura", que no existe en
+            // TicketCategory, y hacia fallar cada creacion. Nombrando el enum,
+            // el compilador lo ataja.
+            priority: TicketPriority.HIGH,
+            category: TicketCategory.SOFTWARE,
           },
           admins[0].id,
         );
