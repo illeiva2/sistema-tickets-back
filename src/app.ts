@@ -28,6 +28,14 @@ export const shouldSkipGlobalRateLimit = (pathName: string) =>
   // solo uso ya protegen este flujo sin necesitar throttling por IP.
   pathName.startsWith("/api/auth/google") ||
   pathName.startsWith("/api/agent/") ||
+  // Mismo motivo que el flujo de Google, y agravado: el agente del molino sale
+  // por la MISMA IP pública (NAT) que todo el staff usando el sistema. Un
+  // backfill de 145 lotes vaciaba el balde compartido y dejaba a la oficina
+  // entera con 429 durante el resto de la ventana de 15 minutos. Estas rutas
+  // ya tienen su propio limitador (120/min en lab.routes.ts) y exigen
+  // credencial de servicio, así que no dependen del límite por IP.
+  pathName.startsWith("/api/glutenlab/ingest") ||
+  pathName.startsWith("/api/glutenlab/watchdog") ||
   pathName.startsWith("/uploads") ||
   pathName.startsWith("/thumbnails");
 
