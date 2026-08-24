@@ -1,5 +1,5 @@
 /**
- * Verifica las once consultas de lectura del laboratorio contra la base real.
+ * Verifica las consultas de lectura del laboratorio contra la base real.
  *
  * Llama a los métodos del servicio directamente, sin pasar por HTTP ni por la
  * autenticación: lo que se está verificando es el SQL, y agregarle capas
@@ -84,6 +84,29 @@ async function main() {
   await probar("tendencia diaria", async () => {
     const r = await LabQueryService.tendenciaDiaria({}, 30);
     return `${r.length} días con datos en 30`;
+  });
+
+  await probar("tendencia respeta filtro", async () => {
+    // El volumen diario tiene que MOVERSE al destildar "incluir incompletas".
+    // Si no se mueve, el grafico esta contando mediciones que las cards ya
+    // descartaron, y la misma pantalla muestra dos numeros distintos.
+    const con = await LabQueryService.tendenciaDiaria({ includeIncomplete: true }, 90);
+    const sin = await LabQueryService.tendenciaDiaria({ includeIncomplete: false }, 90);
+    const nCon = con.reduce((a, p) => a + p.count, 0);
+    const nSin = sin.reduce((a, p) => a + p.count, 0);
+    if (nSin > nCon) throw new Error(`sin incompletas (${nSin}) > con incompletas (${nCon})`);
+    return nSin < nCon
+      ? `con=${nCon} sin=${nSin} · el filtro se refleja`
+      : `con=${nCon} sin=${nSin} · iguales (no hubo incompletas en la ventana)`;
+  });
+
+  await probar("mensual respeta filtro", async () => {
+    const con = await LabQueryService.tendenciaMensual(12, undefined, undefined, true);
+    const sin = await LabQueryService.tendenciaMensual(12, undefined, undefined, false);
+    const nCon = con.reduce((a, p) => a + p.count, 0);
+    const nSin = sin.reduce((a, p) => a + p.count, 0);
+    if (nSin > nCon) throw new Error(`sin (${nSin}) > con (${nCon})`);
+    return `con=${nCon} sin=${nSin} (${nCon - nSin} incompletas descontadas)`;
   });
 
   await probar("mediciones (pág. 1)", async () => {

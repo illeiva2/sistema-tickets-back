@@ -365,9 +365,16 @@ export class LabQueryService {
    * Se agrupa por mes en hora de PLANTA: agrupar en UTC movería al mes
    * siguiente todo lo medido después de las 21:00 del último día del mes.
    */
-  static async tendenciaMensual(meses = 12, serial?: string, method?: string) {
+  static async tendenciaMensual(
+    meses = 12,
+    serial?: string,
+    method?: string,
+    includeIncomplete = true,
+  ) {
     const n = Math.min(Math.max(meses, 1), 60);
-    const pivot = pivotGluten({ instrumentSerial: serial, method, includeIncomplete: true });
+    // El conteo mensual viaja en el DTO y se exporta, así que el flag importa
+    // aunque los promedios ya excluyan los no positivos por su cuenta.
+    const pivot = pivotGluten({ instrumentSerial: serial, method, includeIncomplete });
 
     const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
       ${pivot}
@@ -397,10 +404,19 @@ export class LabQueryService {
     });
   }
 
-  /** Tendencia diaria sobre el conjunto filtrado. Mismo criterio de día local. */
+  /**
+   * Tendencia diaria sobre el conjunto filtrado. Mismo criterio de día local.
+   *
+   * Respeta `includeIncomplete` tal como viene y NO lo fuerza. Forzarlo tenía
+   * sentido cuando esto alimentaba una vista aparte, sin ese filtro; con una
+   * sola barra gobernando indicadores, tabla y gráficos, destildar "incluir
+   * incompletas" dejaba el gráfico de volumen contando mediciones que las
+   * cards ya habían descartado. Números distintos en la misma pantalla es
+   * justo lo que la vista unificada viene a evitar.
+   */
   static async tendenciaDiaria(f: FiltrosGluten, dias = 30) {
     const n = Math.min(Math.max(dias, 1), 400);
-    const pivot = pivotGluten({ ...f, includeIncomplete: true });
+    const pivot = pivotGluten(f);
 
     const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
       ${pivot}

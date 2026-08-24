@@ -76,6 +76,9 @@ export class LabQueryController {
       entero(req.query.months, 12),
       texto(req.query.serial),
       texto(req.query.method),
+      // Ausente = incluir. Solo un "false" explícito las excluye, igual que en
+      // el resto de los filtros.
+      texto(req.query.includeIncomplete) !== "false",
     ),
   );
 
