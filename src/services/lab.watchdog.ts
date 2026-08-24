@@ -46,6 +46,16 @@ export class LabWatchdog {
         action = await this.escalate(feed, now);
       } else if (feed.alertOpenTicketId) {
         action = await this.resolve(feed, now);
+      } else if (feed.lastErrorCode) {
+        // El agente late y puede leer SQL, pero su ultima corrida fallo: el
+        // enlace de subida esta roto. Sin esto el feed figura OK, el heartbeat
+        // esta fresco y nada revela que hace horas que no entra un dato.
+        // Warn-only por ahora, igual que el origen quieto: primero calibrar.
+        action = "aviso_error_de_transporte";
+        logger.warn(
+          { source: feed.source, lastErrorCode: feed.lastErrorCode },
+          "El agente late pero su ultima corrida fallo: no esta entrando nada",
+        );
       } else if (isSourceQuiet(feed.lastSourceAnalyzedAt, now)) {
         // Warn-only a propósito: es otro problema (el instrumento o el
         // importador, no el enlace) y arranca sin escalar para poder calibrar

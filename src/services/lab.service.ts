@@ -43,6 +43,34 @@ export const deriveFeedState = (
   return "DOWN";
 };
 
+/** Zona del molino. Argentina no aplica horario de verano desde 2009. */
+const TZ_PLANTA = "America/Argentina/Cordoba";
+
+/**
+ * Día de la semana y hora EN LA PLANTA.
+ *
+ * getDay()/getHours() usan la zona del proceso, y Render corre en UTC: la
+ * ventana "día hábil de 6 a 22" se evaluaba en realidad de 3 a 19 hora local.
+ * Se perdía el turno tarde entero y se vigilaba de madrugada, que es cuando no
+ * hay nadie midiendo. Una alerta corrida tres horas es peor que no tenerla,
+ * porque igual desgasta la credibilidad del resto.
+ */
+const enPlanta = (d: Date): { day: number; hour: number } => {
+  const partes = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ_PLANTA,
+    weekday: "short",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+
+  const diaTexto = partes.find((p) => p.type === "weekday")?.value ?? "Sun";
+  const horaTexto = partes.find((p) => p.type === "hour")?.value ?? "0";
+  const dias: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  };
+  return { day: dias[diaTexto] ?? 0, hour: parseInt(horaTexto, 10) % 24 };
+};
+
 /**
  * ¿El origen dejó de producir aunque el enlace esté sano?
  *
@@ -55,8 +83,7 @@ export const isSourceQuiet = (
   lastSourceAnalyzedAt: Date | null,
   now = new Date(),
 ): boolean => {
-  const day = now.getDay(); // 0 = domingo, 6 = sábado
-  const hour = now.getHours();
+  const { day, hour } = enPlanta(now);
   const enHorarioDePlanta = day >= 1 && day <= 5 && hour >= 6 && hour < 22;
   if (!enHorarioDePlanta) return false;
   if (!lastSourceAnalyzedAt) return true;
@@ -197,6 +224,31 @@ export class LabService {
       ? new Date(payload.lastSourceRowAt)
       : null;
 
+    // El cursor tiene UN solo dueño: advanceCursor, que solo lo mueve cuando el
+    // lote entró entero. El heartbeat NO lo escribe.
+    //
+    // Escribirlo acá anulaba por completo esa guarda. Si una medición de un lote
+    // fallaba, el controller se negaba a avanzar el cursor —a propósito— pero
+    // respondía 200; el agente, que ya avanzó su cursor local, mandaba el
+    // heartbeat con ese valor segundos después y lo pisaba igual. La fila
+    // fallida no se volvía a leer nunca, con el feed en verde. La guarda no
+    // protegía nada.
+    //
+    // Lo que el agente reporta se compara y se registra, pero no se persiste:
+    // una divergencia es señal de que algo se salteó, y quiero verla en el log.
+    if (payload.cursorId) {
+      const actual = await prisma.labFeed.findUnique({
+        where: { source },
+        select: { cursorId: true },
+      });
+      if (actual && actual.cursorId !== payload.cursorId) {
+        logger.warn(
+          { source, cursorDelAgente: payload.cursorId, cursorPersistido: actual.cursorId },
+          "El agente reporta un cursor distinto al del servidor: quedaron mediciones sin confirmar",
+        );
+      }
+    }
+
     return prisma.labFeed.upsert({
       where: { source },
       create: {
@@ -206,7 +258,6 @@ export class LabService {
         agentVersion: payload.agentVersion ?? null,
         pendingCount: payload.pendingCount ?? 0,
         lastErrorCode: payload.lastErrorCode ?? null,
-        cursorId: payload.cursorId ?? null,
         lastSourceAnalyzedAt:
           lastSourceRowAt && !Number.isNaN(lastSourceRowAt.getTime())
             ? lastSourceRowAt
@@ -218,7 +269,6 @@ export class LabService {
         agentVersion: payload.agentVersion ?? undefined,
         pendingCount: payload.pendingCount ?? undefined,
         lastErrorCode: payload.lastErrorCode ?? null,
-        cursorId: payload.cursorId ?? undefined,
         ...(lastSourceRowAt && !Number.isNaN(lastSourceRowAt.getTime())
           ? { lastSourceAnalyzedAt: lastSourceRowAt }
           : {}),
@@ -271,6 +321,12 @@ export class LabService {
         lastErrorCode: feed.lastErrorCode,
         pendingCount: feed.pendingCount,
         agentVersion: feed.agentVersion,
+        // Sin esto, GET /ingest/cursor -- que se sirve desde acá -- devuelve
+        // todo MENOS el cursor, el agente lee null y vuelve a empujar el
+        // historico completo en cada corrida. Es idempotente, así que no
+        // rompe datos: simplemente quema egress y CPU en silencio, para
+        // siempre. El unico sintoma seria la factura.
+        cursorId: feed.cursorId,
         measurements: c?._count._all ?? 0,
         newestMeasurementAt: c?._max.analyzedAt ?? null,
       };
@@ -297,6 +353,20 @@ export class LabService {
    * distintos formateen los flotantes igual, que es la forma habitual de que un
    * reconcile por hash tire diferencias falsas todos los días hasta que alguien
    * lo apaga.
+   *
+   * Dos trampas en la consulta de abajo, las dos ya cometidas una vez:
+   *
+   * 1. El COUNT va con DISTINCT. Con el LEFT JOIN a los parámetros, un COUNT(*)
+   *    cuenta filas UNIDAS, no mediciones: con ~6 parámetros por medición daba
+   *    30 donde el agente manda 5, y TODOS los días figuraban distintos, todas
+   *    las noches, re-empujando la ventana entera. La suma sí es correcta con
+   *    el join: cada parámetro aparece una sola vez.
+   *
+   * 2. El día se formatea en SQL con to_char, no con toISOString() en JS. La
+   *    columna es TIMESTAMP sin zona, y el driver la interpreta en la zona del
+   *    proceso de Node: hoy Render corre en UTC y sale bien, pero era una
+   *    dependencia invisible que habría corrido todos los días si esa zona
+   *    cambiaba alguna vez.
    */
   static async reconcile(
     source: LabSource,
@@ -311,11 +381,11 @@ export class LabService {
     // Agregación en SQL, no en memoria: traerse las filas para sumarlas acá
     // gastaría egress y latencia para nada.
     const rows = await prisma.$queryRaw<
-      { day: Date; count: bigint; value_sum: number | null }[]
+      { day: string; count: bigint; value_sum: number | null }[]
     >`
-      SELECT date_trunc('day', m."analyzedAt") AS day,
-             COUNT(*)::bigint                  AS count,
-             COALESCE(SUM(p."value"), 0)       AS value_sum
+      SELECT to_char(date_trunc('day', m."analyzedAt"), 'YYYY-MM-DD') AS day,
+             COUNT(DISTINCT m."id")::bigint                           AS count,
+             COALESCE(SUM(p."value"), 0)                              AS value_sum
       FROM "lab_measurements" m
       LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
       WHERE m."source" = ${source}::"LabSource"
@@ -327,8 +397,7 @@ export class LabService {
 
     const mine = new Map<string, { count: number; sum: number }>();
     for (const r of rows) {
-      const key = r.day.toISOString().slice(0, 10);
-      mine.set(key, { count: Number(r.count), sum: Number(r.value_sum ?? 0) });
+      mine.set(r.day, { count: Number(r.count), sum: Number(r.value_sum ?? 0) });
     }
 
     const mismatched: string[] = [];
