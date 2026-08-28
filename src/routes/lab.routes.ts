@@ -102,4 +102,8 @@ router.get("/nir/measurements", LabQueryController.nirMediciones);
 router.get("/nir/stats", LabQueryController.nirEstadisticas);
 router.get("/nir/trend", LabQueryController.nirTendencia);
 
+router.get("/fn/stats", LabQueryController.fnEstadisticas);
+router.get("/fn/measurements", LabQueryController.fnMediciones);
+router.get("/fn/trend", LabQueryController.fnTendencia);
+
 export default router;
