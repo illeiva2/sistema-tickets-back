@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import LabQueryService, {
   type FiltrosGluten,
   type FiltrosNir,
+  type FiltrosFn,
 } from "../services/lab.query.service";
 
 /**
@@ -34,6 +35,12 @@ const filtrosGluten = (q: Request["query"]): FiltrosGluten => ({
 
 const filtrosNir = (q: Request["query"]): FiltrosNir => ({
   product: texto(q.product),
+  from: texto(q.from),
+  to: texto(q.to),
+  sampleCodeContains: texto(q.sampleCodeContains),
+});
+
+const filtrosFn = (q: Request["query"]): FiltrosFn => ({
   from: texto(q.from),
   to: texto(q.to),
   sampleCodeContains: texto(q.sampleCodeContains),
@@ -119,6 +126,20 @@ export class LabQueryController {
 
   static nirTendencia = handler((req) =>
     LabQueryService.nirTendencia(filtrosNir(req.query), entero(req.query.days, 60)),
+  );
+
+  static fnEstadisticas = handler((req) => LabQueryService.fnEstadisticas(filtrosFn(req.query)));
+
+  static fnMediciones = handler((req) =>
+    LabQueryService.fnMediciones(
+      filtrosFn(req.query),
+      entero(req.query.page, 1),
+      entero(req.query.pageSize, 50),
+    ),
+  );
+
+  static fnTendencia = handler((req) =>
+    LabQueryService.fnTendencia(filtrosFn(req.query), entero(req.query.days, 60)),
   );
 }
 

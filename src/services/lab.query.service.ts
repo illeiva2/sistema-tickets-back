@@ -25,6 +25,12 @@ const COD_DRY = "Gluten seco";
 const COD_IDX = "Índice de gluten";
 const COD_WBC = "Capacidad de retención de agua";
 
+// Parametros del FN 1000, tal como los manda GlutenLab.FnAgent.
+const FN_FALLING = "Falling Number";
+const FN_LN = "Índice de licuefacción";
+const FN_TEMP = "Temperatura";
+const FN_PRESS = "Presión";
+
 /** Orden fijo de harinas. Las cuatro conocidas se muestran siempre; "Otras" solo si tiene muestras. */
 const ORDEN_HARINAS = ["3/0", "4/0", "Tapera", "Semolín", "Otras"] as const;
 
@@ -39,6 +45,12 @@ export interface FiltrosGluten {
 
 export interface FiltrosNir {
   product?: string;
+  from?: string;
+  to?: string;
+  sampleCodeContains?: string;
+}
+
+export interface FiltrosFn {
   from?: string;
   to?: string;
   sampleCodeContains?: string;
@@ -720,6 +732,147 @@ export class LabQueryService {
     return [...porDia.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, p]) => ({ date, count: p.count, averages: p.averages }));
+  }
+
+  // ─── FN 1000 (Falling Number) ──────────────────────────────────────────────
+  //
+  // A diferencia del NIR (parametros variables por producto), el FN tiene un
+  // juego FIJO: falling number, indice de licuefaccion, temperatura, presion.
+  // La metrica principal es el falling number (segundos). Cada fila es una
+  // lectura de canal: el equipo corre dos muestras en paralelo, asi que dos
+  // filas con el mismo timestamp son muestras distintas, no un duplicado.
+
+  private static condicionesFn(f: FiltrosFn): Prisma.Sql[] {
+    const c: Prisma.Sql[] = [
+      Prisma.sql`m."source" = 'FN'::"LabSource"`,
+      Prisma.sql`m."deletedAt" IS NULL`,
+    ];
+    if (f.from?.trim()) c.push(Prisma.sql`m."analyzedAt" >= ${aUtc(f.from.trim())}`);
+    if (f.to?.trim()) {
+      const to = f.to.trim();
+      c.push(
+        esSoloFecha(to)
+          ? Prisma.sql`m."analyzedAt" < ${aUtc(to)} + interval '1 day'`
+          : Prisma.sql`m."analyzedAt" < ${aUtc(to)}`,
+      );
+    }
+    if (f.sampleCodeContains?.trim())
+      c.push(Prisma.sql`m."sampleRef" ILIKE ${"%" + f.sampleCodeContains.trim() + "%"}`);
+    return c;
+  }
+
+  /** Pivotea los parametros fijos del FN a una fila por lectura de canal. */
+  private static pivotFn(f: FiltrosFn) {
+    const where = Prisma.join(this.condicionesFn(f), " AND ");
+    return Prisma.sql`
+      WITH fn AS (
+        SELECT m."id",
+               m."sourceId",
+               m."sampleRef",
+               m."analyzedAt",
+               ${LOCAL} AS local_ts,
+               MAX(CASE WHEN p."code" = ${FN_FALLING} THEN p."value" END) AS falling,
+               MAX(CASE WHEN p."code" = ${FN_LN}      THEN p."value" END) AS ln,
+               MAX(CASE WHEN p."code" = ${FN_TEMP}    THEN p."value" END) AS temp,
+               MAX(CASE WHEN p."code" = ${FN_PRESS}   THEN p."value" END) AS pressure
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT * FROM fn
+    `;
+  }
+
+  static async fnEstadisticas(f: FiltrosFn) {
+    const where = Prisma.join(this.condicionesFn(f), " AND ");
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH fn AS (
+        SELECT m."id", m."analyzedAt",
+               MAX(CASE WHEN p."code" = ${FN_FALLING} THEN p."value" END) AS falling
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT count(*)::bigint                              AS total,
+             count(*) FILTER (WHERE falling > 0)::bigint   AS con_fn,
+             avg(falling) FILTER (WHERE falling > 0)        AS avg_fn,
+             min(falling) FILTER (WHERE falling > 0)        AS min_fn,
+             max(falling) FILTER (WHERE falling > 0)        AS max_fn,
+             min("analyzedAt")                             AS primera,
+             max("analyzedAt")                             AS ultima
+      FROM fn
+    `;
+    const r = filas[0] ?? {};
+    return {
+      count: Number(r.total ?? 0),
+      withFallingNumber: Number(r.con_fn ?? 0),
+      avgFallingNumber: red2(r.avg_fn),
+      minFallingNumber: num(r.min_fn),
+      maxFallingNumber: num(r.max_fn),
+      firstAt: iso(r.primera),
+      lastAt: iso(r.ultima),
+    };
+  }
+
+  static async fnMediciones(f: FiltrosFn, page = 1, pageSize = 50) {
+    const tamano = Math.min(Math.max(pageSize, 1), 500);
+    const pagina = Math.max(page, 1);
+    const pivot = this.pivotFn(f);
+
+    const [filas, conteo] = await Promise.all([
+      prisma.$queryRaw<Record<string, unknown>[]>`
+        ${pivot}
+        ORDER BY "analyzedAt" DESC, "sourceId" DESC
+        LIMIT ${tamano} OFFSET ${(pagina - 1) * tamano}
+      `,
+      prisma.$queryRaw<{ total: bigint }[]>`
+        WITH c AS (${this.pivotFn(f)}) SELECT count(*)::bigint AS total FROM c
+      `,
+    ]);
+
+    return {
+      items: filas.map((r) => {
+        const sid = String(r.sourceId);
+        // El sufijo del sourceId (…-L / …-R) es el canal en el que se corrio.
+        const canal = sid.endsWith("-L") ? "Izq" : sid.endsWith("-R") ? "Der" : "";
+        return {
+          measurementId: sid,
+          sampleCode: (r.sampleRef as string | null) ?? null,
+          analyzedAt: iso(r.analyzedAt)!,
+          channel: canal,
+          fallingNumber: num(r.falling),
+          liquefactionNumber: red2(r.ln),
+          temp: num(r.temp),
+          pressure: num(r.pressure),
+        };
+      }),
+      total: Number(conteo[0]?.total ?? 0),
+      page: pagina,
+      pageSize: tamano,
+    };
+  }
+
+  /** Falling number promedio por dia local. */
+  static async fnTendencia(f: FiltrosFn, dias = 60) {
+    const n = Math.min(Math.max(dias, 1), 400);
+    const pivot = this.pivotFn(f);
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH fn AS (${pivot})
+      SELECT to_char(date_trunc('day', local_ts), 'YYYY-MM-DD') AS dia,
+             avg(falling) FILTER (WHERE falling > 0)             AS avg_fn,
+             count(*) FILTER (WHERE falling > 0)::bigint          AS total
+      FROM fn
+      WHERE local_ts >= date_trunc('day', (now() AT TIME ZONE ${TZ})) - make_interval(days => ${n - 1}::int)
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    return filas.map((r) => ({
+      date: String(r.dia),
+      avgFallingNumber: red2(r.avg_fn),
+      count: Number(r.total ?? 0),
+    }));
   }
 }
 
