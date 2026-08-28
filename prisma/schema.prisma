@@ -1360,6 +1360,7 @@ model ModuleGrant {
 enum LabSource {
   GLUTOMATIC
   NIR
+  FN // Perten FN 1000 (Falling Number)
 }
 
 model LabMeasurement {
