@@ -14,6 +14,7 @@ const RECONCILE_STALE_MS = 36 * 60 * 60 * 1000;
 const SOURCE_LABEL: Record<LabSource, string> = {
   GLUTOMATIC: "Glutomatic (gluten)",
   NIR: "NIR Inframatic IM 9500H",
+  FN: "FN 1000 (Falling Number)",
 };
 
 /**

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const sourceEnum = z.enum(["GLUTOMATIC", "NIR"]);
+const sourceEnum = z.enum(["GLUTOMATIC", "NIR", "FN"]);
 
 const parameterSchema = z.object({
   code: z.string().min(1).max(40),
