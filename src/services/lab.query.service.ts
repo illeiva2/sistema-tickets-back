@@ -31,6 +31,13 @@ const FN_LN = "Índice de licuefacción";
 const FN_TEMP = "Temperatura";
 const FN_PRESS = "Presión";
 
+// Parametros del SDmatic 2, tal como los manda GlutenLab.SdmaticAgent.
+const SD_UCD = "Almidón dañado (UCD)";
+const SD_UCDC = "Almidón dañado corregido (UCDc)";
+const SD_AI = "Absorción de yodo";
+const SD_HUM = "Humedad";
+const SD_PROT = "Proteína";
+
 /** Orden fijo de harinas. Las cuatro conocidas se muestran siempre; "Otras" solo si tiene muestras. */
 const ORDEN_HARINAS = ["3/0", "4/0", "Tapera", "Semolín", "Otras"] as const;
 
@@ -51,6 +58,12 @@ export interface FiltrosNir {
 }
 
 export interface FiltrosFn {
+  from?: string;
+  to?: string;
+  sampleCodeContains?: string;
+}
+
+export interface FiltrosSdmatic {
   from?: string;
   to?: string;
   sampleCodeContains?: string;
@@ -871,6 +884,139 @@ export class LabQueryService {
     return filas.map((r) => ({
       date: String(r.dia),
       avgFallingNumber: red2(r.avg_fn),
+      count: Number(r.total ?? 0),
+    }));
+  }
+
+  // ─── SDmatic 2 (almidón dañado) ─────────────────────────────────────────────
+  //
+  // Juego fijo de parametros; la metrica principal es el almidon danado (UCD).
+  // Una medicion por prueba (sin doble canal).
+
+  private static condicionesSdmatic(f: FiltrosSdmatic): Prisma.Sql[] {
+    const c: Prisma.Sql[] = [
+      Prisma.sql`m."source" = 'SDMATIC'::"LabSource"`,
+      Prisma.sql`m."deletedAt" IS NULL`,
+    ];
+    if (f.from?.trim()) c.push(Prisma.sql`m."analyzedAt" >= ${aUtc(f.from.trim())}`);
+    if (f.to?.trim()) {
+      const to = f.to.trim();
+      c.push(
+        esSoloFecha(to)
+          ? Prisma.sql`m."analyzedAt" < ${aUtc(to)} + interval '1 day'`
+          : Prisma.sql`m."analyzedAt" < ${aUtc(to)}`,
+      );
+    }
+    if (f.sampleCodeContains?.trim())
+      c.push(Prisma.sql`m."sampleRef" ILIKE ${"%" + f.sampleCodeContains.trim() + "%"}`);
+    return c;
+  }
+
+  private static pivotSdmatic(f: FiltrosSdmatic) {
+    const where = Prisma.join(this.condicionesSdmatic(f), " AND ");
+    return Prisma.sql`
+      WITH sd AS (
+        SELECT m."id",
+               m."sourceId",
+               m."sampleRef",
+               m."analyzedAt",
+               ${LOCAL} AS local_ts,
+               MAX(CASE WHEN p."code" = ${SD_UCD}  THEN p."value" END) AS ucd,
+               MAX(CASE WHEN p."code" = ${SD_UCDC} THEN p."value" END) AS ucdc,
+               MAX(CASE WHEN p."code" = ${SD_AI}   THEN p."value" END) AS ai,
+               MAX(CASE WHEN p."code" = ${SD_HUM}  THEN p."value" END) AS humedad,
+               MAX(CASE WHEN p."code" = ${SD_PROT} THEN p."value" END) AS proteina
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT * FROM sd
+    `;
+  }
+
+  static async sdmaticEstadisticas(f: FiltrosSdmatic) {
+    const where = Prisma.join(this.condicionesSdmatic(f), " AND ");
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH sd AS (
+        SELECT m."id", m."analyzedAt",
+               MAX(CASE WHEN p."code" = ${SD_UCD} THEN p."value" END) AS ucd
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT count(*)::bigint                            AS total,
+             count(*) FILTER (WHERE ucd > 0)::bigint     AS con_ucd,
+             avg(ucd) FILTER (WHERE ucd > 0)              AS avg_ucd,
+             min(ucd) FILTER (WHERE ucd > 0)              AS min_ucd,
+             max(ucd) FILTER (WHERE ucd > 0)              AS max_ucd,
+             min("analyzedAt")                           AS primera,
+             max("analyzedAt")                           AS ultima
+      FROM sd
+    `;
+    const r = filas[0] ?? {};
+    return {
+      count: Number(r.total ?? 0),
+      withUcd: Number(r.con_ucd ?? 0),
+      avgUcd: red2(r.avg_ucd),
+      minUcd: num(r.min_ucd),
+      maxUcd: num(r.max_ucd),
+      firstAt: iso(r.primera),
+      lastAt: iso(r.ultima),
+    };
+  }
+
+  static async sdmaticMediciones(f: FiltrosSdmatic, page = 1, pageSize = 50) {
+    const tamano = Math.min(Math.max(pageSize, 1), 500);
+    const pagina = Math.max(page, 1);
+    const pivot = this.pivotSdmatic(f);
+
+    const [filas, conteo] = await Promise.all([
+      prisma.$queryRaw<Record<string, unknown>[]>`
+        ${pivot}
+        ORDER BY "analyzedAt" DESC, "sourceId" DESC
+        LIMIT ${tamano} OFFSET ${(pagina - 1) * tamano}
+      `,
+      prisma.$queryRaw<{ total: bigint }[]>`
+        WITH c AS (${this.pivotSdmatic(f)}) SELECT count(*)::bigint AS total FROM c
+      `,
+    ]);
+
+    return {
+      items: filas.map((r) => ({
+        measurementId: String(r.sourceId),
+        sampleCode: (r.sampleRef as string | null) ?? null,
+        analyzedAt: iso(r.analyzedAt)!,
+        ucd: num(r.ucd),
+        ucdc: num(r.ucdc),
+        iodineAbsorption: red2(r.ai),
+        humidity: num(r.humedad),
+        protein: num(r.proteina),
+      })),
+      total: Number(conteo[0]?.total ?? 0),
+      page: pagina,
+      pageSize: tamano,
+    };
+  }
+
+  /** Almidón dañado (UCD) promedio por dia local. */
+  static async sdmaticTendencia(f: FiltrosSdmatic, dias = 90) {
+    const n = Math.min(Math.max(dias, 1), 400);
+    const pivot = this.pivotSdmatic(f);
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH sd AS (${pivot})
+      SELECT to_char(date_trunc('day', local_ts), 'YYYY-MM-DD') AS dia,
+             avg(ucd) FILTER (WHERE ucd > 0)                     AS avg_ucd,
+             count(*) FILTER (WHERE ucd > 0)::bigint             AS total
+      FROM sd
+      WHERE local_ts >= date_trunc('day', (now() AT TIME ZONE ${TZ})) - make_interval(days => ${n - 1}::int)
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    return filas.map((r) => ({
+      date: String(r.dia),
+      avgUcd: red2(r.avg_ucd),
       count: Number(r.total ?? 0),
     }));
   }

@@ -3,6 +3,7 @@ import LabQueryService, {
   type FiltrosGluten,
   type FiltrosNir,
   type FiltrosFn,
+  type FiltrosSdmatic,
 } from "../services/lab.query.service";
 
 /**
@@ -41,6 +42,12 @@ const filtrosNir = (q: Request["query"]): FiltrosNir => ({
 });
 
 const filtrosFn = (q: Request["query"]): FiltrosFn => ({
+  from: texto(q.from),
+  to: texto(q.to),
+  sampleCodeContains: texto(q.sampleCodeContains),
+});
+
+const filtrosSdmatic = (q: Request["query"]): FiltrosSdmatic => ({
   from: texto(q.from),
   to: texto(q.to),
   sampleCodeContains: texto(q.sampleCodeContains),
@@ -140,6 +147,22 @@ export class LabQueryController {
 
   static fnTendencia = handler((req) =>
     LabQueryService.fnTendencia(filtrosFn(req.query), entero(req.query.days, 60)),
+  );
+
+  static sdmaticEstadisticas = handler((req) =>
+    LabQueryService.sdmaticEstadisticas(filtrosSdmatic(req.query)),
+  );
+
+  static sdmaticMediciones = handler((req) =>
+    LabQueryService.sdmaticMediciones(
+      filtrosSdmatic(req.query),
+      entero(req.query.page, 1),
+      entero(req.query.pageSize, 50),
+    ),
+  );
+
+  static sdmaticTendencia = handler((req) =>
+    LabQueryService.sdmaticTendencia(filtrosSdmatic(req.query), entero(req.query.days, 90)),
   );
 }
 
