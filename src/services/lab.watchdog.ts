@@ -15,6 +15,7 @@ const SOURCE_LABEL: Record<LabSource, string> = {
   GLUTOMATIC: "Glutomatic (gluten)",
   NIR: "NIR Inframatic IM 9500H",
   FN: "FN 1000 (Falling Number)",
+  SDMATIC: "SDmatic 2 (almidón dañado)",
 };
 
 /**

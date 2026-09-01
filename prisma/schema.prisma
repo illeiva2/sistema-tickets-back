@@ -1361,6 +1361,7 @@ enum LabSource {
   GLUTOMATIC
   NIR
   FN // Perten FN 1000 (Falling Number)
+  SDMATIC // Chopin SDmatic 2 (almidón dañado)
 }
 
 model LabMeasurement {
