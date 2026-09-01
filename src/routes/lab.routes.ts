@@ -106,4 +106,8 @@ router.get("/fn/stats", LabQueryController.fnEstadisticas);
 router.get("/fn/measurements", LabQueryController.fnMediciones);
 router.get("/fn/trend", LabQueryController.fnTendencia);
 
+router.get("/sdmatic/stats", LabQueryController.sdmaticEstadisticas);
+router.get("/sdmatic/measurements", LabQueryController.sdmaticMediciones);
+router.get("/sdmatic/trend", LabQueryController.sdmaticTendencia);
+
 export default router;
