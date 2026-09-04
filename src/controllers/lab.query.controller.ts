@@ -4,6 +4,7 @@ import LabQueryService, {
   type FiltrosNir,
   type FiltrosFn,
   type FiltrosSdmatic,
+  type FiltrosAlveolab,
 } from "../services/lab.query.service";
 
 /**
@@ -48,6 +49,12 @@ const filtrosFn = (q: Request["query"]): FiltrosFn => ({
 });
 
 const filtrosSdmatic = (q: Request["query"]): FiltrosSdmatic => ({
+  from: texto(q.from),
+  to: texto(q.to),
+  sampleCodeContains: texto(q.sampleCodeContains),
+});
+
+const filtrosAlveolab = (q: Request["query"]): FiltrosAlveolab => ({
   from: texto(q.from),
   to: texto(q.to),
   sampleCodeContains: texto(q.sampleCodeContains),
@@ -163,6 +170,22 @@ export class LabQueryController {
 
   static sdmaticTendencia = handler((req) =>
     LabQueryService.sdmaticTendencia(filtrosSdmatic(req.query), entero(req.query.days, 90)),
+  );
+
+  static alveolabEstadisticas = handler((req) =>
+    LabQueryService.alveolabEstadisticas(filtrosAlveolab(req.query)),
+  );
+
+  static alveolabMediciones = handler((req) =>
+    LabQueryService.alveolabMediciones(
+      filtrosAlveolab(req.query),
+      entero(req.query.page, 1),
+      entero(req.query.pageSize, 50),
+    ),
+  );
+
+  static alveolabTendencia = handler((req) =>
+    LabQueryService.alveolabTendencia(filtrosAlveolab(req.query), entero(req.query.days, 90)),
   );
 }
 

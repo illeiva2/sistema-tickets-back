@@ -110,4 +110,8 @@ router.get("/sdmatic/stats", LabQueryController.sdmaticEstadisticas);
 router.get("/sdmatic/measurements", LabQueryController.sdmaticMediciones);
 router.get("/sdmatic/trend", LabQueryController.sdmaticTendencia);
 
+router.get("/alveolab/stats", LabQueryController.alveolabEstadisticas);
+router.get("/alveolab/measurements", LabQueryController.alveolabMediciones);
+router.get("/alveolab/trend", LabQueryController.alveolabTendencia);
+
 export default router;

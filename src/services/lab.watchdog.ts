@@ -16,6 +16,7 @@ const SOURCE_LABEL: Record<LabSource, string> = {
   NIR: "NIR Inframatic IM 9500H",
   FN: "FN 1000 (Falling Number)",
   SDMATIC: "SDmatic 2 (almidón dañado)",
+  ALVEOLAB: "AlveoLab (alveógrafo)",
 };
 
 /**

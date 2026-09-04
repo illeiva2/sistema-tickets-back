@@ -38,6 +38,18 @@ const SD_AI = "Absorción de yodo";
 const SD_HUM = "Humedad";
 const SD_PROT = "Proteína";
 
+// Parametros del AlveoLab, tal como los manda GlutenLab.AlveolabAgent. Se usan
+// los codigos estandar del alveograma (los mismos que imprime Chopin): son la
+// notacion que el molinero ya conoce, no hay que traducirla. La metrica cabecera
+// es W (fuerza panadera). P/L es la configuracion de la curva (tenacidad sobre
+// extensibilidad); un cociente, no una magnitud fisica con unidad.
+const AL_W = "W";
+const AL_P = "P";
+const AL_L = "L";
+const AL_PL = "P/L";
+const AL_IE = "Ie";
+const AL_G = "G";
+
 /** Orden fijo de harinas. Las cuatro conocidas se muestran siempre; "Otras" solo si tiene muestras. */
 const ORDEN_HARINAS = ["3/0", "4/0", "Tapera", "Semolín", "Otras"] as const;
 
@@ -64,6 +76,12 @@ export interface FiltrosFn {
 }
 
 export interface FiltrosSdmatic {
+  from?: string;
+  to?: string;
+  sampleCodeContains?: string;
+}
+
+export interface FiltrosAlveolab {
   from?: string;
   to?: string;
   sampleCodeContains?: string;
@@ -1017,6 +1035,156 @@ export class LabQueryService {
     return filas.map((r) => ({
       date: String(r.dia),
       avgUcd: red2(r.avg_ucd),
+      count: Number(r.total ?? 0),
+    }));
+  }
+
+  // ─── AlveoLab (alveógrafo) ──────────────────────────────────────────────────
+  //
+  // Juego fijo de parametros reologicos: W (fuerza), P (tenacidad), L
+  // (extensibilidad), P/L (config de la curva), Ie (elasticidad) y G
+  // (hinchamiento). La metrica principal es W. Una medicion por prueba (Test).
+
+  private static condicionesAlveolab(f: FiltrosAlveolab): Prisma.Sql[] {
+    const c: Prisma.Sql[] = [
+      Prisma.sql`m."source" = 'ALVEOLAB'::"LabSource"`,
+      Prisma.sql`m."deletedAt" IS NULL`,
+    ];
+    if (f.from?.trim()) c.push(Prisma.sql`m."analyzedAt" >= ${aUtc(f.from.trim())}`);
+    if (f.to?.trim()) {
+      const to = f.to.trim();
+      c.push(
+        esSoloFecha(to)
+          ? Prisma.sql`m."analyzedAt" < ${aUtc(to)} + interval '1 day'`
+          : Prisma.sql`m."analyzedAt" < ${aUtc(to)}`,
+      );
+    }
+    if (f.sampleCodeContains?.trim())
+      c.push(Prisma.sql`m."sampleRef" ILIKE ${"%" + f.sampleCodeContains.trim() + "%"}`);
+    return c;
+  }
+
+  private static pivotAlveolab(f: FiltrosAlveolab) {
+    const where = Prisma.join(this.condicionesAlveolab(f), " AND ");
+    return Prisma.sql`
+      WITH al AS (
+        SELECT m."id",
+               m."sourceId",
+               m."sampleRef",
+               m."analyzedAt",
+               m."productCode",
+               ${LOCAL} AS local_ts,
+               MAX(CASE WHEN p."code" = ${AL_W}  THEN p."value" END) AS w,
+               MAX(CASE WHEN p."code" = ${AL_P}  THEN p."value" END) AS p,
+               MAX(CASE WHEN p."code" = ${AL_L}  THEN p."value" END) AS l,
+               MAX(CASE WHEN p."code" = ${AL_PL} THEN p."value" END) AS pl,
+               MAX(CASE WHEN p."code" = ${AL_IE} THEN p."value" END) AS ie,
+               MAX(CASE WHEN p."code" = ${AL_G}  THEN p."value" END) AS g
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT * FROM al
+    `;
+  }
+
+  static async alveolabEstadisticas(f: FiltrosAlveolab) {
+    const where = Prisma.join(this.condicionesAlveolab(f), " AND ");
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH al AS (
+        SELECT m."id", m."analyzedAt",
+               MAX(CASE WHEN p."code" = ${AL_W}  THEN p."value" END) AS w,
+               MAX(CASE WHEN p."code" = ${AL_P}  THEN p."value" END) AS p,
+               MAX(CASE WHEN p."code" = ${AL_L}  THEN p."value" END) AS l,
+               MAX(CASE WHEN p."code" = ${AL_PL} THEN p."value" END) AS pl,
+               MAX(CASE WHEN p."code" = ${AL_IE} THEN p."value" END) AS ie
+        FROM "lab_measurements" m
+        LEFT JOIN "lab_parameters" p ON p."measurementId" = m."id"
+        WHERE ${where}
+        GROUP BY m."id"
+      )
+      SELECT count(*)::bigint                        AS total,
+             count(*) FILTER (WHERE w > 0)::bigint   AS con_w,
+             avg(w)  FILTER (WHERE w > 0)             AS avg_w,
+             min(w)  FILTER (WHERE w > 0)             AS min_w,
+             max(w)  FILTER (WHERE w > 0)             AS max_w,
+             avg(p)  FILTER (WHERE p > 0)             AS avg_p,
+             avg(l)  FILTER (WHERE l > 0)             AS avg_l,
+             avg(pl) FILTER (WHERE pl > 0)            AS avg_pl,
+             avg(ie) FILTER (WHERE ie > 0)            AS avg_ie,
+             min("analyzedAt")                       AS primera,
+             max("analyzedAt")                       AS ultima
+      FROM al
+    `;
+    const r = filas[0] ?? {};
+    return {
+      count: Number(r.total ?? 0),
+      withW: Number(r.con_w ?? 0),
+      avgW: red2(r.avg_w),
+      minW: num(r.min_w),
+      maxW: num(r.max_w),
+      avgP: red2(r.avg_p),
+      avgL: red2(r.avg_l),
+      avgPL: red2(r.avg_pl),
+      avgIe: red2(r.avg_ie),
+      firstAt: iso(r.primera),
+      lastAt: iso(r.ultima),
+    };
+  }
+
+  static async alveolabMediciones(f: FiltrosAlveolab, page = 1, pageSize = 50) {
+    const tamano = Math.min(Math.max(pageSize, 1), 500);
+    const pagina = Math.max(page, 1);
+    const pivot = this.pivotAlveolab(f);
+
+    const [filas, conteo] = await Promise.all([
+      prisma.$queryRaw<Record<string, unknown>[]>`
+        ${pivot}
+        ORDER BY "analyzedAt" DESC, "sourceId" DESC
+        LIMIT ${tamano} OFFSET ${(pagina - 1) * tamano}
+      `,
+      prisma.$queryRaw<{ total: bigint }[]>`
+        WITH c AS (${this.pivotAlveolab(f)}) SELECT count(*)::bigint AS total FROM c
+      `,
+    ]);
+
+    return {
+      items: filas.map((r) => ({
+        measurementId: String(r.sourceId),
+        sampleCode: (r.sampleRef as string | null) ?? null,
+        analyzedAt: iso(r.analyzedAt)!,
+        flourType: (r.productCode as string | null) ?? null,
+        w: num(r.w),
+        p: num(r.p),
+        l: num(r.l),
+        pl: red2(r.pl),
+        ie: num(r.ie),
+        g: red2(r.g),
+      })),
+      total: Number(conteo[0]?.total ?? 0),
+      page: pagina,
+      pageSize: tamano,
+    };
+  }
+
+  /** Fuerza panadera (W) promedio por dia local. */
+  static async alveolabTendencia(f: FiltrosAlveolab, dias = 90) {
+    const n = Math.min(Math.max(dias, 1), 400);
+    const pivot = this.pivotAlveolab(f);
+    const filas = await prisma.$queryRaw<Record<string, unknown>[]>`
+      WITH al AS (${pivot})
+      SELECT to_char(date_trunc('day', local_ts), 'YYYY-MM-DD') AS dia,
+             avg(w) FILTER (WHERE w > 0)                         AS avg_w,
+             count(*) FILTER (WHERE w > 0)::bigint               AS total
+      FROM al
+      WHERE local_ts >= date_trunc('day', (now() AT TIME ZONE ${TZ})) - make_interval(days => ${n - 1}::int)
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    return filas.map((r) => ({
+      date: String(r.dia),
+      avgW: red2(r.avg_w),
       count: Number(r.total ?? 0),
     }));
   }
