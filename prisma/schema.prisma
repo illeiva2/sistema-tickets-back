@@ -1362,6 +1362,7 @@ enum LabSource {
   NIR
   FN // Perten FN 1000 (Falling Number)
   SDMATIC // Chopin SDmatic 2 (almidón dañado)
+  ALVEOLAB // Chopin AlveoLab (alveógrafo: W, P, L, P/L, Ie, G)
 }
 
 model LabMeasurement {
