@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   accessionCheckDigit,
   buildDisplayName,
+  condicionesDe,
   extractAccession,
   formatAccession,
   looksLikeAccession,
@@ -195,7 +196,109 @@ describe("validateFieldValues", () => {
   });
 });
 
+const DEFS_GRANO: FieldDefLike[] = [
+  {
+    key: "brotado",
+    label: "Brotado",
+    type: "BOOLEAN",
+    required: false,
+    options: null,
+    inName: false,
+    namePrefix: null,
+    sortOrder: 1,
+    isCondition: true,
+  },
+  {
+    key: "insectos",
+    label: "Insectos",
+    type: "SELECT",
+    required: false,
+    options: ["No", "Vivos", "Muertos"],
+    inName: false,
+    namePrefix: null,
+    sortOrder: 2,
+    isCondition: true,
+    conditionValues: ["Vivos", "Muertos"],
+  },
+  {
+    key: "olor",
+    label: "Olor",
+    type: "SELECT",
+    required: false,
+    options: ["No", "Poco", "Mucho"],
+    inName: false,
+    namePrefix: null,
+    sortOrder: 3,
+    isCondition: true,
+    conditionValues: null,
+  },
+  {
+    key: "empresa",
+    label: "Empresa",
+    type: "TEXT",
+    required: false,
+    options: null,
+    inName: true,
+    namePrefix: null,
+    sortOrder: 0,
+  },
+];
+
+describe("campos BOOLEAN (casillas de alteración)", () => {
+  it("guarda true solo cuando está marcado; false y vacío no se guardan", () => {
+    const { values, errors } = validateFieldValues(DEFS_GRANO, {
+      brotado: "true",
+      insectos: "No",
+      olor: false,
+    });
+    expect(errors).toEqual([]);
+    expect(values).toEqual({ brotado: true, insectos: "No" });
+  });
+
+  it("acepta las formas habituales de sí/no y rechaza lo demás", () => {
+    expect(validateFieldValues(DEFS_GRANO, { brotado: "sí" }).values.brotado).toBe(true);
+    expect(validateFieldValues(DEFS_GRANO, { brotado: true }).values.brotado).toBe(true);
+    expect(validateFieldValues(DEFS_GRANO, { brotado: "no" }).values.brotado).toBeUndefined();
+    const { errors } = validateFieldValues(DEFS_GRANO, { brotado: "quizás" });
+    expect(errors.map((e) => e.field)).toEqual(["fields.brotado"]);
+  });
+});
+
+describe("condicionesDe (advertencia de la muestra)", () => {
+  it("una casilla marcada cuenta con su etiqueta; sin marcar, no", () => {
+    expect(condicionesDe(DEFS_GRANO, { brotado: true })).toEqual(["Brotado"]);
+    expect(condicionesDe(DEFS_GRANO, { brotado: false })).toEqual([]);
+    expect(condicionesDe(DEFS_GRANO, {})).toEqual([]);
+  });
+
+  it("en una lista cuentan solo los valores señalados", () => {
+    expect(condicionesDe(DEFS_GRANO, { insectos: "No" })).toEqual([]);
+    expect(condicionesDe(DEFS_GRANO, { insectos: "Vivos" })).toEqual(["Insectos: Vivos"]);
+  });
+
+  it("una lista sin valores señalados cuenta con cualquier valor no vacío", () => {
+    expect(condicionesDe(DEFS_GRANO, { olor: "Poco" })).toEqual(["Olor: Poco"]);
+    expect(condicionesDe(DEFS_GRANO, { olor: "" })).toEqual([]);
+  });
+
+  it("los campos que no son condición nunca alertan, y el orden es el del catálogo", () => {
+    expect(condicionesDe(DEFS_GRANO, { empresa: "Soybean", olor: "Mucho", brotado: true })).toEqual([
+      "Brotado",
+      "Olor: Mucho",
+    ]);
+  });
+});
+
 describe("buildDisplayName", () => {
+  it("una casilla marcada que participa del nombre aporta su etiqueta, no 'true'", () => {
+    const defs: FieldDefLike[] = [{ ...DEFS_GRANO[0], inName: true }];
+    const sampledAt = new Date("2026-09-07T13:30:00.000Z");
+    expect(buildDisplayName("ACOPIO", sampledAt, defs, { brotado: true })).toBe(
+      "Acopio · Brotado · 07/09 10:30",
+    );
+    expect(buildDisplayName("ACOPIO", sampledAt, defs, {})).toBe("Acopio · 07/09 10:30");
+  });
+
   it("arma sitio · campos inName (con prefijo) · fecha/hora de planta", () => {
     // 13:30Z = 10:30 en Córdoba (UTC-3), sin importar la zona del proceso.
     const sampledAt = new Date("2026-09-07T13:30:00.000Z");

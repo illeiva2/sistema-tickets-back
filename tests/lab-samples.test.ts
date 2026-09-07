@@ -221,7 +221,10 @@ describe("POST /api/glutenlab/samples", () => {
 });
 
 describe("GET /api/glutenlab/samples/:accession", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMock.labSampleFieldDef.findMany.mockResolvedValue([]);
+  });
 
   it("un dígito verificador que no cierra es 400 (error de tipeo), no 404", async () => {
     conNivel("VIEWER");
@@ -357,6 +360,41 @@ describe("GET /api/glutenlab/samples (lista)", () => {
     vi.clearAllMocks();
     prismaMock.labSample.findMany.mockResolvedValue([]);
     prismaMock.labSample.count.mockResolvedValue(0);
+    prismaMock.labMeasurement.groupBy.mockResolvedValue([] as any);
+    prismaMock.labSampleFieldDef.findMany.mockResolvedValue([]);
+  });
+
+  it("cada muestra trae sus alteraciones según los campos-condición de su tipo", async () => {
+    conNivel("VIEWER");
+    prismaMock.labSample.findMany.mockResolvedValue([
+      { id: "s-1", kindId: "lsk_recepcion", accession: "A-0002-3", fields: { brotado: true, insectos: "No" } },
+      { id: "s-2", kindId: "lsk_recepcion", accession: "A-0003-1", fields: { empresa: "Soybean" } },
+    ] as any);
+    prismaMock.labSample.count.mockResolvedValue(2);
+    prismaMock.labSampleFieldDef.findMany.mockResolvedValue([
+      campo({ id: "f-b", kindId: "lsk_recepcion", key: "brotado", label: "Brotado", type: "BOOLEAN", isCondition: true }),
+      campo({
+        id: "f-i",
+        kindId: "lsk_recepcion",
+        key: "insectos",
+        label: "Insectos",
+        type: "SELECT",
+        options: ["No", "Vivos", "Muertos"],
+        isCondition: true,
+        conditionValues: ["Vivos", "Muertos"],
+      }),
+    ] as any);
+
+    const res = await request(app).get(BASE).set(auth(usuario));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.items[0].conditions).toEqual(["Brotado"]);
+    expect(res.body.data.items[1].conditions).toEqual([]);
+    // Solo los campos-condición activos de los tipos presentes, en una consulta.
+    const w = prismaMock.labSampleFieldDef.findMany.mock.calls[0][0]?.where as any;
+    expect(w.isCondition).toBe(true);
+    expect(w.isActive).toBe(true);
+    expect(w.kindId.in).toEqual(["lsk_recepcion"]);
   });
 
   it("cada muestra trae cuántos análisis tiene por equipo", async () => {

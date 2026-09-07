@@ -1513,6 +1513,7 @@ enum LabFieldType {
   NUMBER
   SELECT
   DATETIME
+  BOOLEAN // casilla si/no: presencia de una alteracion (brotado, panza blanca...)
 }
 
 /// Tipo de muestra ("interna de proceso", "recepcion de grano"). Cada tipo
@@ -1555,6 +1556,13 @@ model LabSampleFieldDef {
   /// suelto no dice nada; "Lote 4521" si.
   namePrefix  String?      @db.VarChar(20)
   placeholder String?      @db.VarChar(80)
+  /// El campo describe una ALTERACION de la muestra (brotado, insectos, olor):
+  /// si esta presente, la muestra se marca con una advertencia en todo el panel.
+  /// Es la regla "cuenta como defecto" del catalogo, configurable por campo.
+  isCondition Boolean      @default(false)
+  /// Para SELECT: que opciones cuentan como alteracion (["Vivos","Muertos"]);
+  /// null = cualquier valor distinto de vacio. Para BOOLEAN cuenta `true`.
+  conditionValues Json?
   sortOrder   Int          @default(0)
   isActive    Boolean      @default(true)
   createdAt   DateTime     @default(now())
