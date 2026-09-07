@@ -8,7 +8,7 @@ import { z } from "zod";
  */
 
 const siteEnum = z.enum(["MOLINO", "ACOPIO"]);
-const fieldTypeEnum = z.enum(["TEXT", "NUMBER", "SELECT", "DATETIME"]);
+const fieldTypeEnum = z.enum(["TEXT", "NUMBER", "SELECT", "DATETIME", "BOOLEAN"]);
 
 /** Clave estable de un campo: snake_case, empieza con letra. Se guarda en el JSON de cada muestra. */
 const fieldKey = z.string().regex(/^[a-z][a-z0-9_]{1,39}$/, "clave inválida (snake_case, 2 a 40 caracteres)");
@@ -44,6 +44,10 @@ const fieldDefBase = {
   namePrefix: z.string().max(20).nullish(),
   placeholder: z.string().max(80).nullish(),
   sortOrder: z.number().int().min(0).max(1000).optional(),
+  /** El campo describe una alteración de la muestra: presente = advertencia. */
+  isCondition: z.boolean().optional(),
+  /** Para listas: qué opciones cuentan como alteración. null = cualquier valor. */
+  conditionValues: z.array(z.string().min(1).max(80)).max(100).nullish(),
 };
 
 export const createFieldDefSchema = z.object({

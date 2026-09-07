@@ -3,9 +3,11 @@ import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import {
   buildDisplayName,
+  condicionesDe,
   extractAccession,
   formatAccession,
   looksLikeAccession,
+  optionsOf,
   parseAccession,
   validateFieldValues,
   type FieldValues,
@@ -95,6 +97,7 @@ export class LabSamplesService {
     if (body.type === "SELECT" && !body.options?.length) {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
+    this.validarValoresCondicion(body.type, body.options ?? [], body.conditionValues);
 
     try {
       return await prisma.labSampleFieldDef.create({
@@ -109,6 +112,9 @@ export class LabSamplesService {
           namePrefix: body.namePrefix ?? null,
           placeholder: body.placeholder ?? null,
           sortOrder: body.sortOrder ?? 0,
+          isCondition: body.isCondition ?? false,
+          conditionValues:
+            body.type === "SELECT" && body.conditionValues?.length ? body.conditionValues : undefined,
         },
       });
     } catch (error) {
@@ -125,6 +131,7 @@ export class LabSamplesService {
     if (def.type === "SELECT" && body.options !== undefined && body.options.length === 0) {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
+    this.validarValoresCondicion(def.type, body.options ?? optionsOf(def), body.conditionValues);
 
     return prisma.labSampleFieldDef.update({
       where: { id },
@@ -138,8 +145,56 @@ export class LabSamplesService {
         placeholder: body.placeholder,
         sortOrder: body.sortOrder,
         isActive: body.isActive,
+        isCondition: body.isCondition,
+        conditionValues:
+          def.type !== "SELECT" || body.conditionValues === undefined
+            ? undefined
+            : body.conditionValues === null || body.conditionValues.length === 0
+              ? Prisma.DbNull
+              : body.conditionValues,
       },
     });
+  }
+
+  /** Lo que cuenta como alteración tiene que ser una opción real de la lista. */
+  private static validarValoresCondicion(
+    type: string,
+    options: string[],
+    conditionValues: string[] | null | undefined,
+  ) {
+    if (type !== "SELECT" || !conditionValues?.length) return;
+    const fuera = conditionValues.filter((v) => !options.includes(v));
+    if (fuera.length > 0) {
+      throw new ApiError(
+        "VALIDATION_ERROR",
+        `Los valores que cuentan como alteración deben ser opciones de la lista: ${fuera.join(", ")}`,
+        400,
+      );
+    }
+  }
+
+  /**
+   * Alteraciones presentes por muestra, según los campos-condición ACTIVOS de
+   * su tipo. Una consulta para todas las muestras de la página.
+   */
+  private static async condicionesPorMuestra(
+    muestras: { id: string; kindId: string; fields: unknown }[],
+  ): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    if (muestras.length === 0) return out;
+    const defs = await prisma.labSampleFieldDef.findMany({
+      where: { kindId: { in: [...new Set(muestras.map((m) => m.kindId))] }, isActive: true, isCondition: true },
+      orderBy: { sortOrder: "asc" },
+    });
+    const porTipo = new Map<string, typeof defs>();
+    for (const d of defs) porTipo.set(d.kindId, [...(porTipo.get(d.kindId) ?? []), d]);
+    for (const m of muestras) {
+      out.set(
+        m.id,
+        condicionesDe(porTipo.get(m.kindId) ?? [], (m.fields ?? {}) as Record<string, unknown>),
+      );
+    }
+    return out;
   }
 
   // ─── Muestras ──────────────────────────────────────────────────────────────
@@ -233,7 +288,12 @@ export class LabSamplesService {
       acc[c.source] = c._count._all;
       porMuestra.set(c.sampleId, acc);
     }
-    const items = filas.map((s) => ({ ...s, analyses: porMuestra.get(s.id) ?? {} }));
+    const condiciones = await this.condicionesPorMuestra(filas);
+    const items = filas.map((s) => ({
+      ...s,
+      analyses: porMuestra.get(s.id) ?? {},
+      conditions: condiciones.get(s.id) ?? [],
+    }));
 
     return { items, total, page, pageSize, warning };
   }
@@ -304,7 +364,11 @@ export class LabSamplesService {
       include: INCLUDE,
     });
     if (!sample) return null;
-    return { ...sample, measurements: await this.analisisDe(sample.id) };
+    const [measurements, condiciones] = await Promise.all([
+      this.analisisDe(sample.id),
+      this.condicionesPorMuestra([sample]),
+    ]);
+    return { ...sample, measurements, conditions: condiciones.get(sample.id) ?? [] };
   }
 
   /**
@@ -368,7 +432,7 @@ export class LabSamplesService {
     const site = body.site as LabSite;
     const seq = await this.nextSeq(site);
 
-    return prisma.labSample.create({
+    const creada = await prisma.labSample.create({
       data: {
         accession: formatAccession(site, seq),
         site,
@@ -382,6 +446,7 @@ export class LabSamplesService {
       },
       include: INCLUDE,
     });
+    return { ...creada, conditions: condicionesDe(kind.fields, values) };
   }
 
   /**
@@ -408,7 +473,7 @@ export class LabSamplesService {
       values = r.values;
     }
 
-    return prisma.labSample.update({
+    const actualizada = await prisma.labSample.update({
       where: { id },
       data: {
         sampledAt,
@@ -418,6 +483,7 @@ export class LabSamplesService {
       },
       include: INCLUDE,
     });
+    return { ...actualizada, conditions: condicionesDe(actual.kind.fields, values) };
   }
 
   // ─── Internos ──────────────────────────────────────────────────────────────

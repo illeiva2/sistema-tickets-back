@@ -127,9 +127,22 @@ export interface FieldDefLike {
   inName: boolean;
   namePrefix: string | null;
   sortOrder: number;
+  /** El campo describe una alteración de la muestra (brotado, insectos, olor). */
+  isCondition?: boolean;
+  /** Para SELECT: opciones que cuentan como alteración. Null/vacío = cualquier valor. */
+  conditionValues?: unknown;
 }
 
-export type FieldValues = Record<string, string | number>;
+/** Un BOOLEAN solo se guarda cuando es true: "no marcado" y "no" son lo mismo. */
+export type FieldValues = Record<string, string | number | boolean>;
+
+const aBooleano = (v: unknown): boolean | null => {
+  if (typeof v === "boolean") return v;
+  const t = String(v).trim().toLowerCase();
+  if (["true", "1", "si", "sí", "yes", "x"].includes(t)) return true;
+  if (["false", "0", "no", ""].includes(t)) return false;
+  return null;
+};
 
 export interface FieldError {
   field: string;
@@ -168,7 +181,10 @@ export const validateFieldValues = (
   for (const def of defs) {
     const v = raw[def.key];
     const campo = `fields.${def.key}`;
-    const vacio = v === undefined || v === null || (typeof v === "string" && v.trim() === "");
+    // `false` cuenta como "sin dato" en cualquier tipo: una casilla sin marcar no
+    // es un valor, y una lista jamás recibe false como opción válida.
+    const vacio =
+      v === undefined || v === null || v === false || (typeof v === "string" && v.trim() === "");
     if (vacio) {
       if (def.required) errors.push({ field: campo, message: `${def.label} es obligatorio` });
       continue;
@@ -216,10 +232,45 @@ export const validateFieldValues = (
         }
         break;
       }
+      case "BOOLEAN": {
+        const b = aBooleano(v);
+        if (b === null) {
+          errors.push({ field: campo, message: `${def.label} debe ser sí o no` });
+        } else if (b) {
+          values[def.key] = true;
+        }
+        break;
+      }
     }
   }
 
   return { values, errors };
+};
+
+/**
+ * Alteraciones presentes en la muestra, según el catálogo: la etiqueta de cada
+ * campo marcado como condición cuyo valor cuenta. Un BOOLEAN cuenta si está
+ * marcado; una lista, si el valor está entre los que la definición señala (o
+ * cualquier valor no vacío, si no señala ninguno). Se calcula al leer, nunca se
+ * persiste: si el laboratorio cambia qué cuenta como alteración, la advertencia
+ * cambia con él en toda la historia.
+ */
+export const condicionesDe = (defs: FieldDefLike[], values: Record<string, unknown>): string[] => {
+  const out: string[] = [];
+  for (const def of defs) {
+    if (!def.isCondition) continue;
+    const v = values[def.key];
+    if (v === undefined || v === null || v === "" || v === false) continue;
+    if (def.type === "BOOLEAN") {
+      if (v === true) out.push(def.label);
+      continue;
+    }
+    const cuentan = Array.isArray(def.conditionValues)
+      ? def.conditionValues.filter((x): x is string => typeof x === "string")
+      : [];
+    if (cuentan.length === 0 || cuentan.includes(String(v))) out.push(`${def.label}: ${String(v)}`);
+  }
+  return out;
 };
 
 // ─── Nombre descriptivo ──────────────────────────────────────────────────────
@@ -261,8 +312,10 @@ export const buildDisplayName = (
   const enNombre = defs.filter((d) => d.inName).sort((a, b) => a.sortOrder - b.sortOrder);
   for (const def of enNombre) {
     const v = values[def.key];
-    if (v === undefined || v === null || v === "") continue;
-    const texto = def.type === "DATETIME" ? fmtPlanta(new Date(String(v))) : String(v);
+    if (v === undefined || v === null || v === "" || v === false) continue;
+    // Una casilla marcada aporta su etiqueta ("Brotado"), no un "true".
+    const texto =
+      v === true ? def.label : def.type === "DATETIME" ? fmtPlanta(new Date(String(v))) : String(v);
     partes.push(`${def.namePrefix ?? ""}${texto}`);
   }
   partes.push(fmtPlanta(sampledAt));
