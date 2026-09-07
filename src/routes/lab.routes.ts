@@ -2,12 +2,19 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import LabController from "../controllers/lab.controller";
 import LabQueryController from "../controllers/lab.query.controller";
+import LabSamplesController from "../controllers/lab.samples.controller";
 import LabWatchdog from "../services/lab.watchdog";
 import { serviceAuthMiddleware } from "../middleware/serviceAuth";
 import { authMiddleware } from "../middleware/auth";
 import { requireModule } from "../middleware/requireModule";
 import { validate } from "../middleware/validation";
 import { heartbeatSchema, ingestBatchSchema, reconcileSchema } from "../validations/lab";
+import {
+  createFieldDefSchema,
+  createSampleSchema,
+  updateFieldDefSchema,
+  updateSampleSchema,
+} from "../validations/lab.samples";
 
 const router = Router();
 
@@ -113,5 +120,43 @@ router.get("/sdmatic/trend", LabQueryController.sdmaticTendencia);
 router.get("/alveolab/stats", LabQueryController.alveolabEstadisticas);
 router.get("/alveolab/measurements", LabQueryController.alveolabMediciones);
 router.get("/alveolab/trend", LabQueryController.alveolabTendencia);
+
+// ─── Registro de muestras ────────────────────────────────────────────────────
+// Leer lo puede cualquiera con el módulo. Registrar y editar muestras exige QC
+// (es una escritura sobre datos de calidad); tocar el catálogo de campos exige
+// MANAGEMENT, porque cambia qué le pide el formulario a todo el laboratorio.
+// El requireModule con nivel va POR RUTA, encima del de arriba: la puerta
+// general sigue siendo una sola y esto solo la aprieta.
+router.get("/samples/kinds", LabSamplesController.kinds);
+router.get("/samples/summary", LabSamplesController.summary);
+router.get("/samples", LabSamplesController.list);
+router.post(
+  "/samples",
+  requireModule("glutenlab", "QC"),
+  validate(createSampleSchema),
+  LabSamplesController.create,
+);
+// Después de las literales ("/samples/kinds", "/samples/summary"): si fuera
+// antes, "kinds" entraría acá como accesión y daría 400.
+router.get("/samples/:accession", LabSamplesController.getByAccession);
+router.patch(
+  "/samples/:id",
+  requireModule("glutenlab", "QC"),
+  validate(updateSampleSchema),
+  LabSamplesController.update,
+);
+
+router.post(
+  "/samples/kinds/:kindId/fields",
+  requireModule("glutenlab", "MANAGEMENT"),
+  validate(createFieldDefSchema),
+  LabSamplesController.createFieldDef,
+);
+router.patch(
+  "/samples/fields/:id",
+  requireModule("glutenlab", "MANAGEMENT"),
+  validate(updateFieldDefSchema),
+  LabSamplesController.updateFieldDef,
+);
 
 export default router;
