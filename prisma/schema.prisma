@@ -116,6 +116,7 @@ model User {
   moduleGrants          ModuleGrant[]          @relation("ModuleGrantUser")
   moduleGrantsGiven     ModuleGrant[]          @relation("ModuleGrantGranter")
   oauthExchangeCodes    OAuthExchangeCode[]
+  labSamplesCreated     LabSample[]            @relation("LabSampleCreator")
 
   @@map("users")
 }
@@ -1483,6 +1484,114 @@ model LabFeed {
   updatedAt DateTime @updatedAt
 
   @@map("lab_feeds")
+}
+
+// ─── Registro de muestras ────────────────────────────────────────────────────
+// La muestra es la unidad que enlaza los analisis de los cinco instrumentos: se
+// registra UNA vez, recibe una accesion corta (M-0012-4) que el operario tipea
+// en cada equipo, y las mediciones se enlazan leyendo esa accesion del
+// sampleRef. La metadata (procedencia, silo, CTG...) vive en la ficha y no en el
+// nombre que se tipea: identidad en el numero, atributos en la ficha.
+
+/// Laboratorio que registra. Define el prefijo y el contador de la accesion:
+/// Molino y Acopio (balanza) son series independientes, como pidieron los labs.
+enum LabSite {
+  MOLINO
+  ACOPIO
+}
+
+enum LabFieldType {
+  TEXT
+  NUMBER
+  SELECT
+  DATETIME
+}
+
+/// Tipo de muestra ("interna de proceso", "recepcion de grano"). Cada tipo
+/// define SUS campos en LabSampleFieldDef; sumar un tipo es una fila, no un deploy.
+model LabSampleKind {
+  id          String   @id @default(cuid())
+  code        String   @unique @db.VarChar(40)
+  name        String   @db.VarChar(80)
+  description String?  @db.VarChar(200)
+  /// Laboratorio propuesto al elegir este tipo; el operario puede cambiarlo.
+  defaultSite LabSite?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  fields  LabSampleFieldDef[]
+  samples LabSample[]
+
+  @@map("lab_sample_kinds")
+}
+
+/// Definicion de un campo de la ficha. Es lo que hace configurable el registro:
+/// "numero de transporte" se agrega desde el panel, sin deploy ni migracion.
+/// Baja logica con isActive: los valores ya cargados con esa key se conservan.
+model LabSampleFieldDef {
+  id          String       @id @default(cuid())
+  kindId      String
+  /// Clave estable del valor dentro de LabSample.fields. No cambia aunque se
+  /// corrija la etiqueta, para no dejar huerfanos los valores historicos.
+  key         String       @db.VarChar(40)
+  label       String       @db.VarChar(80)
+  type        LabFieldType
+  required    Boolean      @default(false)
+  /// Opciones de un SELECT (array JSON de strings). Null para los demas tipos.
+  options     Json?
+  /// Participa del nombre descriptivo auto-generado, en el orden de sortOrder.
+  inName      Boolean      @default(false)
+  /// Texto que precede al valor en el nombre ("Lote ", "Silo "): un "4521"
+  /// suelto no dice nada; "Lote 4521" si.
+  namePrefix  String?      @db.VarChar(20)
+  placeholder String?      @db.VarChar(80)
+  sortOrder   Int          @default(0)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  kind LabSampleKind @relation(fields: [kindId], references: [id], onDelete: Cascade)
+
+  @@unique([kindId, key])
+  @@index([kindId, isActive, sortOrder])
+  @@map("lab_sample_field_defs")
+}
+
+/// Una muestra registrada. `seq` sale de una secuencia de Postgres por sitio
+/// (lab_sample_seq_molino / lab_sample_seq_acopio, creadas en el migration.sql):
+/// es atomico sin bloquear filas, y los huecos que dejan las transacciones
+/// abortadas son deseables, porque una accesion jamas se reutiliza.
+model LabSample {
+  id          String    @id @default(cuid())
+  /// "M-0012-4": prefijo del laboratorio, correlativo y digito verificador (Luhn).
+  accession   String    @unique @db.VarChar(16)
+  site        LabSite
+  seq         Int
+  kindId      String
+  /// Momento de la TOMA de la muestra (no del registro). Lo carga el operario;
+  /// por defecto es "ahora".
+  sampledAt   DateTime
+  /// Nombre descriptivo generado desde los campos con inName. Se regenera al
+  /// editar; se persiste para listar y buscar sin recomponerlo cada vez.
+  displayName String    @db.VarChar(160)
+  /// Valores de los campos configurables, por key. JSONB: el esquema es
+  /// LabSampleFieldDef y puede cambiar sin migrar los valores.
+  fields      Json
+  notes       String?   @db.Text
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  kind      LabSampleKind @relation(fields: [kindId], references: [id])
+  createdBy User          @relation("LabSampleCreator", fields: [createdById], references: [id])
+
+  @@unique([site, seq])
+  @@index([sampledAt])
+  @@index([kindId, sampledAt])
+  @@map("lab_samples")
 }
 
 /// Credencial de servicio para el agente de la planta. Clon del modelo de
