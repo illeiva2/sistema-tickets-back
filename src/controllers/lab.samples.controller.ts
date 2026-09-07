@@ -83,6 +83,11 @@ export class LabSamplesController {
   // req.user lo garantiza authMiddleware, que corre antes en el router.
   static create = handler((req) => LabSamplesService.create(req.user!.id, req.body), 201);
 
+  /** Ventana acotada: re-enlazar el histórico entero no tiene sentido, las accesiones son nuevas. */
+  static relink = handler((req) =>
+    LabSamplesService.relinkUnlinked(Math.min(entero(req.query.days, 30), 365)),
+  );
+
   static update = oNoEncontrado("No existe esa muestra")((req) =>
     LabSamplesService.update(String(req.params.id), req.body),
   );

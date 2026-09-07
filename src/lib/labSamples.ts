@@ -94,6 +94,27 @@ export const parseAccession = (input: string): ParsedAccession | null => {
 export const looksLikeAccession = (input: string): boolean =>
   /^[MA]-?\d{1,9}-?\d$/.test(normalizar(input));
 
+/**
+ * Busca una accesión VÁLIDA dentro de lo que el operario tipeó en el equipo.
+ *
+ * Primero prueba el texto entero (el caso normal: tipearon solo el número).
+ * Si no, recorre los tokens con forma de accesión y devuelve el primero cuyo
+ * dígito verificador cierra: cubre "M-0012-4 3/0" o "Tapera M00124". Un token
+ * con forma pero dígito incorrecto se ignora, no se adivina: enlazar una
+ * medición a la muestra equivocada es peor que dejarla sin enlazar.
+ */
+export const extractAccession = (input: string | null | undefined): ParsedAccession | null => {
+  if (!input) return null;
+  const entero = parseAccession(input);
+  if (entero) return entero;
+  const re = /(?<![A-Z0-9])([MA]-?\d{1,9}-?\d)(?![0-9])/gi;
+  for (const m of input.toUpperCase().matchAll(re)) {
+    const parsed = parseAccession(m[1]);
+    if (parsed) return parsed;
+  }
+  return null;
+};
+
 // ─── Campos configurables ────────────────────────────────────────────────────
 
 /** Lo que el validador necesita de una LabSampleFieldDef. */

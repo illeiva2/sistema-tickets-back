@@ -136,6 +136,13 @@ router.post(
   validate(createSampleSchema),
   LabSamplesController.create,
 );
+// Re-enlaza mediciones sueltas cuya accesión ahora sí existe. Inofensivo y
+// repetible; MANAGEMENT porque toca datos de calidad en masa.
+router.post(
+  "/samples/relink",
+  requireModule("glutenlab", "MANAGEMENT"),
+  LabSamplesController.relink,
+);
 // Después de las literales ("/samples/kinds", "/samples/summary"): si fuera
 // antes, "kinds" entraría acá como accesión y daría 400.
 router.get("/samples/:accession", LabSamplesController.getByAccession);

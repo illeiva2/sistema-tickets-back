@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   accessionCheckDigit,
   buildDisplayName,
+  extractAccession,
   formatAccession,
   looksLikeAccession,
   luhnCheckDigit,
@@ -77,6 +78,32 @@ describe("accesión", () => {
     expect(looksLikeAccession("M00125")).toBe(true);
     expect(looksLikeAccession("Tapera")).toBe(false);
     expect(looksLikeAccession("3/0")).toBe(false);
+  });
+});
+
+describe("extractAccession (lo que el operario tipeó en el equipo)", () => {
+  it("el caso normal: solo el número, con cualquier tipeo", () => {
+    expect(extractAccession("M-0012-4")?.accession).toBe("M-0012-4");
+    expect(extractAccession(" m00124 ")?.accession).toBe("M-0012-4");
+  });
+
+  it("encuentra la accesión aunque venga acompañada de texto", () => {
+    expect(extractAccession("M-0012-4 3/0")?.accession).toBe("M-0012-4");
+    expect(extractAccession("Tapera M00124")?.accession).toBe("M-0012-4");
+    expect(extractAccession("a-0012-2 / silo 3")?.accession).toBe("A-0012-2");
+  });
+
+  it("no adivina: un token con dígito incorrecto o texto sin accesión da null", () => {
+    expect(extractAccession("M-0012-5")).toBeNull();
+    expect(extractAccession("TAPERA 02/09/26 02:00-07:00")).toBeNull();
+    expect(extractAccession("FORZANI TAPERA LOTE 160C 30/7")).toBeNull();
+    expect(extractAccession("")).toBeNull();
+    expect(extractAccession(null)).toBeNull();
+  });
+
+  it("no toma dígitos pegados a otro número como accesión", () => {
+    // "1M00124" no es una accesión: el token está precedido por un dígito.
+    expect(extractAccession("1M00124")).toBeNull();
   });
 });
 
