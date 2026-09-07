@@ -129,6 +129,7 @@ router.get("/alveolab/trend", LabQueryController.alveolabTendencia);
 // general sigue siendo una sola y esto solo la aprieta.
 router.get("/samples/kinds", LabSamplesController.kinds);
 router.get("/samples/summary", LabSamplesController.summary);
+router.get("/samples/daily-report", LabSamplesController.dailyReport);
 router.get("/samples", LabSamplesController.list);
 router.post(
   "/samples",
