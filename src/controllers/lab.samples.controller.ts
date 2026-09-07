@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import type { LabSite } from "@prisma/client";
 import LabSamplesService, { type FiltrosMuestras } from "../services/lab.samples.service";
+import LabReportService from "../services/lab.report.service";
 
 /**
  * Registro de muestras. Misma disciplina que el resto del módulo: el controller
@@ -67,6 +68,9 @@ export class LabSamplesController {
   );
 
   static summary = handler(() => LabSamplesService.summary());
+
+  /** Reporte de análisis diario (turno × producto). Sin fecha = hoy, en fecha de planta. */
+  static dailyReport = handler((req) => LabReportService.diario(texto(req.query.date)));
 
   static list = handler((req) =>
     LabSamplesService.list(
