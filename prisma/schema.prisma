@@ -1387,11 +1387,19 @@ model LabMeasurement {
   /// un instrumento con la hora corrida no puede fabricar un falso "al dia".
   ingestedAt DateTime @default(now())
 
+  /// Muestra registrada a la que pertenece. Se resuelve en la INGESTA leyendo
+  /// la accesion del sampleRef (lo que el operario tipeo en el equipo); null si
+  /// no tipeo una accesion valida o la muestra no existe. El sampleRef crudo se
+  /// conserva siempre: es lo que permite re-enlazar despues.
+  sampleId String?
+  sample   LabSample? @relation(fields: [sampleId], references: [id], onDelete: SetNull)
+
   deletedAt DateTime?
 
   params LabParameter[]
 
   @@unique([source, sourceId])
+  @@index([sampleId])
   /// Indice, deliberadamente NO unique: el origen ya garantiza esa unicidad, y
   /// replicarla aca solo agrega una P2002 capaz de abortar el lote entero,
   /// congelar el cursor y dejar el heartbeat en verde mientras nada avanza.
@@ -1585,8 +1593,9 @@ model LabSample {
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
-  kind      LabSampleKind @relation(fields: [kindId], references: [id])
-  createdBy User          @relation("LabSampleCreator", fields: [createdById], references: [id])
+  kind         LabSampleKind    @relation(fields: [kindId], references: [id])
+  createdBy    User             @relation("LabSampleCreator", fields: [createdById], references: [id])
+  measurements LabMeasurement[]
 
   @@unique([site, seq])
   @@index([sampledAt])

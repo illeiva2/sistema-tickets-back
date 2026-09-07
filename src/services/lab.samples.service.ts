@@ -1,8 +1,9 @@
-import { Prisma, type LabSite } from "@prisma/client";
+import { Prisma, type LabSite, type LabSource } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import {
   buildDisplayName,
+  extractAccession,
   formatAccession,
   looksLikeAccession,
   parseAccession,
@@ -204,7 +205,7 @@ export class LabSamplesService {
       }
     }
 
-    const [items, total] = await Promise.all([
+    const [filas, total] = await Promise.all([
       prisma.labSample.findMany({
         where,
         include: INCLUDE,
@@ -215,7 +216,73 @@ export class LabSamplesService {
       prisma.labSample.count({ where }),
     ]);
 
+    // Cuántos análisis tiene cada muestra, por equipo. Es lo que le dice al
+    // operario "a esta le falta el falling number" sin abrir la ficha.
+    const conteos =
+      filas.length > 0
+        ? await prisma.labMeasurement.groupBy({
+            by: ["sampleId", "source"],
+            _count: { _all: true },
+            where: { sampleId: { in: filas.map((s) => s.id) }, deletedAt: null },
+          })
+        : [];
+    const porMuestra = new Map<string, Partial<Record<LabSource, number>>>();
+    for (const c of conteos) {
+      if (!c.sampleId) continue;
+      const acc = porMuestra.get(c.sampleId) ?? {};
+      acc[c.source] = c._count._all;
+      porMuestra.set(c.sampleId, acc);
+    }
+    const items = filas.map((s) => ({ ...s, analyses: porMuestra.get(s.id) ?? {} }));
+
     return { items, total, page, pageSize, warning };
+  }
+
+  /**
+   * Re-enlaza mediciones que quedaron sin muestra: el operario tipeó una
+   * accesión válida pero la muestra no existía al ingestar. Barre una ventana
+   * reciente; es inofensivo y repetible, y no toca mediciones ya enlazadas.
+   */
+  static async relinkUnlinked(days = 30) {
+    const desde = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const sueltas = await prisma.labMeasurement.findMany({
+      where: {
+        sampleId: null,
+        sampleRef: { not: null },
+        deletedAt: null,
+        analyzedAt: { gte: desde },
+      },
+      select: { id: true, sampleRef: true },
+      take: 5000,
+    });
+
+    const porAccesion = new Map<string, string[]>();
+    for (const m of sueltas) {
+      const parsed = extractAccession(m.sampleRef);
+      if (!parsed) continue;
+      const ids = porAccesion.get(parsed.accession) ?? [];
+      ids.push(m.id);
+      porAccesion.set(parsed.accession, ids);
+    }
+    const candidates = [...porAccesion.values()].reduce((a, b) => a + b.length, 0);
+    if (candidates === 0) return { scanned: sueltas.length, candidates: 0, linked: 0 };
+
+    const muestras = await prisma.labSample.findMany({
+      where: { accession: { in: [...porAccesion.keys()] }, deletedAt: null },
+      select: { id: true, accession: true },
+    });
+
+    let linked = 0;
+    for (const s of muestras) {
+      const ids = porAccesion.get(s.accession) ?? [];
+      if (ids.length === 0) continue;
+      const r = await prisma.labMeasurement.updateMany({
+        where: { id: { in: ids } },
+        data: { sampleId: s.id },
+      });
+      linked += r.count;
+    }
+    return { scanned: sueltas.length, candidates, linked };
   }
 
   /**
@@ -232,10 +299,55 @@ export class LabSamplesService {
         400,
       );
     }
-    return prisma.labSample.findFirst({
+    const sample = await prisma.labSample.findFirst({
       where: { accession: parsed.accession, deletedAt: null },
       include: INCLUDE,
     });
+    if (!sample) return null;
+    return { ...sample, measurements: await this.analisisDe(sample.id) };
+  }
+
+  /**
+   * Los análisis enlazados a la muestra, crudos (código, valor, unidad) y con
+   * el nombre visible del instrumento. Crudos a propósito: la ficha es la vista
+   * "integral", y pivotear acá por equipo obligaría a tocar este método cada
+   * vez que un instrumento sume un parámetro.
+   */
+  private static async analisisDe(sampleId: string) {
+    const mediciones = await prisma.labMeasurement.findMany({
+      where: { sampleId, deletedAt: null },
+      include: { params: { orderBy: { code: "asc" } } },
+      orderBy: [{ analyzedAt: "asc" }],
+    });
+
+    const seriales = [
+      ...new Set(mediciones.map((m) => m.instrumentSerial).filter((s): s is string => !!s)),
+    ];
+    const instrumentos =
+      seriales.length > 0
+        ? await prisma.labInstrument.findMany({
+            where: { serial: { in: seriales } },
+            select: { serial: true, displayName: true },
+          })
+        : [];
+    const nombre = new Map(instrumentos.map((i) => [i.serial, i.displayName]));
+
+    return mediciones.map((m) => ({
+      id: m.id,
+      source: m.source,
+      sourceId: m.sourceId,
+      instrumentSerial: m.instrumentSerial,
+      instrumentName: m.instrumentSerial ? (nombre.get(m.instrumentSerial) ?? null) : null,
+      productCode: m.productCode,
+      sampleRef: m.sampleRef,
+      analyzedAt: m.analyzedAt,
+      params: m.params.map((p) => ({
+        code: p.code,
+        value: p.value,
+        unit: p.unit,
+        isImplausible: p.isImplausible,
+      })),
+    }));
   }
 
   static async create(userId: string, body: CreateSampleBody) {

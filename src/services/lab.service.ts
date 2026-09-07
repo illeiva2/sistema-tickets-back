@@ -3,6 +3,7 @@ import { LabSource, Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { logger } from "../lib/logger";
+import { extractAccession } from "../lib/labSamples";
 
 // ─── Umbrales de frescura ────────────────────────────────────────────────────
 // El agente late cada 5 min. OK hasta 15 (tolera dos latidos perdidos), STALE
@@ -168,9 +169,11 @@ export class LabService {
    */
   static async ingestBatch(source: LabSource, items: IngestMeasurement[]) {
     const ranges = await this.loadRanges();
+    const muestras = await this.resolverMuestras(items);
     let inserted = 0;
     let updated = 0;
     let failed = 0;
+    let linked = 0;
     let maxAnalyzedAt: Date | null = null;
 
     for (const item of items) {
@@ -179,6 +182,14 @@ export class LabService {
         failed++;
         continue;
       }
+
+      // Enlace a la muestra registrada, leyendo la accesión de lo que el
+      // operario tipeó. Se recalcula en cada upsert, igual que los parámetros:
+      // un sampleRef corregido en origen mueve o suelta el enlace en vez de
+      // dejar uno viejo pegado. null = no tipeó una accesión válida, o la
+      // muestra no existe (todavía); el sampleRef crudo queda para re-enlazar.
+      const accesion = extractAccession(item.sampleRef);
+      const sampleId = accesion ? (muestras.get(accesion.accession) ?? null) : null;
 
       try {
         await prisma.$transaction(async (tx) => {
@@ -191,6 +202,7 @@ export class LabService {
             instrumentSerial: item.instrumentSerial ?? null,
             productCode: item.productCode ?? null,
             sampleRef: item.sampleRef ?? null,
+            sampleId,
             analyzedAt,
           };
 
@@ -220,6 +232,7 @@ export class LabService {
 
           if (existing) updated++;
           else inserted++;
+          if (sampleId) linked++;
         });
 
         if (!maxAnalyzedAt || analyzedAt > maxAnalyzedAt) maxAnalyzedAt = analyzedAt;
@@ -232,7 +245,27 @@ export class LabService {
       }
     }
 
-    return { inserted, updated, failed, maxAnalyzedAt };
+    return { inserted, updated, failed, linked, maxAnalyzedAt };
+  }
+
+  /**
+   * Resuelve, para todo el lote de una vez, qué muestras registradas nombran
+   * los sampleRef. Una sola consulta por lote: con 500 mediciones en un
+   * backfill, ir a la base por cada una sería el costo dominante de la ingesta.
+   */
+  private static async resolverMuestras(items: IngestMeasurement[]): Promise<Map<string, string>> {
+    const accesiones = new Set<string>();
+    for (const item of items) {
+      const parsed = extractAccession(item.sampleRef);
+      if (parsed) accesiones.add(parsed.accession);
+    }
+    if (accesiones.size === 0) return new Map();
+
+    const rows = await prisma.labSample.findMany({
+      where: { accession: { in: [...accesiones] }, deletedAt: null },
+      select: { id: true, accession: true },
+    });
+    return new Map(rows.map((r) => [r.accession, r.id]));
   }
 
   /**

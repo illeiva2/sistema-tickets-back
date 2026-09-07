@@ -236,6 +236,7 @@ describe("GET /api/glutenlab/samples/:accession", () => {
   it("tolera el tipeo y busca la forma canónica", async () => {
     conNivel("VIEWER");
     prismaMock.labSample.findFirst.mockResolvedValue({ id: "s-1", accession: "M-0012-4" } as any);
+    prismaMock.labMeasurement.findMany.mockResolvedValue([]);
 
     const res = await request(app).get(`${BASE}/m00124`).set(auth(usuario));
 
@@ -243,6 +244,54 @@ describe("GET /api/glutenlab/samples/:accession", () => {
     const where = prismaMock.labSample.findFirst.mock.calls[0][0]?.where as any;
     expect(where.accession).toBe("M-0012-4");
     expect(where.deletedAt).toBeNull();
+    expect(res.body.data.measurements).toEqual([]);
+  });
+
+  it("la ficha trae los análisis enlazados, crudos y con el nombre del instrumento", async () => {
+    conNivel("VIEWER");
+    prismaMock.labSample.findFirst.mockResolvedValue({ id: "s-1", accession: "M-0012-4" } as any);
+    prismaMock.labMeasurement.findMany.mockResolvedValue([
+      {
+        id: "m-fn",
+        source: "FN",
+        sourceId: "77",
+        instrumentSerial: null,
+        productCode: null,
+        sampleRef: "M-0012-4",
+        analyzedAt: new Date("2026-09-07T13:10:00.000Z"),
+        params: [{ code: "Falling Number", value: 320, unit: "s", isImplausible: false }],
+      },
+      {
+        id: "m-al",
+        source: "ALVEOLAB",
+        sourceId: "4419",
+        instrumentSerial: "391",
+        productCode: "Industrial wheat flour",
+        sampleRef: "M-0012-4",
+        analyzedAt: new Date("2026-09-07T14:00:00.000Z"),
+        params: [
+          { code: "W", value: 229, unit: null, isImplausible: false },
+          { code: "P/L", value: 1.38, unit: null, isImplausible: false },
+        ],
+      },
+    ] as any);
+    prismaMock.labInstrument.findMany.mockResolvedValue([{ serial: "391", displayName: "AlveoLab" }] as any);
+
+    const res = await request(app).get(`${BASE}/M-0012-4`).set(auth(usuario));
+
+    expect(res.status).toBe(200);
+    const ms = res.body.data.measurements;
+    expect(ms).toHaveLength(2);
+    expect(ms[0].source).toBe("FN");
+    expect(ms[0].instrumentName).toBeNull();
+    expect(ms[1].instrumentName).toBe("AlveoLab");
+    expect(ms[1].params).toEqual([
+      { code: "W", value: 229, unit: null, isImplausible: false },
+      { code: "P/L", value: 1.38, unit: null, isImplausible: false },
+    ]);
+    // Solo se piden los seriales que aparecen, y solo si hay alguno.
+    const whereInst = prismaMock.labInstrument.findMany.mock.calls[0][0]?.where as any;
+    expect(whereInst.serial.in).toEqual(["391"]);
   });
 
   it("404 si la accesión es válida pero no está registrada", async () => {
@@ -266,11 +315,69 @@ describe("GET /api/glutenlab/samples/:accession", () => {
   });
 });
 
+describe("POST /api/glutenlab/samples/relink", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("QC no puede re-enlazar en masa (403)", async () => {
+    conNivel("QC");
+
+    const res = await request(app).post(`${BASE}/relink`).set(auth(usuario));
+
+    expect(res.status).toBe(403);
+    expect(prismaMock.labMeasurement.findMany).not.toHaveBeenCalled();
+  });
+
+  it("MANAGEMENT re-enlaza las mediciones sueltas cuya accesión ahora existe", async () => {
+    conNivel("MANAGEMENT");
+    prismaMock.labMeasurement.findMany.mockResolvedValue([
+      { id: "m-1", sampleRef: "M-0012-4" },
+      { id: "m-2", sampleRef: "m00124 3/0" },
+      { id: "m-3", sampleRef: "Tapera" }, // sin accesión: se ignora
+      { id: "m-4", sampleRef: "A-0001-5" }, // válida pero sin muestra: queda suelta
+    ] as any);
+    prismaMock.labSample.findMany.mockResolvedValue([{ id: "s-12", accession: "M-0012-4" }] as any);
+    prismaMock.labMeasurement.updateMany.mockResolvedValue({ count: 2 });
+
+    const res = await request(app).post(`${BASE}/relink`).query({ days: 7 }).set(auth(usuario));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ scanned: 4, candidates: 3, linked: 2 });
+    const upd = prismaMock.labMeasurement.updateMany.mock.calls[0][0] as any;
+    expect([...upd.where.id.in].sort()).toEqual(["m-1", "m-2"]);
+    expect(upd.data.sampleId).toBe("s-12");
+    // Solo mediciones sin enlace, con sampleRef, de la ventana pedida.
+    const whereSueltas = prismaMock.labMeasurement.findMany.mock.calls[0][0]?.where as any;
+    expect(whereSueltas.sampleId).toBeNull();
+    expect(whereSueltas.sampleRef).toEqual({ not: null });
+  });
+});
+
 describe("GET /api/glutenlab/samples (lista)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.labSample.findMany.mockResolvedValue([]);
     prismaMock.labSample.count.mockResolvedValue(0);
+  });
+
+  it("cada muestra trae cuántos análisis tiene por equipo", async () => {
+    conNivel("VIEWER");
+    prismaMock.labSample.findMany.mockResolvedValue([
+      { id: "s-1", accession: "M-0001-1" },
+      { id: "s-2", accession: "M-0002-9" },
+    ] as any);
+    prismaMock.labSample.count.mockResolvedValue(2);
+    prismaMock.labMeasurement.groupBy.mockResolvedValue([
+      { sampleId: "s-1", source: "FN", _count: { _all: 2 } },
+      { sampleId: "s-1", source: "ALVEOLAB", _count: { _all: 1 } },
+    ] as any);
+
+    const res = await request(app).get(BASE).set(auth(usuario));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.items[0].analyses).toEqual({ FN: 2, ALVEOLAB: 1 });
+    expect(res.body.data.items[1].analyses).toEqual({});
+    const g = prismaMock.labMeasurement.groupBy.mock.calls[0][0] as any;
+    expect(g.where.sampleId.in).toEqual(["s-1", "s-2"]);
   });
 
   it("una accesión válida busca exacto por su forma canónica", async () => {
