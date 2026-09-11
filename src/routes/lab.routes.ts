@@ -130,6 +130,8 @@ router.get("/alveolab/trend", LabQueryController.alveolabTendencia);
 router.get("/samples/kinds", LabSamplesController.kinds);
 router.get("/samples/summary", LabSamplesController.summary);
 router.get("/samples/daily-report", LabSamplesController.dailyReport);
+// Grilla de consulta para comercio: lectura, como la lista.
+router.get("/samples/grid", LabSamplesController.grid);
 router.get("/samples", LabSamplesController.list);
 router.post(
   "/samples",
