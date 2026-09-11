@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import LabController from "../controllers/lab.controller";
 import LabQueryController from "../controllers/lab.query.controller";
 import LabSamplesController from "../controllers/lab.samples.controller";
+import LabAssistantController from "../controllers/lab.assistant.controller";
 import LabWatchdog from "../services/lab.watchdog";
 import { serviceAuthMiddleware } from "../middleware/serviceAuth";
 import { authMiddleware } from "../middleware/auth";
@@ -15,6 +16,7 @@ import {
   updateFieldDefSchema,
   updateSampleSchema,
 } from "../validations/lab.samples";
+import { askSchema, jobResultSchema, nextJobSchema } from "../validations/lab.assistant";
 
 const router = Router();
 
@@ -57,6 +59,25 @@ router.get(
   ingestLimiter,
   serviceAuthMiddleware("lab:ingest"),
   LabController.cursor,
+);
+
+// ─── Relé del asistente: el modelo local del molino, no personas ──────────────
+// Pide trabajo con long-poll y devuelve el turno del modelo. Misma credencial
+// de servicio que la ingesta, con su propio scope: el relé no puede empujar
+// mediciones ni el pusher pedir trabajos.
+router.get(
+  "/assistant/jobs/next",
+  ingestLimiter,
+  serviceAuthMiddleware("lab:llm"),
+  validate(nextJobSchema),
+  LabAssistantController.nextJob,
+);
+router.post(
+  "/assistant/jobs/:id/result",
+  ingestLimiter,
+  serviceAuthMiddleware("lab:llm"),
+  validate(jobResultSchema),
+  LabAssistantController.jobResult,
 );
 
 // Disparo del watchdog desde afuera. Existe porque el watchdog interno vive en
@@ -168,5 +189,20 @@ router.patch(
   validate(updateFieldDefSchema),
   LabSamplesController.updateFieldDef,
 );
+
+// ─── Asistente: preguntas en lenguaje natural sobre los análisis ─────────────
+// Lo usa cualquiera con el módulo (las herramientas son de lectura). Cada
+// pregunta ocupa al modelo del molino varios segundos: límite por IP para que
+// una pestaña con un bucle no lo monopolice. La oficina comparte IP, así que es
+// generoso; el service además admite UNA consulta en curso por usuario.
+const assistantLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+router.get("/assistant/status", LabAssistantController.status);
+router.post("/assistant/ask", assistantLimiter, validate(askSchema), LabAssistantController.ask);
+router.get("/assistant/requests/:id", LabAssistantController.get);
 
 export default router;

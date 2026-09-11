@@ -2,7 +2,11 @@
  * Da de alta (o rota) la credencial del agente que empuja las mediciones del
  * laboratorio desde el molino.
  *
- *   npx tsx src/scripts/create-lab-service-client.ts [slug]
+ *   npx tsx src/scripts/create-lab-service-client.ts [slug] [scopes]
+ *
+ *   scopes: lista separada por comas; por defecto "lab:ingest" (el pusher).
+ *   El relé del asistente de IA usa "lab:llm":
+ *     npx tsx src/scripts/create-lab-service-client.ts glutenlab-ia-srvmf03 lab:llm
  *
  * El secreto se imprime UNA sola vez y no se guarda en ningún lado: en la base
  * queda solo su hash. Si se pierde, se vuelve a correr este script y se rota.
@@ -11,7 +15,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "../lib/database";
 
 const DEFAULT_SLUG = "glutenlab-pusher-srvdatos";
-const SCOPES = ["lab:ingest"];
+const SCOPES = (process.argv[3] ?? "lab:ingest")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+for (const s of SCOPES) {
+  if (!/^[a-z]+:[a-z]+$/.test(s)) throw new Error(`Scope inválido: "${s}" (formato area:accion, p. ej. lab:llm)`);
+}
 
 const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
 

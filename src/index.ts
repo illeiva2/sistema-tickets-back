@@ -2,6 +2,7 @@ import { config } from "./config";
 import { logger } from "./lib/logger";
 import { createApp } from "./app";
 import LabWatchdog from "./services/lab.watchdog";
+import LabAssistantService from "./services/lab.assistant.service";
 
 const app = createApp();
 const PORT = config.server.port;
@@ -35,6 +36,22 @@ setTimeout(() => {
   timer.unref();
   logger.info("Watchdog de laboratorio activo (cada 5 min)");
 }, 60_000).unref();
+
+// ─── Asistente de laboratorio: consultas colgadas ────────────────────────────
+// El relé del molino vence lo colgado cada vez que pide trabajo; pero si el
+// relé está caído nadie pide trabajo, y alguien tiene que decirle al usuario
+// que se acabó la espera. Ese alguien es este barrido.
+const LAB_ASSISTANT_SWEEP_MS = 30_000;
+
+setTimeout(() => {
+  const tick = () => {
+    void LabAssistantService.sweep().catch((err) =>
+      logger.error({ err }, "Falló el barrido del asistente de laboratorio"),
+    );
+  };
+  const timer = setInterval(tick, LAB_ASSISTANT_SWEEP_MS);
+  timer.unref();
+}, 45_000).unref();
 
 process.on("SIGTERM", () => {
   logger.info("SIGTERM received, shutting down gracefully");

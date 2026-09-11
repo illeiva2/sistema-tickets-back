@@ -117,6 +117,7 @@ model User {
   moduleGrantsGiven     ModuleGrant[]          @relation("ModuleGrantGranter")
   oauthExchangeCodes    OAuthExchangeCode[]
   labSamplesCreated     LabSample[]            @relation("LabSampleCreator")
+  labAssistantRequests  LabAssistantRequest[]  @relation("LabAssistantRequester")
 
   @@map("users")
 }
@@ -1618,6 +1619,70 @@ model LabSample {
 
 /// Credencial de servicio para el agente de la planta. Clon del modelo de
 /// agent_devices: el secreto se guarda hasheado, nunca en claro.
+// ─── Asistente de laboratorio (modelo de lenguaje local en el molino) ───────
+// El usuario pregunta en el panel; el backend arma la conversación y las
+// herramientas; un relé en srv-mf-03 se lleva cada turno a Ollama y trae la
+// respuesta. Estados como String y no enum: sumar uno no debe exigir migración.
+
+/// Una consulta de un usuario y su respuesta. Guarda la conversación completa
+/// (incluidas las llamadas a herramientas) para poder auditar de dónde salió
+/// cada número que el asistente dijo.
+model LabAssistantRequest {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation("LabAssistantRequester", fields: [userId], references: [id], onDelete: Cascade)
+  /// QUEUED | RUNNING | DONE | FAILED
+  status     String    @default("QUEUED")
+  question   String
+  /// Mensajes en formato de chat (system/user/assistant/tool), lo que ve el modelo.
+  messages   Json
+  answer     String?
+  /// [{ tool, args, ok, summary, ms }] — qué consultó para responder.
+  toolTrace  Json?
+  error      String?
+  model      String?
+  /// Rondas de herramientas ya ejecutadas (tope en el service).
+  steps      Int       @default(0)
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  jobs       LabAssistantJob[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("lab_assistant_requests")
+}
+
+/// Un turno del modelo a la espera de que el relé del molino lo ejecute.
+model LabAssistantJob {
+  id         String              @id @default(cuid())
+  requestId  String
+  request    LabAssistantRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  /// PENDING | CLAIMED | DONE | FAILED
+  status     String              @default("PENDING")
+  /// El cuerpo que el relé manda a Ollama tal cual: model, messages, tools, options.
+  payload    Json
+  result     Json?
+  error      String?
+  claimedBy  String?
+  createdAt  DateTime            @default(now())
+  claimedAt  DateTime?
+  finishedAt DateTime?
+
+  @@index([status, createdAt])
+  @@map("lab_assistant_jobs")
+}
+
+/// Presencia del relé: cuándo pidió trabajo por última vez, con qué modelo y si tiene GPU.
+model LabAssistantRelay {
+  slug       String   @id
+  lastSeenAt DateTime
+  model      String?
+  info       Json?
+
+  @@map("lab_assistant_relays")
+}
+
 model ServiceClient {
   id         String    @id @default(cuid())
   slug       String    @unique
