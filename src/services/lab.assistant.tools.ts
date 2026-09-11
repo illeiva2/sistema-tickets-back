@@ -47,7 +47,7 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: "buscar_muestras",
       description:
-        "Lista muestras registradas (las más recientes primero) con su ficha (empresa, patente, acoplado, CTG, silo, producto…), sus alteraciones del grano y el valor de cada análisis. Usala para saber qué muestras hay, de quién, y con qué resultados.",
+        "Lista muestras registradas (las más recientes primero) con su ficha (empresa, patente, acoplado, CTG, silo, producto…), sus alteraciones del grano y el valor de cada análisis. ES LA HERRAMIENTA PARA ENCONTRAR LAS MUESTRAS DE UNA EMPRESA, PERSONA, PATENTE, PROCEDENCIA O LOTE: pasá ese nombre en `texto`. También para listar qué muestras hay en un período.",
       parameters: {
         type: "object",
         properties: {
@@ -74,7 +74,7 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: "ficha_muestra",
       description:
-        "Ficha completa de UNA muestra por su accesión: datos, alteraciones y todos sus análisis medición por medición.",
+        "Ficha completa de UNA muestra por su accesión: datos, alteraciones y todos sus análisis medición por medición. Usala SOLO cuando ya tenés la accesión exacta (la escribió el usuario o salió de buscar_muestras). NUNCA adivines ni inventes una accesión: si te dan un nombre, usá buscar_muestras.",
       parameters: {
         type: "object",
         properties: {

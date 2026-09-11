@@ -23,6 +23,13 @@ import { TOOLS, catalogoParaPrompt, executeTool } from "./lab.assistant.tools";
  * service ejecuta las herramientas pedidas y encola el turno siguiente, hasta
  * que el modelo responde sin pedir nada más. El navegador pregunta por el
  * estado cada tanto.
+ *
+ * Un modelo chico (7-8B) inventa cuando no encuentra: en la primera prueba
+ * respondió con una ficha entera fabricada, sin consultar nada. Por eso hay
+ * GUARDIAS estructurales, independientes del prompt y del modelo: una
+ * respuesta con datos tiene que salir de una herramienta llamada en esta
+ * misma consulta, una accesión citada tiene que haber aparecido en algún
+ * resultado, y repetir la respuesta anterior no cuenta como responder.
  */
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
@@ -78,9 +85,13 @@ export interface AssistantRequestDto {
   finishedAt: Date | null;
 }
 
-/** Modelo que corre el relé. Se puede cambiar sin tocar código; el relé lo informa en cada latido. */
-const MODEL = process.env.GLUTENLAB_IA_MODEL?.trim() || "qwen2.5:7b";
-/** Rondas de herramientas por consulta. Un 7B que no cierra en cinco no va a cerrar en diez. */
+/**
+ * Modelo a pedir. Sin variable, lo decide el relé (que sabe qué tiene
+ * descargado): así cambiar de modelo es tocar el env del servidor del molino,
+ * no redesplegar el backend.
+ */
+const MODEL = process.env.GLUTENLAB_IA_MODEL?.trim() || null;
+/** Rondas (herramientas o controles) por consulta. Un 7B que no cierra en cinco no va a cerrar en diez. */
 const MAX_STEPS = 5;
 const MAX_HISTORY = 12;
 /** Un resultado de herramienta más largo que esto se recorta: el contexto del modelo es finito (8k). */
@@ -92,6 +103,10 @@ const RELAY_ONLINE_MS = 90_000;
 /** Cada cuánto, como mucho, vuelve a mirar la base un long-poll que espera trabajo. */
 const POLL_STEP_MS = 5_000;
 const OPTIONS = { temperature: 0.2, num_ctx: 8192 };
+
+/** Nombre de las entradas de traza que no son herramientas sino guardias del sistema. */
+const CONTROL = "(control)";
+const ACCESION_RE = /\b[MA]-\d{4}-\d\b/g;
 
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 
@@ -276,16 +291,10 @@ export class LabAssistantService {
     };
     const messages = [...previos, asistente];
     const trace = ((request.toolTrace as unknown as TraceEntry[] | null) ?? []).slice();
+    const puedeSeguir = request.steps < MAX_STEPS;
 
-    if (toolCalls.length > 0 && request.steps < MAX_STEPS) {
-      for (const call of toolCalls) {
-        const name = call.function?.name ?? "";
-        const args = this.parseArgs(call.function?.arguments);
-        const t0 = Date.now();
-        const result = await executeTool(name, args);
-        trace.push({ tool: name, args, ok: result.ok, summary: result.summary, ms: Date.now() - t0 });
-        messages.push({ role: "tool", tool_name: name, content: this.serializar(result.data) });
-      }
+    /** Encola otro turno con más contexto (resultados de herramientas o una corrección). */
+    const otroTurno = async () => {
       await prisma.labAssistantRequest.update({
         where: { id: request.id },
         data: {
@@ -298,9 +307,70 @@ export class LabAssistantService {
       });
       bus.emit("job");
       return { requestId: request.id, status: "RUNNING" };
+    };
+
+    if (toolCalls.length > 0 && puedeSeguir) {
+      for (const call of toolCalls) {
+        const name = call.function?.name ?? "";
+        const args = this.parseArgs(call.function?.arguments);
+        const t0 = Date.now();
+        const result = await executeTool(name, args);
+        trace.push({ tool: name, args, ok: result.ok, summary: result.summary, ms: Date.now() - t0 });
+        messages.push({ role: "tool", tool_name: name, content: this.serializar(result.data) });
+      }
+      return otroTurno();
     }
 
     let answer = (message.content ?? "").trim();
+    const consultoAlgo = trace.some((t) => t.tool !== CONTROL && t.ok);
+    const yaControlado = (tipo: string) => trace.some((t) => t.tool === CONTROL && t.summary.startsWith(tipo));
+    const controlar = (summary: string) => trace.push({ tool: CONTROL, args: {}, ok: false, summary, ms: 0 });
+    const conDatos = /\d/.test(answer);
+
+    // Guardia 1: respondió con datos sin haber consultado nada. Una vez se le
+    // pide que consulte; si insiste, mejor un "no sé" honesto que un número inventado.
+    if (!consultoAlgo && toolCalls.length === 0 && conDatos) {
+      if (puedeSeguir && !yaControlado("sin consulta")) {
+        controlar("sin consulta: el modelo respondió con datos sin consultar ninguna herramienta; se le pidió que consulte");
+        messages.push({
+          role: "user",
+          content:
+            "[Control del sistema] Respondiste con datos sin consultar ninguna herramienta; eso no está permitido. Llamá a la herramienta que corresponda —buscar_muestras con texto=<empresa, persona, patente o lote> para encontrar muestras; resumen_analisis para promedios y extremos; ficha_muestra solo con una accesión que ya conozcas— y respondé únicamente con lo que devuelva.",
+        });
+        return otroTurno();
+      }
+      controlar("sin consulta: se descartó una respuesta con datos que no salieron de ninguna herramienta");
+      answer =
+        "No pude verificar esa información en los datos del laboratorio. Probá indicando la empresa, la accesión (la que figura en la etiqueta) o el período que te interesa.";
+    }
+
+    // Guardia 2: repitió la respuesta anterior en vez de responder la última pregunta.
+    const anterior = this.respuestaAnterior(previos, request.question);
+    if (anterior && this.normalizar(anterior) === this.normalizar(answer) && puedeSeguir && !yaControlado("repetida")) {
+      controlar("repetida: el modelo repitió la respuesta anterior; se le pidió que responda la última pregunta");
+      messages.push({
+        role: "user",
+        content: `[Control del sistema] Repetiste tu respuesta anterior. Respondé la ÚLTIMA pregunta del usuario: «${request.question}». Si necesitás datos, llamá a una herramienta.`,
+      });
+      return otroTurno();
+    }
+
+    // Guardia 3: toda accesión citada tiene que haber aparecido en algún resultado.
+    const vistas = new Set(
+      messages.filter((m) => m.role === "tool").flatMap((m) => m.content.match(ACCESION_RE) ?? []),
+    );
+    const citadas = [...new Set(answer.match(ACCESION_RE) ?? [])];
+    const inventadas = citadas.filter((a) => !vistas.has(a));
+    if (inventadas.length > 0) {
+      controlar(
+        `verificación: ${inventadas.length} accesión${inventadas.length === 1 ? "" : "es"} citada${inventadas.length === 1 ? "" : "s"} no surgi${inventadas.length === 1 ? "ó" : "eron"} de las consultas (${inventadas.join(", ")})`,
+      );
+      answer =
+        inventadas.length === citadas.length && !consultoAlgo
+          ? `No encontré datos que respalden esa respuesta: menciona muestras (${inventadas.join(", ")}) que no surgieron de ninguna consulta. Reformulá indicando la empresa, la accesión o el período.`
+          : `${answer}\n\n⚠ Las accesiones ${inventadas.join(", ")} no aparecen en los datos consultados: verificalas en la ficha antes de usarlas.`;
+    }
+
     if (!answer) {
       answer =
         toolCalls.length > 0
@@ -360,9 +430,16 @@ export class LabAssistantService {
     return !!relay && now.getTime() - relay.lastSeenAt.getTime() < RELAY_ONLINE_MS;
   }
 
-  /** El cuerpo que el relé le manda a Ollama tal cual. */
+  /** El cuerpo que el relé le manda a Ollama tal cual. Sin `model`, el relé pone el suyo. */
   private static payload(messages: ChatMessage[]) {
-    return { model: MODEL, messages, tools: TOOLS, stream: false, options: OPTIONS, keep_alive: "30m" };
+    return {
+      ...(MODEL ? { model: MODEL } : {}),
+      messages,
+      tools: TOOLS,
+      stream: false,
+      options: OPTIONS,
+      keep_alive: "30m",
+    };
   }
 
   private static parseArgs(raw: unknown): Record<string, unknown> {
@@ -383,25 +460,55 @@ export class LabAssistantService {
     return s.length > MAX_TOOL_JSON ? `${s.slice(0, MAX_TOOL_JSON)}…(recortado: pedí menos filas o un período más corto)` : s;
   }
 
+  /**
+   * La respuesta que el asistente dio a la pregunta ANTERIOR del usuario: el
+   * último mensaje de assistant (con texto, sin herramientas) que está antes
+   * de la pregunta de esta consulta. Los turnos de control posteriores no cuentan.
+   */
+  private static respuestaAnterior(previos: ChatMessage[], question: string): string | null {
+    let corte = previos.length;
+    for (let i = previos.length - 1; i >= 0; i--) {
+      if (previos[i].role === "user" && previos[i].content === question) {
+        corte = i;
+        break;
+      }
+    }
+    for (let i = corte - 1; i >= 0; i--) {
+      const m = previos[i];
+      if (m.role === "assistant" && !m.tool_calls?.length && m.content.trim()) return m.content;
+    }
+    return null;
+  }
+
+  private static normalizar(s: string): string {
+    return s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  }
+
   private static systemPrompt(catalogo: string): string {
     const hoy = fechaPlantaHoy();
     const dia = DIAS[new Date(`${hoy}T12:00:00-03:00`).getUTCDay()];
-    return `Sos el asistente del laboratorio de calidad de GRF (Grupo Roberto Forzani), un molino harinero con acopio de granos en Argentina. Respondés preguntas sobre las MUESTRAS registradas y sus ANÁLISIS usando exclusivamente las herramientas disponibles.
+    return `Sos el asistente del laboratorio de calidad de GRF (Grupo Roberto Forzani), un molino harinero con acopio de granos en Argentina. Respondés preguntas sobre las MUESTRAS registradas y sus ANÁLISIS, y la ÚNICA fuente de datos son las herramientas.
 
-Contexto:
-- Cada muestra tiene una accesión (A-0012-2 = Acopio, M-0012-4 = Molino), fecha y hora de toma, un tipo, una ficha con datos y los análisis de hasta cinco equipos: NIR, Gluten (Glutomatic), Falling Number, Almidón dañado (SDmatic) y Alveógrafo (AlveoLab).
+REGLAS (en este orden de importancia):
+1. Nunca inventes, estimes ni completes datos. Todo número, fecha, nombre o accesión que digas tiene que haber salido de una herramienta llamada en ESTA respuesta. Si no consultaste, no hay respuesta con datos.
+2. Si el usuario nombra una empresa, una persona, una patente, una procedencia o un lote, usá buscar_muestras con texto=<ese nombre>. NUNCA adivines una accesión ni llames a ficha_muestra con una que no te dieron o que no salió de una búsqueda.
+3. Respondé la ÚLTIMA pregunta del usuario. Las anteriores son solo contexto; no repitas una respuesta anterior.
+4. Si el usuario dice que te equivocaste o que quería otra cosa, volvé a consultar (por lo general con buscar_muestras y otro texto o período); no reformules lo mismo.
+5. Si una herramienta no devuelve datos, decilo tal cual ("no hay muestras de X en ese período") y sugerí qué cambiar. No rellenes.
+6. Citá las accesiones de las muestras en las que basás cada afirmación, tal como aparecen en los resultados.
+7. Si la pregunta no dice período ni laboratorio, asumí los últimos 7 días y AMBOS laboratorios, y aclaralo. "Hoy" son ambos laboratorios salvo que digan lo contrario.
+8. Respondé en español argentino, breve y concreto: viñetas o una tabla corta si ayuda. Usá los valores tal como los devuelven las herramientas (con sus unidades). Un valor marcado "dudoso" está fuera de calibración: mencionalo si lo usás.
+9. No des opiniones comerciales ni de precios: solo datos del laboratorio.
+
+CONTEXTO:
+- Cada muestra tiene una accesión con formato letra-cuatro dígitos-dígito verificador (A-####-# en Acopio, M-####-# en Molino), fecha y hora de toma, un tipo, una ficha con datos y los análisis de hasta cinco equipos: NIR, Gluten (Glutomatic), Falling Number, Almidón dañado (SDmatic) y Alveógrafo (AlveoLab).
 - ACOPIO recibe camiones de trigo: su ficha tiene empresa, procedencia, patente, acoplado, CTG, carta de porte, chofer y silo, y se marcan alteraciones del grano. MOLINO analiza muestras internas de proceso: turno, producto y lote.
-- Hoy es ${dia} ${hoy} (fecha de planta, Argentina). Las fechas que pases a las herramientas van en formato YYYY-MM-DD.
+- Hoy es ${dia} ${hoy} (fecha de planta, Argentina). Las fechas para las herramientas van en formato YYYY-MM-DD.
 
-${catalogo}
-
-Reglas:
-- Obtené los datos SIEMPRE con las herramientas; nunca inventes, estimes ni completes valores. Si no hay datos, decilo.
-- Citá las accesiones de las muestras en las que basás cada afirmación.
-- Si la pregunta no dice período ni laboratorio, asumí los últimos 7 días y ambos laboratorios, y aclaralo.
-- Respondé en español argentino, breve y concreto: viñetas o una tabla corta si ayuda. Usá los valores tal como los devuelven las herramientas (con sus unidades).
-- Un valor marcado "dudoso" está fuera de calibración: mencionalo si lo usás.
-- No des opiniones comerciales ni de precios: solo datos del laboratorio.`;
+${catalogo}`;
   }
 
   private static toDto(r: LabAssistantRequest): AssistantRequestDto {
