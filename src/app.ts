@@ -36,6 +36,9 @@ export const shouldSkipGlobalRateLimit = (pathName: string) =>
   // credencial de servicio, así que no dependen del límite por IP.
   pathName.startsWith("/api/glutenlab/ingest") ||
   pathName.startsWith("/api/glutenlab/watchdog") ||
+  // El relé del asistente (modelo local en srv-mf-03) hace long-poll cada ~25 s
+  // desde la misma IP de la oficina: mismo caso que la ingesta, mismo trato.
+  pathName.startsWith("/api/glutenlab/assistant/jobs") ||
   pathName.startsWith("/uploads") ||
   pathName.startsWith("/thumbnails");
 
