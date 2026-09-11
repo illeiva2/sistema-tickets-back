@@ -17,7 +17,7 @@ vi.mock("nodemailer", () => ({
 
 // Las herramientas se prueban aparte (lab-assistant-tools.test.ts); acá se
 // prueba la máquina de estados: encolar, reclamar, ejecutar herramientas,
-// cerrar la respuesta y vencer lo colgado.
+// las guardias contra respuestas inventadas, cerrar y vencer lo colgado.
 vi.mock("../src/services/lab.assistant.tools", () => ({
   TOOLS: [
     {
@@ -66,14 +66,15 @@ const relayOnline = () =>
   } as any);
 
 const ahora = new Date();
+const PREGUNTA = "¿Qué muestras hay?";
 const pedido = (over: Record<string, unknown> = {}) => ({
   id: "r1",
   userId: "u-com",
   status: "RUNNING",
-  question: "¿Qué muestras hay?",
+  question: PREGUNTA,
   messages: [
     { role: "system", content: "S" },
-    { role: "user", content: "¿Qué muestras hay?" },
+    { role: "user", content: PREGUNTA },
   ],
   answer: null,
   toolTrace: null,
@@ -85,6 +86,24 @@ const pedido = (over: Record<string, unknown> = {}) => ({
   finishedAt: null,
   ...over,
 });
+
+/** Una consulta que ya consultó una herramienta y tiene su resultado en la conversación. */
+const pedidoConConsulta = (over: Record<string, unknown> = {}) =>
+  pedido({
+    steps: 1,
+    messages: [
+      { role: "system", content: "S" },
+      { role: "user", content: PREGUNTA },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "buscar_muestras", arguments: {} } }] },
+      { role: "tool", tool_name: "buscar_muestras", content: '{"muestras":[{"accesion":"A-0001-0"},{"accesion":"A-0002-3"}]}' },
+    ],
+    toolTrace: [{ tool: "buscar_muestras", args: {}, ok: true, summary: "buscar_muestras: 2 muestras", ms: 50 }],
+    ...over,
+  });
+
+const ultimoUpdate = () =>
+  prismaMock.labAssistantRequest.update.mock.calls[prismaMock.labAssistantRequest.update.mock.calls.length - 1][0]
+    .data as any;
 
 describe("GET /assistant/status", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -146,7 +165,7 @@ describe("POST /assistant/ask", () => {
     expect(res.body.error.code).toBe("ASSISTANT_BUSY");
   });
 
-  it("encola la consulta con su primer turno: system con catálogo y fecha, historial y pregunta", async () => {
+  it("encola la consulta con su primer turno: system con reglas, catálogo y fecha, historial y pregunta", async () => {
     conModulo();
     relayOnline();
     prismaMock.labAssistantRequest.count.mockResolvedValue(0);
@@ -176,13 +195,19 @@ describe("POST /assistant/ask", () => {
     expect(msgs[0].role).toBe("system");
     expect(msgs[0].content).toContain("CATALOGO DE PRUEBA");
     expect(msgs[0].content).toMatch(/Hoy es \w+ \d{4}-\d{2}-\d{2}/);
+    expect(msgs[0].content).toMatch(/Nunca inventes/);
+    expect(msgs[0].content).toMatch(/buscar_muestras con texto=/);
+    // Sin ejemplos de accesión realistas: en la prueba el modelo copió uno del prompt.
+    expect(msgs[0].content).not.toMatch(/\b[MA]-\d{4}-\d\b/);
     expect(msgs.slice(1)).toEqual([
       { role: "user", content: "hola" },
       { role: "assistant", content: "¡Hola! ¿Qué querés saber?" },
       { role: "user", content: "¿Cuál fue el W más alto del mes?" },
     ]);
     const payload = data.jobs.create.payload;
-    expect(payload).toMatchObject({ model: "qwen2.5:7b", stream: false });
+    // Sin GLUTENLAB_IA_MODEL el modelo lo decide el relé: el payload no lo fija.
+    expect(payload.model).toBeUndefined();
+    expect(payload).toMatchObject({ stream: false, keep_alive: "30m" });
     expect(payload.tools[0].function.name).toBe("buscar_muestras");
     expect(payload.messages).toEqual(msgs);
   });
@@ -246,7 +271,7 @@ describe("relé: GET /assistant/jobs/next", () => {
     prismaMock.labAssistantJob.findFirst.mockResolvedValue({
       id: "j1",
       requestId: "r1",
-      payload: { model: "qwen2.5:7b", messages: [] },
+      payload: { messages: [] },
     } as any);
     prismaMock.labAssistantJob.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.labAssistantRequest.updateMany.mockResolvedValue({ count: 1 });
@@ -254,7 +279,7 @@ describe("relé: GET /assistant/jobs/next", () => {
     const res = await request(app).get(`${BASE}/jobs/next?wait=0&model=qwen2.5:7b&gpu=1&version=1.0.0`).set(relayHeaders);
 
     expect(res.status).toBe(200);
-    expect(res.body.data.job).toMatchObject({ id: "j1", payload: { model: "qwen2.5:7b" } });
+    expect(res.body.data.job).toMatchObject({ id: "j1", payload: { messages: [] } });
 
     const upsert = prismaMock.labAssistantRelay.upsert.mock.calls[0][0] as any;
     expect(upsert.where).toEqual({ slug: "glutenlab-ia-test" });
@@ -308,6 +333,8 @@ describe("relé: POST /assistant/jobs/:id/result", () => {
     ...over,
   });
 
+  const resultado = (body: unknown) => request(app).post(`${BASE}/jobs/j1/result`).set(relayHeaders).send(body);
+
   it("con tool_calls ejecuta cada herramienta, guarda la traza y encola el turno siguiente", async () => {
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
     (executeTool as any).mockResolvedValue({
@@ -316,24 +343,21 @@ describe("relé: POST /assistant/jobs/:id/result", () => {
       data: { muestras: [{ accesion: "A-0001-0" }, { accesion: "A-0002-3" }] },
     });
 
-    const res = await request(app)
-      .post(`${BASE}/jobs/j1/result`)
-      .set(relayHeaders)
-      .send({
-        message: {
-          role: "assistant",
-          content: "",
-          tool_calls: [{ function: { name: "buscar_muestras", arguments: { desde: "2026-09-01", laboratorio: "ACOPIO" } } }],
-        },
-        model: "qwen2.5:7b",
-        durationMs: 1234,
-      });
+    const res = await resultado({
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ function: { name: "buscar_muestras", arguments: { desde: "2026-09-01", laboratorio: "ACOPIO" } } }],
+      },
+      model: "qwen2.5:7b",
+      durationMs: 1234,
+    });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ requestId: "r1", status: "RUNNING" });
     expect(executeTool).toHaveBeenCalledWith("buscar_muestras", { desde: "2026-09-01", laboratorio: "ACOPIO" });
 
-    const data = prismaMock.labAssistantRequest.update.mock.calls[0][0].data as any;
+    const data = ultimoUpdate();
     expect(data.steps).toBe(1);
     expect(data.toolTrace[0]).toMatchObject({ tool: "buscar_muestras", ok: true, summary: expect.stringContaining("2 muestras") });
     const msgs = data.messages;
@@ -347,47 +371,131 @@ describe("relé: POST /assistant/jobs/:id/result", () => {
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
     (executeTool as any).mockResolvedValue({ ok: true, summary: "ok", data: {} });
 
-    await request(app)
-      .post(`${BASE}/jobs/j1/result`)
-      .set(relayHeaders)
-      .send({ message: { tool_calls: [{ function: { name: "ficha_muestra", arguments: '{"accesion":"A-0002-3"}' } }] } });
+    await resultado({ message: { tool_calls: [{ function: { name: "ficha_muestra", arguments: '{"accesion":"A-0002-3"}' } }] } });
 
     expect(executeTool).toHaveBeenCalledWith("ficha_muestra", { accesion: "A-0002-3" });
   });
 
-  it("sin tool_calls cierra la consulta con la respuesta", async () => {
-    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
+  it("tras consultar, una respuesta que cita accesiones vistas cierra la consulta tal cual", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ request: pedidoConConsulta() }) as any);
 
-    const res = await request(app)
-      .post(`${BASE}/jobs/j1/result`)
-      .set(relayHeaders)
-      .send({ message: { role: "assistant", content: "  Hay 2 muestras: A-0001-0 y A-0002-3.  " }, model: "qwen2.5:7b" });
+    const res = await resultado({
+      message: { role: "assistant", content: "  Hay 2 muestras: A-0001-0 y A-0002-3.  " },
+      model: "qwen2.5:7b",
+    });
 
     expect(res.body.data).toEqual({ requestId: "r1", status: "DONE" });
     expect(executeTool).not.toHaveBeenCalled();
-    const data = prismaMock.labAssistantRequest.update.mock.calls[0][0].data as any;
+    const data = ultimoUpdate();
     expect(data).toMatchObject({ status: "DONE", answer: "Hay 2 muestras: A-0001-0 y A-0002-3." });
+    expect(data.jobs).toBeUndefined();
+    expect(data.toolTrace.filter((t: any) => t.tool === "(control)")).toEqual([]);
+  });
+
+  it("guardia: respuesta con datos SIN consultar nada → se le pide que consulte (otro turno)", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
+
+    const res = await resultado({
+      message: { role: "assistant", content: "La muestra de Ferrari es la M-0012-4, con gluten húmedo 32,5 %." },
+    });
+
+    expect(res.body.data).toEqual({ requestId: "r1", status: "RUNNING" });
+    const data = ultimoUpdate();
+    expect(data.steps).toBe(1);
+    expect(data.toolTrace[0]).toMatchObject({ tool: "(control)", ok: false, summary: expect.stringContaining("sin consulta") });
+    const ultimo = data.messages[data.messages.length - 1];
+    expect(ultimo.role).toBe("user");
+    expect(ultimo.content).toMatch(/Control del sistema/);
+    expect(ultimo.content).toMatch(/buscar_muestras con texto=/);
+    expect(data.jobs.create).toBeTruthy();
+  });
+
+  it("guardia: si insiste sin consultar, se descarta el invento y se responde que no se pudo verificar", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(
+      trabajo({
+        request: pedido({
+          steps: 1,
+          toolTrace: [{ tool: "(control)", args: {}, ok: false, summary: "sin consulta: se le pidió que consulte", ms: 0 }],
+          messages: [
+            { role: "system", content: "S" },
+            { role: "user", content: PREGUNTA },
+            { role: "assistant", content: "La muestra de Ferrari es la M-0012-4." },
+            { role: "user", content: "[Control del sistema] …" },
+          ],
+        }),
+      }) as any,
+    );
+
+    const res = await resultado({ message: { role: "assistant", content: "La muestra de Ferrari es la M-0012-4, gluten 32,5 %." } });
+
+    expect(res.body.data.status).toBe("DONE");
+    const data = ultimoUpdate();
+    expect(data.answer).toMatch(/No pude verificar/);
+    expect(data.answer).not.toMatch(/M-0012-4/);
     expect(data.jobs).toBeUndefined();
   });
 
-  it("pasado el tope de rondas no ejecuta más herramientas y cierra con un aviso", async () => {
-    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ request: pedido({ steps: 5 }) }) as any);
+  it("guardia: un saludo sin datos ni consulta se acepta tal cual", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
 
-    const res = await request(app)
-      .post(`${BASE}/jobs/j1/result`)
-      .set(relayHeaders)
-      .send({ message: { tool_calls: [{ function: { name: "buscar_muestras", arguments: {} } }] } });
+    const res = await resultado({ message: { role: "assistant", content: "¡Hola! ¿Sobre qué empresa o período querés saber?" } });
+
+    expect(res.body.data.status).toBe("DONE");
+    expect(ultimoUpdate().answer).toBe("¡Hola! ¿Sobre qué empresa o período querés saber?");
+  });
+
+  it("guardia: repetir la respuesta anterior en vez de responder la última pregunta → se le pide que responda", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(
+      trabajo({
+        request: pedidoConConsulta({
+          question: "Pero quiero una lista de las de hoy",
+          messages: [
+            { role: "system", content: "S" },
+            { role: "user", content: "Promedio de proteína de esta semana" },
+            { role: "assistant", content: "El promedio de proteína es 9,5 %." },
+            { role: "user", content: "Pero quiero una lista de las de hoy" },
+            { role: "assistant", content: "", tool_calls: [{ function: { name: "buscar_muestras", arguments: {} } }] },
+            { role: "tool", tool_name: "buscar_muestras", content: '{"muestras":[{"accesion":"A-0001-0"}]}' },
+          ],
+        }),
+      }) as any,
+    );
+
+    const res = await resultado({ message: { role: "assistant", content: "El promedio de proteína es 9,5 %." } });
+
+    expect(res.body.data.status).toBe("RUNNING");
+    const data = ultimoUpdate();
+    expect(data.toolTrace.at(-1)).toMatchObject({ tool: "(control)", summary: expect.stringContaining("repetida") });
+    expect(data.messages.at(-1).content).toMatch(/Repetiste tu respuesta anterior/);
+    expect(data.messages.at(-1).content).toContain("Pero quiero una lista de las de hoy");
+  });
+
+  it("guardia: una accesión citada que no salió de ninguna consulta queda marcada", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ request: pedidoConConsulta() }) as any);
+
+    const res = await resultado({ message: { role: "assistant", content: "Las muestras son A-0001-0 y A-0099-9." } });
+
+    expect(res.body.data.status).toBe("DONE");
+    const data = ultimoUpdate();
+    expect(data.answer).toMatch(/^Las muestras son A-0001-0 y A-0099-9\./);
+    expect(data.answer).toMatch(/⚠ Las accesiones A-0099-9 no aparecen en los datos consultados/);
+    expect(data.toolTrace.at(-1)).toMatchObject({ tool: "(control)", summary: expect.stringContaining("A-0099-9") });
+  });
+
+  it("pasado el tope de rondas no ejecuta más herramientas y cierra con un aviso", async () => {
+    prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ request: pedidoConConsulta({ steps: 5 }) }) as any);
+
+    const res = await resultado({ message: { tool_calls: [{ function: { name: "buscar_muestras", arguments: {} } }] } });
 
     expect(res.body.data.status).toBe("DONE");
     expect(executeTool).not.toHaveBeenCalled();
-    const data = prismaMock.labAssistantRequest.update.mock.calls[0][0].data as any;
-    expect(data.answer).toMatch(/demasiados pasos/);
+    expect(ultimoUpdate().answer).toMatch(/demasiados pasos/);
   });
 
   it("un error del relé marca la consulta como fallida con el motivo", async () => {
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo() as any);
 
-    const res = await request(app).post(`${BASE}/jobs/j1/result`).set(relayHeaders).send({ error: "Ollama HTTP 500: out of memory" });
+    const res = await resultado({ error: "Ollama HTTP 500: out of memory" });
 
     expect(res.body.data).toEqual({ requestId: "r1", status: "FAILED" });
     expect(prismaMock.labAssistantRequest.update.mock.calls[0][0].data).toMatchObject({
@@ -398,18 +506,18 @@ describe("relé: POST /assistant/jobs/:id/result", () => {
 
   it("un trabajo ya resuelto es 409; uno inexistente, 404; sin message ni error, 400", async () => {
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ status: "DONE" }) as any);
-    expect((await request(app).post(`${BASE}/jobs/j1/result`).set(relayHeaders).send({ message: { content: "x" } })).status).toBe(409);
+    expect((await resultado({ message: { content: "x" } })).status).toBe(409);
 
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(null);
     expect((await request(app).post(`${BASE}/jobs/nope/result`).set(relayHeaders).send({ message: { content: "x" } })).status).toBe(404);
 
-    expect((await request(app).post(`${BASE}/jobs/j1/result`).set(relayHeaders).send({})).status).toBe(400);
+    expect((await resultado({})).status).toBe(400);
   });
 
   it("si la consulta ya venció, guarda el resultado pero no sigue la conversación", async () => {
     prismaMock.labAssistantJob.findUnique.mockResolvedValue(trabajo({ request: pedido({ status: "FAILED" }) }) as any);
 
-    const res = await request(app).post(`${BASE}/jobs/j1/result`).set(relayHeaders).send({ message: { content: "tarde" } });
+    const res = await resultado({ message: { content: "tarde" } });
 
     expect(res.body.data.status).toBe("FAILED");
     expect(prismaMock.labAssistantRequest.update).not.toHaveBeenCalled();
