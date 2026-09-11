@@ -17,6 +17,7 @@ import itRoutes from "./it.routes";
 import modulesRoutes from "./modules.routes";
 import labRoutes from "./lab.routes";
 import agentMachineRoutes from "./agent-machine.routes";
+import uiPreferencesRoutes from "./uiPreferences.routes";
 import { fileOrganizationRouter, filesServingRouter } from "./files.routes";
 
 const router = Router();
@@ -41,6 +42,7 @@ router.use("/it", itRoutes);
 router.use("/modules", modulesRoutes);
 router.use("/glutenlab", labRoutes);
 router.use("/agent", agentMachineRoutes);
+router.use("/me/ui-preferences", uiPreferencesRoutes);
 
 if (fileOrganizationRouter) {
     logger.info("Mounting file-organization routes");

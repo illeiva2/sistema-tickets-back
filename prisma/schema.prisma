@@ -1308,6 +1308,11 @@ model UserUiPreference {
   // Orden/visibilidad de widgets del dashboard IT. JSON validado con Zod.
   itDashboardLayout Json?
 
+  // Configuración de vistas personalizables (qué columnas, en qué orden, cómo
+  // ordenar), indexada por clave de vista ("lab.analysis-grid"). Validada con
+  // Zod en el service; JSON para que una vista nueva no exija columna ni migración.
+  savedViews Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

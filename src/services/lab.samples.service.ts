@@ -1,6 +1,7 @@
 import { Prisma, type LabSite, type LabSource } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
+import { aggregateAnalyses, columnsFor, type LecturaAgregable } from "../lib/labAnalysisColumns";
 import {
   buildDisplayName,
   condicionesDe,
@@ -225,7 +226,8 @@ export class LabSamplesService {
     };
   }
 
-  static async list(f: FiltrosMuestras, page: number, pageSize: number) {
+  /** Criterios que comparten la lista y la grilla: mismo filtro, mismo aviso de accesión mal tipeada. */
+  private static criterios(f: FiltrosMuestras): { where: Prisma.LabSampleWhereInput; warning?: string } {
     const where: Prisma.LabSampleWhereInput = { deletedAt: null };
     if (f.site) where.site = f.site;
     if (f.kindId) where.kindId = f.kindId;
@@ -259,6 +261,11 @@ export class LabSamplesService {
         ];
       }
     }
+    return { where, warning };
+  }
+
+  static async list(f: FiltrosMuestras, page: number, pageSize: number) {
+    const { where, warning } = this.criterios(f);
 
     const [filas, total] = await Promise.all([
       prisma.labSample.findMany({
@@ -296,6 +303,67 @@ export class LabSamplesService {
     }));
 
     return { items, total, page, pageSize, warning };
+  }
+
+  /**
+   * Grilla "ancha" de consulta: una fila por muestra con su ficha y un valor por
+   * análisis (`equipo|parámetro`), para que comercio elija columnas y ordene en
+   * el navegador. Por eso NO pagina: trae hasta `limit` muestras del filtro (las
+   * más recientes) y avisa si quedaron afuera. Ordenar en el servidor por
+   * columnas de análisis calculadas costaría mucho más de lo que vale con el
+   * volumen del laboratorio (decenas de muestras por día).
+   *
+   * El valor de cada celda lo define `aggregateAnalyses` (promedio de lecturas
+   * plausibles; lo dudoso se marca, no se esconde).
+   */
+  static async grid(f: FiltrosMuestras, limit: number) {
+    const { where, warning } = this.criterios(f);
+
+    // take limit+1: la fila extra solo sirve para saber si el filtro no entró entero.
+    const [filas, total] = await Promise.all([
+      prisma.labSample.findMany({
+        where,
+        include: INCLUDE,
+        orderBy: [{ sampledAt: "desc" }, { createdAt: "desc" }],
+        take: limit + 1,
+      }),
+      prisma.labSample.count({ where }),
+    ]);
+    const truncated = filas.length > limit;
+    const muestras = truncated ? filas.slice(0, limit) : filas;
+
+    const mediciones =
+      muestras.length > 0
+        ? await prisma.labMeasurement.findMany({
+            where: { sampleId: { in: muestras.map((s) => s.id) }, deletedAt: null },
+            select: {
+              sampleId: true,
+              source: true,
+              params: { select: { code: true, value: true, isImplausible: true, unit: true } },
+            },
+          })
+        : [];
+    const porMuestra = new Map<string, LecturaAgregable[]>();
+    for (const m of mediciones) {
+      if (!m.sampleId) continue;
+      porMuestra.set(m.sampleId, [...(porMuestra.get(m.sampleId) ?? []), m]);
+    }
+
+    const condiciones = await this.condicionesPorMuestra(muestras);
+    const vistas = new Map<string, string | null | undefined>();
+    const items = muestras.map((s) => {
+      const a = aggregateAnalyses(porMuestra.get(s.id) ?? []);
+      for (const k of Object.keys(a.values)) if (!vistas.has(k)) vistas.set(k, a.units[k]);
+      return {
+        ...s,
+        conditions: condiciones.get(s.id) ?? [],
+        analyses: a.counts,
+        values: a.values,
+        implausible: a.implausible,
+      };
+    });
+
+    return { items, total, limit, truncated, warning, columns: columnsFor(vistas) };
   }
 
   /**

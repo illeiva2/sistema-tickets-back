@@ -33,6 +33,14 @@ const filtros = (q: Request["query"]): FiltrosMuestras => ({
 /** Páginas acotadas: la lista es para operar, no para exportar el histórico. */
 const MAX_PAGE_SIZE = 200;
 
+/**
+ * La grilla no pagina: trae el filtro entero hasta este tope y el navegador
+ * ordena. 500 son semanas de muestras; el tope duro evita que un filtro sin
+ * fechas arrastre el histórico completo.
+ */
+const GRID_LIMIT = 500;
+const GRID_MAX_LIMIT = 1000;
+
 const handler =
   (fn: (req: Request) => Promise<unknown>, status = 200) =>
   async (req: Request, res: Response, next: NextFunction) => {
@@ -77,6 +85,14 @@ export class LabSamplesController {
       filtros(req.query),
       entero(req.query.page, 1),
       Math.min(entero(req.query.pageSize, 50), MAX_PAGE_SIZE),
+    ),
+  );
+
+  /** Grilla de consulta: muestras del filtro con la ficha y los análisis pivoteados por columna. */
+  static grid = handler((req) =>
+    LabSamplesService.grid(
+      filtros(req.query),
+      Math.min(entero(req.query.limit, GRID_LIMIT), GRID_MAX_LIMIT),
     ),
   );
 
