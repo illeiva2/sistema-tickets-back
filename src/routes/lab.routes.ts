@@ -153,6 +153,8 @@ router.get("/samples/summary", LabSamplesController.summary);
 router.get("/samples/daily-report", LabSamplesController.dailyReport);
 // Grilla de consulta para comercio: lectura, como la lista.
 router.get("/samples/grid", LabSamplesController.grid);
+// Sugerencias para un campo de la ficha (valores ya cargados).
+router.get("/samples/suggest", LabSamplesController.suggest);
 router.get("/samples", LabSamplesController.list);
 router.post(
   "/samples",

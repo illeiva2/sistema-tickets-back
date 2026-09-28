@@ -96,6 +96,11 @@ export class LabSamplesController {
     ),
   );
 
+  /** Valores ya cargados para un campo con sugerencias (empresa, procedencia…). */
+  static suggest = handler((req) =>
+    LabSamplesService.suggest(texto(req.query.kindId), texto(req.query.key) ?? ""),
+  );
+
   static getByAccession = oNoEncontrado("No existe una muestra con esa accesión")((req) =>
     LabSamplesService.getByAccession(String(req.params.accession)),
   );

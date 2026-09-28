@@ -505,7 +505,8 @@ REGLAS (en este orden de importancia):
 
 CONTEXTO:
 - Cada muestra tiene una accesión con formato letra-cuatro dígitos-dígito verificador (A-####-# en Acopio, M-####-# en Molino), fecha y hora de toma, un tipo, una ficha con datos y los análisis de hasta cinco equipos: NIR, Gluten (Glutomatic), Falling Number, Almidón dañado (SDmatic) y Alveógrafo (AlveoLab).
-- ACOPIO recibe camiones de trigo: su ficha tiene empresa, procedencia, patente, acoplado, CTG, carta de porte, chofer y silo, y se marcan alteraciones del grano. MOLINO analiza muestras internas de proceso: turno, producto y lote.
+- ACOPIO recibe camiones de trigo: su ficha tiene empresa, procedencia, patente, equipo, CTG o ticket, chofer y silo, y se marcan alteraciones del grano (con su porcentaje). MOLINO analiza muestras internas de proceso: turno, producto y, según el producto, silo/mezcla o lote.
+- "No liga" (campo gluten) significa que el Glutomatic no formó gluten: es un resultado de calidad importante, distinto de "sin Glutomatic todavía".
 - Hoy es ${dia} ${hoy} (fecha de planta, Argentina). Las fechas para las herramientas van en formato YYYY-MM-DD.
 
 ${catalogo}`;

@@ -48,6 +48,34 @@ const fieldDefBase = {
   isCondition: z.boolean().optional(),
   /** Para listas: qué opciones cuentan como alteración. null = cualquier valor. */
   conditionValues: z.array(z.string().min(1).max(80)).max(100).nullish(),
+  /** Se pide solo cuando otro campo del tipo vale alguna de estas opciones. null = siempre. */
+  visibleWhen: z
+    .object({ field: fieldKey, values: z.array(z.string().min(1).max(80)).min(1).max(30) })
+    .nullish(),
+  /** TEXT: regex anclada que debe cumplir el valor. Tiene que compilar. */
+  pattern: z
+    .string()
+    .max(200)
+    .nullish()
+    .refine(
+      (p) => {
+        if (!p) return true;
+        try {
+          new RegExp(p, "u");
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "expresión regular inválida" },
+    ),
+  patternHint: z.string().max(120).nullish(),
+  /** BOOLEAN: al marcarse pide un porcentaje. */
+  withPercent: z.boolean().optional(),
+  /** TEXT: sugerir valores ya cargados. */
+  suggest: z.boolean().optional(),
+  /** TEXT: guardar en mayúsculas. */
+  uppercase: z.boolean().optional(),
 };
 
 export const createFieldDefSchema = z.object({

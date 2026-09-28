@@ -131,10 +131,64 @@ export interface FieldDefLike {
   isCondition?: boolean;
   /** Para SELECT: opciones que cuentan como alteración. Null/vacío = cualquier valor. */
   conditionValues?: unknown;
+  /** `{ field, values }`: se pide solo cuando `field` vale alguna de `values`. */
+  visibleWhen?: unknown;
+  /** TEXT: regex (anclada) que debe cumplir el valor. */
+  pattern?: string | null;
+  patternHint?: string | null;
+  /** BOOLEAN: al marcarse lleva un porcentaje en `<key>_pct`. */
+  withPercent?: boolean;
+  /** TEXT: se guarda en mayúsculas. */
+  uppercase?: boolean;
 }
 
 /** Un BOOLEAN solo se guarda cuando es true: "no marcado" y "no" son lo mismo. */
 export type FieldValues = Record<string, string | number | boolean>;
+
+export interface VisibleWhen {
+  field: string;
+  values: string[];
+}
+
+/** La regla de visibilidad, saneada: `visibleWhen` es Json en la base. */
+export const visibleWhenOf = (def: Pick<FieldDefLike, "visibleWhen">): VisibleWhen | null => {
+  const v = def.visibleWhen as { field?: unknown; values?: unknown } | null | undefined;
+  if (!v || typeof v !== "object" || typeof v.field !== "string" || !Array.isArray(v.values)) return null;
+  const values = v.values.filter((x): x is string => typeof x === "string");
+  return v.field && values.length > 0 ? { field: v.field, values } : null;
+};
+
+/** Clave bajo la que se guarda el porcentaje de una casilla con porcentaje. */
+export const pctKey = (key: string): string => `${key}_pct`;
+
+/** Cómo se compara un valor con la regla: una casilla marcada es "true", lo vacío es "". */
+const comoTexto = (v: unknown): string =>
+  v === true ? "true" : v === false || v === null || v === undefined ? "" : String(v).trim();
+
+/**
+ * ¿Se pide este campo con los valores actuales? Sigue la cadena: "Silo" depende
+ * de "Origen", que depende de "Producto"; un campo cuyo controlador no está
+ * visible tampoco lo está. Tope de profundidad por si alguien arma un ciclo
+ * desde el catálogo.
+ */
+export const esVisible = (
+  def: FieldDefLike,
+  raw: Record<string, unknown>,
+  defs: FieldDefLike[],
+  profundidad = 0,
+): boolean => {
+  const regla = visibleWhenOf(def);
+  if (!regla) return true;
+  if (profundidad > 8) return false;
+  const controlador = defs.find((d) => d.key === regla.field);
+  if (controlador && !esVisible(controlador, raw, defs, profundidad + 1)) return false;
+  return regla.values.includes(comoTexto(raw[regla.field]));
+};
+
+const MAX_PCT = 100;
+
+/** "1.5" → "1,5" para mostrar. */
+const fmtPct = (n: number): string => String(n).replace(".", ",");
 
 const aBooleano = (v: unknown): boolean | null => {
   if (typeof v === "boolean") return v;
@@ -163,6 +217,10 @@ const MAX_TEXTO = 200;
  * Devuelve solo keys definidas: una key desconocida es un error y no se guarda
  * en silencio, porque después nadie sabría qué era. Un string vacío cuenta como
  * "sin dato" (y falla si el campo es obligatorio), no como un valor.
+ *
+ * Un campo que no está visible con los valores actuales (ver `esVisible`) se
+ * ignora aunque venga con valor: si cambiaron el producto de "3/0 Embolse" a
+ * "Tapera", el lote que quedó en el formulario no se guarda, y tampoco se exige.
  */
 export const validateFieldValues = (
   defs: FieldDefLike[],
@@ -171,6 +229,7 @@ export const validateFieldValues = (
   const errors: FieldError[] = [];
   const values: FieldValues = {};
   const conocidas = new Set(defs.map((d) => d.key));
+  for (const d of defs) if (d.type === "BOOLEAN" && d.withPercent) conocidas.add(pctKey(d.key));
 
   for (const k of Object.keys(raw)) {
     if (!conocidas.has(k)) {
@@ -179,6 +238,7 @@ export const validateFieldValues = (
   }
 
   for (const def of defs) {
+    if (!esVisible(def, raw, defs)) continue;
     const v = raw[def.key];
     const campo = `fields.${def.key}`;
     // `false` cuenta como "sin dato" en cualquier tipo: una casilla sin marcar no
@@ -196,9 +256,27 @@ export const validateFieldValues = (
           errors.push({ field: campo, message: `${def.label} debe ser texto` });
           break;
         }
-        const t = v.trim();
+        let t = v.trim();
+        if (def.uppercase) t = t.toUpperCase();
         if (t.length > MAX_TEXTO) {
           errors.push({ field: campo, message: `${def.label}: máximo ${MAX_TEXTO} caracteres` });
+          break;
+        }
+        // Un patrón que no compila (lo escribió alguien en el catálogo) no puede
+        // bloquear el registro de muestras: se ignora.
+        let re: RegExp | null = null;
+        if (def.pattern) {
+          try {
+            re = new RegExp(def.pattern, "u");
+          } catch {
+            re = null;
+          }
+        }
+        if (re && !re.test(t)) {
+          errors.push({
+            field: campo,
+            message: def.patternHint ? `${def.label}: ${def.patternHint}` : `${def.label}: formato inválido`,
+          });
         } else {
           values[def.key] = t;
         }
@@ -236,8 +314,25 @@ export const validateFieldValues = (
         const b = aBooleano(v);
         if (b === null) {
           errors.push({ field: campo, message: `${def.label} debe ser sí o no` });
-        } else if (b) {
-          values[def.key] = true;
+          break;
+        }
+        if (!b) break;
+        values[def.key] = true;
+        // El porcentaje solo acompaña a la casilla marcada; sin marcar, se descarta.
+        if (def.withPercent) {
+          const p = raw[pctKey(def.key)];
+          const pVacio = p === undefined || p === null || (typeof p === "string" && p.trim() === "");
+          if (!pVacio) {
+            const n = typeof p === "number" ? p : Number(String(p).trim().replace(",", "."));
+            if (!Number.isFinite(n) || n < 0 || n > MAX_PCT) {
+              errors.push({
+                field: `fields.${pctKey(def.key)}`,
+                message: `${def.label}: el porcentaje debe ser un número entre 0 y ${MAX_PCT}`,
+              });
+            } else {
+              values[pctKey(def.key)] = n;
+            }
+          }
         }
         break;
       }
@@ -262,7 +357,10 @@ export const condicionesDe = (defs: FieldDefLike[], values: Record<string, unkno
     const v = values[def.key];
     if (v === undefined || v === null || v === "" || v === false) continue;
     if (def.type === "BOOLEAN") {
-      if (v === true) out.push(def.label);
+      if (v !== true) continue;
+      // Con porcentaje, la alteración lo lleva: "Picados 1,5 %" dice más que "Picados".
+      const pct = values[pctKey(def.key)];
+      out.push(typeof pct === "number" ? `${def.label} ${fmtPct(pct)} %` : def.label);
       continue;
     }
     const cuentan = Array.isArray(def.conditionValues)

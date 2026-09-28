@@ -99,6 +99,7 @@ export class LabSamplesService {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
     this.validarValoresCondicion(body.type, body.options ?? [], body.conditionValues);
+    await this.validarVisibleWhen(kindId, body.key, body.visibleWhen);
 
     try {
       return await prisma.labSampleFieldDef.create({
@@ -116,6 +117,12 @@ export class LabSamplesService {
           isCondition: body.isCondition ?? false,
           conditionValues:
             body.type === "SELECT" && body.conditionValues?.length ? body.conditionValues : undefined,
+          visibleWhen: body.visibleWhen ?? undefined,
+          pattern: body.pattern ?? null,
+          patternHint: body.patternHint ?? null,
+          withPercent: body.withPercent ?? false,
+          suggest: body.suggest ?? false,
+          uppercase: body.uppercase ?? false,
         },
       });
     } catch (error) {
@@ -133,6 +140,7 @@ export class LabSamplesService {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
     this.validarValoresCondicion(def.type, body.options ?? optionsOf(def), body.conditionValues);
+    await this.validarVisibleWhen(def.kindId, def.key, body.visibleWhen);
 
     return prisma.labSampleFieldDef.update({
       where: { id },
@@ -153,8 +161,65 @@ export class LabSamplesService {
             : body.conditionValues === null || body.conditionValues.length === 0
               ? Prisma.DbNull
               : body.conditionValues,
+        visibleWhen:
+          body.visibleWhen === undefined ? undefined : body.visibleWhen === null ? Prisma.DbNull : body.visibleWhen,
+        pattern: body.pattern,
+        patternHint: body.patternHint,
+        withPercent: body.withPercent,
+        suggest: body.suggest,
+        uppercase: body.uppercase,
       },
     });
+  }
+
+  /** La regla de visibilidad tiene que apuntar a OTRO campo del mismo tipo: un typo dejaría el campo invisible para siempre. */
+  private static async validarVisibleWhen(
+    kindId: string,
+    ownKey: string,
+    visibleWhen: { field?: string | null; values?: string[] | null } | null | undefined,
+  ) {
+    if (!visibleWhen?.field) return;
+    if (visibleWhen.field === ownKey) {
+      throw new ApiError("VALIDATION_ERROR", "Un campo no puede depender de sí mismo", 400);
+    }
+    const otros = await prisma.labSampleFieldDef.findMany({ where: { kindId }, select: { key: true } });
+    if (!otros.some((o) => o.key === visibleWhen.field)) {
+      throw new ApiError(
+        "VALIDATION_ERROR",
+        `"${visibleWhen.field}" no es un campo de este tipo de muestra`,
+        400,
+        [{ field: "body.visibleWhen", message: "campo inexistente" }],
+      );
+    }
+  }
+
+  /**
+   * Valores ya cargados para un campo (empresa, procedencia, chofer…), los más
+   * usados primero, agrupados sin distinguir mayúsculas: "ORESTE FERNANDEZ" y
+   * "Orestes Fernandez" son la misma empresa tipeada dos veces, y la sugerencia
+   * existe justamente para que la tercera vez se elija en lugar de tipear.
+   * Devuelve la grafía más frecuente de cada grupo.
+   */
+  static async suggest(kindId: string | undefined, key: string) {
+    if (!/^[a-z][a-z0-9_]{1,39}$/.test(key)) return { values: [] as string[] };
+    const desde = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+    const kind = kindId ?? null;
+    const filas = await prisma.$queryRaw<{ valor: string; n: bigint }[]>`
+      SELECT (array_agg(v ORDER BY c DESC, v))[1] AS valor, sum(c)::bigint AS n
+      FROM (
+        SELECT trim(fields->>${key}) AS v, count(*) AS c
+        FROM lab_samples
+        WHERE "deletedAt" IS NULL
+          AND "sampledAt" >= ${desde}
+          AND (${kind}::text IS NULL OR "kindId" = ${kind})
+          AND nullif(trim(fields->>${key}), '') IS NOT NULL
+        GROUP BY 1
+      ) t
+      GROUP BY upper(v)
+      ORDER BY n DESC, 1
+      LIMIT 300
+    `;
+    return { values: filas.map((f) => f.valor) };
   }
 
   /** Lo que cuenta como alteración tiene que ser una opción real de la lista. */
@@ -296,13 +361,41 @@ export class LabSamplesService {
       porMuestra.set(c.sampleId, acc);
     }
     const condiciones = await this.condicionesPorMuestra(filas);
+    const noLiga = await this.noLigaPorMuestra(filas.map((s) => s.id));
     const items = filas.map((s) => ({
       ...s,
       analyses: porMuestra.get(s.id) ?? {},
       conditions: condiciones.get(s.id) ?? [],
+      noLiga: noLiga.has(s.id),
     }));
 
     return { items, total, page, pageSize, warning };
+  }
+
+  /**
+   * Muestras cuyo Glutomatic "no ligó". El equipo no deja guardar una prueba
+   * sin valores, así que el operario la guarda con todo en 0: llega al espejo
+   * como una medición con gluten húmedo 0. Es un dato de calidad importante
+   * (hasta ahora se anotaba a mano en notas) y por eso se señala aparte de las
+   * alteraciones del grano. Una muestra sin Glutomatic no es "no liga": es
+   * "todavía sin ese análisis".
+   */
+  private static async noLigaPorMuestra(ids: string[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    if (ids.length === 0) return out;
+    const mediciones = await prisma.labMeasurement.findMany({
+      where: { sampleId: { in: ids }, source: "GLUTOMATIC", deletedAt: null },
+      select: { sampleId: true, params: { where: { code: "Gluten húmedo" }, select: { value: true } } },
+    });
+    const conGlutomatic = new Set<string>();
+    const liga = new Set<string>();
+    for (const m of mediciones) {
+      if (!m.sampleId) continue;
+      conGlutomatic.add(m.sampleId);
+      if (m.params.some((p) => p.value > 0)) liga.add(m.sampleId);
+    }
+    for (const id of conGlutomatic) if (!liga.has(id)) out.add(id);
+    return out;
   }
 
   /**
@@ -350,6 +443,7 @@ export class LabSamplesService {
     }
 
     const condiciones = await this.condicionesPorMuestra(muestras);
+    const noLiga = await this.noLigaPorMuestra(muestras.map((s) => s.id));
     const vistas = new Map<string, string | null | undefined>();
     const items = muestras.map((s) => {
       const a = aggregateAnalyses(porMuestra.get(s.id) ?? []);
@@ -357,6 +451,7 @@ export class LabSamplesService {
       return {
         ...s,
         conditions: condiciones.get(s.id) ?? [],
+        noLiga: noLiga.has(s.id),
         analyses: a.counts,
         values: a.values,
         implausible: a.implausible,
@@ -436,7 +531,13 @@ export class LabSamplesService {
       this.analisisDe(sample.id),
       this.condicionesPorMuestra([sample]),
     ]);
-    return { ...sample, measurements, conditions: condiciones.get(sample.id) ?? [] };
+    const noLiga = await this.noLigaPorMuestra([sample.id]);
+    return {
+      ...sample,
+      measurements,
+      conditions: condiciones.get(sample.id) ?? [],
+      noLiga: noLiga.has(sample.id),
+    };
   }
 
   /**

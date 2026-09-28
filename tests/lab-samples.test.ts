@@ -361,6 +361,8 @@ describe("GET /api/glutenlab/samples (lista)", () => {
     prismaMock.labSample.findMany.mockResolvedValue([]);
     prismaMock.labSample.count.mockResolvedValue(0);
     prismaMock.labMeasurement.groupBy.mockResolvedValue([] as any);
+    // "No liga": la lista mira los Glutomatic de la página; sin mediciones no hay nada que marcar.
+    prismaMock.labMeasurement.findMany.mockResolvedValue([]);
     prismaMock.labSampleFieldDef.findMany.mockResolvedValue([]);
   });
 
