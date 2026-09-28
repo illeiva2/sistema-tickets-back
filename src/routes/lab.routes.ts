@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import LabController from "../controllers/lab.controller";
 import LabQueryController from "../controllers/lab.query.controller";
 import LabSamplesController from "../controllers/lab.samples.controller";
+import LabProductoresController from "../controllers/lab.productores.controller";
 import LabAssistantController from "../controllers/lab.assistant.controller";
 import LabWatchdog from "../services/lab.watchdog";
 import { serviceAuthMiddleware } from "../middleware/serviceAuth";
@@ -191,6 +192,10 @@ router.patch(
   validate(updateFieldDefSchema),
   LabSamplesController.updateFieldDef,
 );
+
+// Lista de empresas de granos del ERP (la carga el job nocturno). Lectura para
+// cualquiera con el módulo: el catálogo muestra si está al día.
+router.get("/productores/status", LabProductoresController.status);
 
 // ─── Asistente: preguntas en lenguaje natural sobre los análisis ─────────────
 // Lo usa cualquiera con el módulo (las herramientas son de lectura). Cada
