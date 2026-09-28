@@ -4,6 +4,7 @@ import LabController from "../controllers/lab.controller";
 import LabQueryController from "../controllers/lab.query.controller";
 import LabSamplesController from "../controllers/lab.samples.controller";
 import LabProductoresController from "../controllers/lab.productores.controller";
+import LabManualController from "../controllers/lab.manual.controller";
 import LabAssistantController from "../controllers/lab.assistant.controller";
 import LabWatchdog from "../services/lab.watchdog";
 import { serviceAuthMiddleware } from "../middleware/serviceAuth";
@@ -18,6 +19,7 @@ import {
   updateSampleSchema,
 } from "../validations/lab.samples";
 import { askSchema, jobResultSchema, nextJobSchema } from "../validations/lab.assistant";
+import { createManualSchema, updateManualSchema } from "../validations/lab.manual";
 
 const router = Router();
 
@@ -196,6 +198,24 @@ router.patch(
 // Lista de empresas de granos del ERP (la carga el job nocturno). Lectura para
 // cualquiera con el módulo: el catálogo muestra si está al día.
 router.get("/productores/status", LabProductoresController.status);
+
+// ─── Análisis manuales: equipos sin conexión (termobalanza, estufa, colorímetro, PMG)
+// Se cargan desde la ficha de la muestra y quedan como una medición más, con
+// origen MANUAL y quién la cargó. Escritura de datos de calidad: QC. Solo esas
+// se corrigen o dan de baja; las de los equipos vienen del instrumento.
+router.post(
+  "/samples/:id/manual",
+  requireModule("glutenlab", "QC"),
+  validate(createManualSchema),
+  LabManualController.create,
+);
+router.patch(
+  "/measurements/manual/:id",
+  requireModule("glutenlab", "QC"),
+  validate(updateManualSchema),
+  LabManualController.update,
+);
+router.delete("/measurements/manual/:id", requireModule("glutenlab", "QC"), LabManualController.remove);
 
 // ─── Asistente: preguntas en lenguaje natural sobre los análisis ─────────────
 // Lo usa cualquiera con el módulo (las herramientas son de lectura). Cada

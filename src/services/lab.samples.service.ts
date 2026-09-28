@@ -559,7 +559,11 @@ export class LabSamplesService {
   private static async analisisDe(sampleId: string) {
     const mediciones = await prisma.labMeasurement.findMany({
       where: { sampleId, deletedAt: null },
-      include: { params: { orderBy: { code: "asc" } } },
+      include: {
+        params: { orderBy: { code: "asc" } },
+        // Solo las cargadas a mano tienen persona detrás; en las de los equipos es null.
+        createdBy: { select: { id: true, name: true } },
+      },
       orderBy: [{ analyzedAt: "asc" }],
     });
 
@@ -584,6 +588,7 @@ export class LabSamplesService {
       productCode: m.productCode,
       sampleRef: m.sampleRef,
       analyzedAt: m.analyzedAt,
+      createdBy: m.createdBy ? { id: m.createdBy.id, name: m.createdBy.name } : null,
       params: m.params.map((p) => ({
         code: p.code,
         value: p.value,

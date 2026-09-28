@@ -117,6 +117,7 @@ model User {
   moduleGrantsGiven     ModuleGrant[]          @relation("ModuleGrantGranter")
   oauthExchangeCodes    OAuthExchangeCode[]
   labSamplesCreated     LabSample[]            @relation("LabSampleCreator")
+  labMeasurementsLoaded LabMeasurement[]       @relation("LabMeasurementCreator")
   labAssistantRequests  LabAssistantRequest[]  @relation("LabAssistantRequester")
 
   @@map("users")
@@ -1370,6 +1371,7 @@ enum LabSource {
   FN // Perten FN 1000 (Falling Number)
   SDMATIC // Chopin SDmatic 2 (almidón dañado)
   ALVEOLAB // Chopin AlveoLab (alveógrafo: W, P, L, P/L, Ie, G)
+  MANUAL // Cargado a mano desde la ficha: termobalanza, estufa, colorímetro, PMG
 }
 
 model LabMeasurement {
@@ -1399,6 +1401,11 @@ model LabMeasurement {
   /// conserva siempre: es lo que permite re-enlazar despues.
   sampleId String?
   sample   LabSample? @relation(fields: [sampleId], references: [id], onDelete: SetNull)
+
+  /// Solo en las cargadas a mano (source MANUAL): quién las cargó. Las de los
+  /// equipos no tienen persona detrás.
+  createdById String?
+  createdBy   User?   @relation("LabMeasurementCreator", fields: [createdById], references: [id], onDelete: SetNull)
 
   deletedAt DateTime?
 

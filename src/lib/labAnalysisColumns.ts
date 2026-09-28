@@ -29,6 +29,36 @@ const col = (
   unit?: string,
 ): AnalysisColumn => ({ key: analysisKey(source, code), source, code, label, decimals, unit });
 
+/**
+ * Análisis que se hacen con equipos sin conexión (termobalanza, estufa,
+ * colorímetro, balanza) y se cargan a mano desde la ficha de la muestra. Los
+ * códigos son fijos: son las columnas del reporte diario en papel
+ * (M.M.LC.P.02), y así se llaman también en la grilla y para el asistente.
+ */
+export interface ManualParam {
+  code: string;
+  label: string;
+  unit?: string;
+  decimals: number;
+  min: number;
+  max: number;
+  /** Ayuda corta para el formulario. */
+  hint?: string;
+}
+
+export const MANUAL_PARAMS: ManualParam[] = [
+  { code: "Humedad termobalanza", label: "Humedad (termobalanza)", unit: "%", decimals: 1, min: 0, max: 100 },
+  { code: "Cenizas cápsula", label: "Cenizas: cápsula", decimals: 2, min: 0, max: 1000, hint: "Como en la planilla" },
+  { code: "Cenizas estufa", label: "Cenizas (estufa)", unit: "%", decimals: 2, min: 0, max: 100 },
+  { code: "Cenizas cápsula ensayo", label: "Cenizas: cápsula ensayo", decimals: 2, min: 0, max: 1000, hint: "Como en la planilla" },
+  { code: "Color L", label: "Color L", decimals: 1, min: 0, max: 100 },
+  { code: "Color a", label: "Color a", decimals: 1, min: -100, max: 100 },
+  { code: "Color b", label: "Color b", decimals: 1, min: -100, max: 100 },
+  { code: "Peso de mil granos", label: "Peso de mil granos", unit: "g", decimals: 1, min: 0, max: 100, hint: "Solo trigo" },
+];
+
+export const MANUAL_PARAM_BY_CODE = new Map(MANUAL_PARAMS.map((p) => [p.code, p]));
+
 /** En el orden del flujo del laboratorio: NIR primero (el análisis general), reología al final. */
 export const ANALYSIS_COLUMNS: AnalysisColumn[] = [
   col("NIR", "Humedad AsIs", "Humedad (NIR)", 1, "%"),
@@ -53,6 +83,7 @@ export const ANALYSIS_COLUMNS: AnalysisColumn[] = [
   col("ALVEOLAB", "P/L", "P/L", 2),
   col("ALVEOLAB", "Ie", "Ie", 1, "%"),
   col("ALVEOLAB", "G", "G", 1),
+  ...MANUAL_PARAMS.map((p) => col("MANUAL", p.code, p.label, p.decimals, p.unit)),
 ];
 
 const CATALOGO = new Map(ANALYSIS_COLUMNS.map((c) => [c.key, c]));

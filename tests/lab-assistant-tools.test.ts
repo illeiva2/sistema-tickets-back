@@ -257,16 +257,42 @@ describe("reporte_diario y estado_equipos", () => {
       from: new Date("2026-09-10T01:00:00Z"),
       to: new Date("2026-09-11T01:00:00Z"),
       turnos: [],
-      columns: [{ code: "Proteína DryBasis", source: "NIR", label: "Proteína NIR", unit: "%", decimals: 1 }],
-      rows: [{ turno: "2° Mañana (07:00–14:00)", producto: "3/0", measurements: 4, samples: ["M-0001-3"], values: { "Proteína DryBasis": 11.26 } }],
+      columns: [
+        { key: "NIR|Proteína DryBasis", code: "Proteína DryBasis", source: "NIR", label: "NIR", group: "% Proteínas", section: "fq", unit: "%", decimals: 1, manual: false },
+      ],
+      rows: [
+        {
+          turno: "2° Mañana (07:00–14:00)",
+          producto: "3/0",
+          orden: 4,
+          sample: { id: "s1", accession: "M-0001-3", sampledAt: new Date("2026-09-10T10:00:00Z"), displayName: "Molino · 3/0" },
+          hora: "07:00",
+          lote: null,
+          sinMuestra: false,
+          measurements: 4,
+          values: { "NIR|Proteína DryBasis": 11.26 },
+          implausible: [],
+          noLiga: true,
+        },
+        // Un hueco de la planilla: no le sirve al modelo, no viaja.
+        { turno: "2° Mañana (07:00–14:00)", producto: "4/0", orden: 5, sample: null, hora: null, lote: null, sinMuestra: false, measurements: 0, values: {}, implausible: [], noLiga: false },
+      ],
       totalMeasurements: 4,
+      totalSamples: 1,
     } as any);
 
     const r = await executeTool("reporte_diario", { fecha: "2026-09-10" });
 
     expect(LabReportService.diario).toHaveBeenCalledWith("2026-09-10");
-    expect(r.summary).toBe("reporte_diario: 2026-09-10 (1 filas, 4 mediciones)");
-    expect((r.data as any).filas[0]).toMatchObject({ producto: "3/0", promedios: { "Proteína NIR": "11,3 %" } });
+    expect(r.summary).toBe("reporte_diario: 2026-09-10 (2 filas, 4 mediciones)");
+    expect((r.data as any).filas).toHaveLength(1);
+    expect((r.data as any).filas[0]).toMatchObject({
+      producto: "3/0",
+      accesion: "M-0001-3",
+      hora: "07:00",
+      gluten: "NO LIGA (el Glutomatic no formó gluten)",
+      valores: { "% Proteínas NIR": "11,3 %" },
+    });
 
     expect((await executeTool("reporte_diario", { fecha: "ayer" })).ok).toBe(false);
   });

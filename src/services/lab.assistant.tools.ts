@@ -111,7 +111,7 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: "reporte_diario",
       description:
-        "Reporte de análisis diario del molino: promedios por turno y producto de todos los equipos, para un día de planta (de 22:00 del día anterior a 22:00).",
+        "Reporte de análisis diario del molino para un día de planta (de 22:00 del día anterior a 22:00): un renglón por muestra interna registrada (turno, hora, producto, lote) con sus análisis de todos los equipos y los cargados a mano; los renglones sin muestra son huecos de la planilla, y los marcados sinMuestra son mediciones que nadie registró.",
       parameters: { type: "object", properties: { fecha: { ...FECHA, description: "Día del reporte (YYYY-MM-DD). Vacío = hoy." } } },
     },
   },
@@ -138,6 +138,7 @@ export const SOURCE_LABEL: Record<LabSource, string> = {
   FN: "Falling Number",
   SDMATIC: "Almidón dañado (SDmatic)",
   ALVEOLAB: "Alveógrafo (AlveoLab)",
+  MANUAL: "Cargado a mano (termobalanza, estufa, colorímetro, PMG)",
 };
 
 const fmtFechaHora = (d: Date | string | null | undefined): string | null =>
@@ -422,18 +423,26 @@ const reporteDiario = async (a: Args): Promise<ToolResult> => {
       desde: fmtFechaHora(r.from),
       hasta: fmtFechaHora(r.to),
       mediciones: r.totalMeasurements,
-      filas: r.rows.map((x) => ({
-        turno: x.turno,
-        producto: x.producto,
-        mediciones: x.measurements,
-        muestras: x.samples,
-        promedios: Object.fromEntries(
-          Object.entries(x.values).map(([code, v]) => {
-            const col = r.columns.find((c) => c.code === code);
-            return [col?.label ?? code, fmtValor(v, col)];
-          }),
-        ),
-      })),
+      muestras: r.totalSamples,
+      // Los huecos de la planilla no le sirven al modelo: solo lo que tiene datos.
+      filas: r.rows
+        .filter((x) => x.measurements > 0 || x.sample)
+        .map((x) => ({
+          turno: x.turno,
+          hora: x.hora,
+          producto: x.producto,
+          lote: x.lote,
+          accesion: x.sample?.accession ?? null,
+          sinMuestra: x.sinMuestra || undefined,
+          gluten: x.noLiga ? "NO LIGA (el Glutomatic no formó gluten)" : undefined,
+          mediciones: x.measurements,
+          valores: Object.fromEntries(
+            Object.entries(x.values).map(([key, v]) => {
+              const col = r.columns.find((c) => c.key === key);
+              return [col ? `${col.group} ${col.label}` : key, fmtValor(v, col)];
+            }),
+          ),
+        })),
     },
   };
 };
