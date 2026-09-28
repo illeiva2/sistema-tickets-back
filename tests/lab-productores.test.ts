@@ -20,7 +20,7 @@ import { prisma } from "../src/lib/database";
 import type { DeepMockProxy } from "vitest-mock-extended";
 import type { PrismaClient } from "@prisma/client";
 import { signAccessToken } from "./helpers";
-import LabProductoresService, { datasetNombre, normalizarFila } from "../src/services/lab.productores.service";
+import LabProductoresService, { datasetNombre, normalizarFila, urlDwh } from "../src/services/lab.productores.service";
 
 // Empresas de granos del ERP: el job las trae del DWH y el formulario las
 // sugiere en "Empresa". Acá se prueba la normalización del dataset (todo llega
@@ -99,6 +99,43 @@ describe("datasetNombre", () => {
   });
 });
 
+describe("urlDwh", () => {
+  it("deja la URL lista para Prisma: cifrada sin validar la CA, sin parámetros de libpq y con pocas conexiones", () => {
+    const u = new URL(
+      urlDwh("postgresql://grfuser:cl%40ve@grf.dw.finneg.com:5432/finnegansbi?sslmode=require&uselibpqcompat=true"),
+    );
+    expect(u.username).toBe("grfuser");
+    expect(u.password).toBe("cl%40ve");
+    expect(u.hostname).toBe("grf.dw.finneg.com");
+    expect(u.port).toBe("5432");
+    expect(u.pathname).toBe("/finnegansbi");
+    expect(u.searchParams.get("sslmode")).toBe("require");
+    expect(u.searchParams.get("sslaccept")).toBe("accept_invalid_certs");
+    expect(u.searchParams.get("connection_limit")).toBe("2");
+    expect(u.searchParams.has("uselibpqcompat")).toBe(false);
+  });
+
+  it("tolera comillas y espacios pegados al copiar el secret", () => {
+    const u = new URL(urlDwh(' "postgres://u:p@host/db" '));
+    expect(u.hostname).toBe("host");
+    expect(u.protocol).toBe("postgres:");
+  });
+
+  it("si falta o no es una URL de Postgres, explica el formato sin repetir el valor", () => {
+    expect(() => urlDwh(undefined)).toThrow(/no está definida/);
+    expect(() => urlDwh("   ")).toThrow(/no está definida/);
+    for (const malo of [
+      "grf.dw.finneg.com",
+      "Host=grf.dw.finneg.com;Database=finnegansbi;User=grfuser;Password=x",
+      "https://grf.dw.finneg.com/finnegansbi",
+      "postgresql:///finnegansbi",
+    ]) {
+      expect(() => urlDwh(malo)).toThrow(/Formato: postgresql:\/\/usuario:clave@host/);
+      expect(() => urlDwh(malo)).not.toThrow(/Password=x/);
+    }
+  });
+});
+
 describe("sincronizar", () => {
   beforeEach(() => {
     prismaMock.labProductorSync.create.mockResolvedValue({ id: "run-1" } as any);
@@ -139,6 +176,18 @@ describe("sincronizar", () => {
     expect(prismaMock.labProductor.upsert).not.toHaveBeenCalled();
     expect(prismaMock.labProductor.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.labProductorSync.update.mock.calls[0][0].data).toMatchObject({ status: "ERROR" });
+  });
+
+  it("si el dataset tiene otras columnas, el error las nombra para poder corregirlo sin entrar al DWH", async () => {
+    prismaMock.labProductor.count.mockResolvedValue(0 as any);
+    const r = await LabProductoresService.sincronizar(async () => [
+      { Nombre: "LOS ALAMOS SA", Codigo: "30712345678", Activo: "1", Tag: "GRANOS" },
+    ]);
+    expect(r.status).toBe("ERROR");
+    expect(r.error).toBe(
+      "Ninguna de las 1 filas del dataset tiene id y nombre reconocibles; columnas recibidas: Nombre, Codigo, Activo, Tag",
+    );
+    expect(prismaMock.labProductor.upsert).not.toHaveBeenCalled();
   });
 
   it("una caída brusca respecto de la lista vigente tampoco se aplica", async () => {

@@ -53,6 +53,35 @@ export const datasetNombre = (): string => {
   return n;
 };
 
+const FORMATO_URL =
+  "DWH_DATABASE_URL no es una URL de Postgres válida. Formato: postgresql://usuario:clave@host:5432/base?sslmode=require " +
+  "(sin comillas; si la clave tiene @ # / % : ? o espacios, codificalos: @=%40 #=%23 /=%2F %=%25 :=%3A ?=%3F espacio=%20)";
+
+/**
+ * URL del DWH lista para Prisma. El DWH es RDS con una CA privada que Node no
+ * conoce: se cifra la conexión sin validar la cadena, igual que hace la
+ * extranet. Se limpian los parámetros de libpq que Prisma no entiende. Nunca
+ * repite el valor en el error: puede llevar la clave.
+ */
+export const urlDwh = (raw: string | undefined): string => {
+  const valor = (raw ?? "").trim().replace(/^["']+|["']+$/g, "");
+  if (!valor) throw new Error("DWH_DATABASE_URL no está definida");
+  let u: URL;
+  try {
+    u = new URL(valor);
+  } catch {
+    throw new Error(FORMATO_URL);
+  }
+  if ((u.protocol !== "postgresql:" && u.protocol !== "postgres:") || !u.hostname || !u.username) {
+    throw new Error(FORMATO_URL);
+  }
+  u.searchParams.delete("uselibpqcompat");
+  u.searchParams.set("sslmode", "require");
+  u.searchParams.set("sslaccept", "accept_invalid_certs");
+  u.searchParams.set("connection_limit", "2");
+  return u.toString();
+};
+
 /** Si el dataset trae menos que esta fracción de lo vigente, algo se rompió aguas arriba: no se aplica. */
 const CAIDA_SOSPECHOSA = 0.5;
 /** Más viejo que esto, la lista se muestra como desactualizada. */
@@ -130,7 +159,18 @@ export default class LabProductoresService {
       }
       const lista = [...porId.values()];
       const total = lista.length;
-      if (total === 0) throw new Error("El dataset vino vacío; la lista actual queda como está");
+      if (total === 0) {
+        // Si vinieron filas pero ninguna sirve, lo más probable es que el dataset
+        // tenga otras columnas: se nombran (son metadatos, no datos) para
+        // corregir el SP o el normalizador sin tener que entrar al DWH.
+        if (crudas.length > 0) {
+          throw new Error(
+            `Ninguna de las ${crudas.length} filas del dataset tiene id y nombre reconocibles; ` +
+              `columnas recibidas: ${Object.keys(crudas[0]).join(", ")}`,
+          );
+        }
+        throw new Error("El dataset vino vacío; la lista actual queda como está");
+      }
 
       const vigentes = await prisma.labProductor.count({ where: { deletedAt: null } });
       if (vigentes > 0 && total < vigentes * CAIDA_SOSPECHOSA) {
