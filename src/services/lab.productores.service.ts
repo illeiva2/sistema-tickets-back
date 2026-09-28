@@ -227,6 +227,22 @@ export default class LabProductoresService {
     }));
   }
 
+  /**
+   * Localidades para "Procedencia": las de las empresas de granos del ERP, sin
+   * repetir, con la provincia como etiqueta para distinguir homónimas.
+   */
+  static async sugerenciasProcedencia(): Promise<SugerenciaEmpresa[]> {
+    const filas = await prisma.labProductor.findMany({
+      where: { deletedAt: null, activo: true, localidad: { not: null } },
+      distinct: ["localidad", "provincia"],
+      orderBy: [{ localidad: "asc" }, { provincia: "asc" }],
+      select: { localidad: true, provincia: true },
+    });
+    return filas
+      .filter((p): p is { localidad: string; provincia: string | null } => Boolean(p.localidad))
+      .map((p) => ({ value: p.localidad, label: p.provincia ?? "" }));
+  }
+
   /** Estado de la lista para el catálogo: cuántas hay y si el job viene corriendo. */
   static async estado() {
     const [total, activos, ultima, ultimaOk] = await Promise.all([
