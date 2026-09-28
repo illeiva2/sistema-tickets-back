@@ -1531,6 +1531,9 @@ model LabSampleKind {
   description String?  @db.VarChar(200)
   /// Laboratorio propuesto al elegir este tipo; el operario puede cambiarlo.
   defaultSite LabSite?
+  /// El laboratorio queda fijo en defaultSite y no se elige: todas las muestras
+  /// internas de proceso son del molino (M-), se tomen donde se tomen.
+  lockSite    Boolean  @default(false)
   sortOrder   Int      @default(0)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -1569,6 +1572,22 @@ model LabSampleFieldDef {
   /// Para SELECT: que opciones cuentan como alteracion (["Vivos","Muertos"]);
   /// null = cualquier valor distinto de vacio. Para BOOLEAN cuenta `true`.
   conditionValues Json?
+  /// { field, values }: el campo se pide (y se exige, si es obligatorio) solo
+  /// cuando ese otro campo del mismo tipo vale alguna de esas opciones; para una
+  /// casilla, values ["true"]. Null = siempre. Asi "Lote" aparece solo en los
+  /// embolses y "Silo" solo en trigo sucio, sin tocar codigo.
+  visibleWhen Json?
+  /// TEXT: expresion regular (anclada) que debe cumplir el valor; patternHint
+  /// explica el formato en el mensaje de error ("3 numeros y una letra: 123A").
+  pattern     String?      @db.VarChar(200)
+  patternHint String?      @db.VarChar(120)
+  /// BOOLEAN: al marcarse pide un porcentaje (lo que informa el escaner de
+  /// granos), guardado como `<key>_pct` en fields.
+  withPercent Boolean      @default(false)
+  /// TEXT: el formulario sugiere los valores ya cargados (empresas, localidades).
+  suggest     Boolean      @default(false)
+  /// TEXT: se guarda en mayusculas (patentes, lotes).
+  uppercase   Boolean      @default(false)
   sortOrder   Int          @default(0)
   isActive    Boolean      @default(true)
   createdAt   DateTime     @default(now())

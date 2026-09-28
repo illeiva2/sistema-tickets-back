@@ -235,6 +235,10 @@ const fichaLegible = (fields: unknown, etiquetas: Map<string, string>): Record<s
 
 type FilaGrilla = Awaited<ReturnType<typeof LabSamplesService.grid>>["items"][number];
 
+/** "No liga" es un resultado, no una ausencia: el Glutomatic registró la prueba con gluten 0. */
+const ligaDe = (r: { noLiga?: boolean; analyses?: Partial<Record<LabSource, number>> }): string =>
+  r.noLiga ? "NO LIGA (el Glutomatic no formó gluten)" : (r.analyses?.GLUTOMATIC ?? 0) > 0 ? "liga" : "sin Glutomatic todavía";
+
 const filaCompacta = (r: FilaGrilla, extra: AnalysisColumn[], etiquetas: Map<string, string>) => ({
   accesion: r.accession,
   fecha: fmtFechaHora(r.sampledAt),
@@ -243,6 +247,7 @@ const filaCompacta = (r: FilaGrilla, extra: AnalysisColumn[], etiquetas: Map<str
   nombre: r.displayName,
   ficha: fichaLegible(r.fields, etiquetas),
   alteraciones: r.conditions,
+  gluten: ligaDe(r),
   analisis: Object.fromEntries(
     Object.entries(r.values).map(([k, v]) => [
       etiquetaDe(k, extra),
@@ -293,6 +298,7 @@ const fichaMuestra = async (a: Args): Promise<ToolResult> => {
       nombre: s.displayName,
       ficha: fichaLegible(s.fields, etiquetas),
       alteraciones: s.conditions,
+      gluten: ligaDe({ noLiga: s.noLiga, analyses: { GLUTOMATIC: s.measurements.filter((m) => m.source === "GLUTOMATIC").length } }),
       notas: s.notes,
       analisis: s.measurements.map((m) => ({
         equipo: SOURCE_LABEL[m.source],
