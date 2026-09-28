@@ -14,23 +14,11 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { prisma } from "../lib/database";
-import LabProductoresService, { datasetNombre, type FilaDataset } from "../services/lab.productores.service";
-
-/**
- * El DWH es RDS con una CA privada que Node no conoce: se cifra la conexión sin
- * validar la cadena, igual que hace la extranet. Se limpian los parámetros de
- * libpq que Prisma no entiende.
- */
-const urlDwh = (): string => {
-  const raw = process.env.DWH_DATABASE_URL?.trim();
-  if (!raw) throw new Error("DWH_DATABASE_URL no está definida");
-  const u = new URL(raw);
-  u.searchParams.delete("uselibpqcompat");
-  u.searchParams.set("sslmode", "require");
-  u.searchParams.set("sslaccept", "accept_invalid_certs");
-  u.searchParams.set("connection_limit", "2");
-  return u.toString();
-};
+import LabProductoresService, {
+  datasetNombre,
+  urlDwh,
+  type FilaDataset,
+} from "../services/lab.productores.service";
 
 /**
  * Lectura del dataset con un segundo cliente Prisma apuntado al DWH. No es el
@@ -39,7 +27,7 @@ const urlDwh = (): string => {
  */
 async function leerDataset(): Promise<FilaDataset[]> {
   const dataset = datasetNombre();
-  const dwh = new PrismaClient({ datasourceUrl: urlDwh(), log: [] });
+  const dwh = new PrismaClient({ datasourceUrl: urlDwh(process.env.DWH_DATABASE_URL), log: [] });
   try {
     return await dwh.$queryRawUnsafe<FilaDataset[]>(`SELECT * FROM "public"."${dataset}"`);
   } finally {
