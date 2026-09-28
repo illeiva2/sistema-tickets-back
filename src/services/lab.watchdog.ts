@@ -17,6 +17,8 @@ const SOURCE_LABEL: Record<LabSource, string> = {
   FN: "FN 1000 (Falling Number)",
   SDMATIC: "SDmatic 2 (almidón dañado)",
   ALVEOLAB: "AlveoLab (alveógrafo)",
+  // Sin agente ni heartbeat: nunca tiene feed, no se vigila.
+  MANUAL: "Cargado a mano",
 };
 
 /**
