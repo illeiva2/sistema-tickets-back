@@ -1714,3 +1714,48 @@ model ServiceClient {
 
   @@map("service_clients")
 }
+
+/// Empresa de granos según el ERP: organizaciones con el tag GRANOS (árbol
+/// "COMPRAS → GRANOS" o ventas). Las carga el job nocturno desde el dataset del
+/// DWH (`src/scripts/sync-productores-granos.ts`); el formulario de muestras las
+/// sugiere en "Empresa". Las que dejan de venir se marcan `deletedAt`, no se borran.
+model LabProductor {
+  /// OrganizacionID del ERP.
+  id            Int       @id
+  cuit          String?   @db.VarChar(20)
+  codigo        String?   @db.VarChar(40)
+  nombre        String    @db.VarChar(200)
+  razonSocial   String?   @db.VarChar(200)
+  activo        Boolean   @default(true)
+  esProveedor   Boolean   @default(false)
+  esCliente     Boolean   @default(false)
+  tagCompras    Boolean   @default(false)
+  tagVentas     Boolean   @default(false)
+  localidad     String?   @db.VarChar(120)
+  provincia     String?   @db.VarChar(80)
+  localidadAfip String?   @db.VarChar(20)
+  base          String?   @db.VarChar(40)
+  syncedAt      DateTime
+  deletedAt     DateTime?
+
+  @@index([nombre])
+  @@map("lab_productores")
+}
+
+/// Cada corrida del job de empresas: si falla, el catálogo lo muestra como
+/// desactualizado en vez de fallar en silencio.
+model LabProductorSync {
+  id         String    @id @default(cuid())
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  /// RUNNING | OK | ERROR
+  status     String    @db.VarChar(16)
+  dataset    String?   @db.VarChar(80)
+  total      Int?
+  upserted   Int?
+  removed    Int?
+  error      String?   @db.VarChar(500)
+
+  @@index([startedAt])
+  @@map("lab_productor_syncs")
+}

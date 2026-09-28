@@ -132,6 +132,8 @@ describe("GET /samples/suggest", () => {
   });
 
   it("devuelve los valores ya cargados del campo, filtrando por tipo si se pide", async () => {
+    // "empresa" además consulta la lista del ERP; acá vacía, para probar solo el historial.
+    prismaMock.labProductor.findMany.mockResolvedValue([] as any);
     prismaMock.$queryRaw.mockResolvedValue([
       { valor: "VIETTO", n: 43n },
       { valor: "ORESTE FERNANDEZ", n: 31n },
@@ -140,7 +142,8 @@ describe("GET /samples/suggest", () => {
     const res = await request(app).get(`${BASE}/suggest`).query({ key: "empresa", kindId: "lsk_recepcion" }).set(auth(viewer));
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ values: ["VIETTO", "ORESTE FERNANDEZ"] });
+    expect(res.body.data.values).toEqual(["VIETTO", "ORESTE FERNANDEZ"]);
+    expect(res.body.data.items).toEqual([{ value: "VIETTO" }, { value: "ORESTE FERNANDEZ" }]);
     expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
   });
 

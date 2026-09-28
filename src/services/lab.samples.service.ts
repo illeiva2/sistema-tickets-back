@@ -2,6 +2,7 @@ import { Prisma, type LabSite, type LabSource } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { ApiError } from "../lib/errors";
 import { aggregateAnalyses, columnsFor, type LecturaAgregable } from "../lib/labAnalysisColumns";
+import LabProductoresService from "./lab.productores.service";
 import {
   buildDisplayName,
   condicionesDe,
@@ -219,7 +220,16 @@ export class LabSamplesService {
       ORDER BY n DESC, 1
       LIMIT 300
     `;
-    return { values: filas.map((f) => f.valor) };
+    const historial = filas.map((f) => f.valor);
+    // "Empresa" además propone la lista del ERP (tag GRANOS): primero esas, con
+    // CUIT y localidad para distinguir homónimas, y después lo que se cargó a
+    // mano y no está en la lista. El nombre sigue siendo texto libre.
+    if (key !== "empresa") return { values: historial, items: historial.map((value) => ({ value })) };
+    const productores = await LabProductoresService.sugerencias();
+    const vistos = new Set(productores.map((p) => p.value.toUpperCase()));
+    const extra = historial.filter((v) => !vistos.has(v.toUpperCase())).map((value) => ({ value }));
+    const items = [...productores, ...extra];
+    return { values: items.map((i) => i.value), items };
   }
 
   /** Lo que cuenta como alteración tiene que ser una opción real de la lista. */

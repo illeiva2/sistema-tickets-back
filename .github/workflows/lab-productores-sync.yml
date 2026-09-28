@@ -1,0 +1,41 @@
+name: Lab productores sync
+
+# Empresas de granos del ERP para el laboratorio: lee el dataset del DWH
+# (Aurora, accesible por internet solo con credenciales) y lo vuelca en la base
+# de la app con upsert + baja lógica. Nunca borra.
+#
+# Secrets del repo: DWH_DATABASE_URL (solo lectura, la misma que la extranet) y
+# DATABASE_URL. Variable opcional LAB_PRODUCTORES_DATASET si el dataset no se
+# llama grf_lab_productores_granos.
+on:
+  schedule:
+    # 02:30 UTC = 23:30 Argentina, después de que el ERP refresca el DWH.
+    - cron: "30 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Sincronizar empresas de granos
+        env:
+          DWH_DATABASE_URL: ${{ secrets.DWH_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LAB_PRODUCTORES_DATASET: ${{ vars.LAB_PRODUCTORES_DATASET }}
+        run: npx tsx src/scripts/sync-productores-granos.ts
