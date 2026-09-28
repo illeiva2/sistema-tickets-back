@@ -203,6 +203,20 @@ export class LabSamplesService {
    */
   static async suggest(kindId: string | undefined, key: string) {
     if (!/^[a-z][a-z0-9_]{1,39}$/.test(key)) return { values: [] as string[] };
+
+    // Empresa y Procedencia salen SOLO del ERP (las empresas de granos y sus
+    // localidades): lo tipeado a mano no se sugiere, para que las variantes
+    // no se perpetúen. El campo sigue aceptando texto libre. Si la lista del
+    // ERP todavía no se cargó (el job nunca corrió), se cae al historial para
+    // no dejar el campo mudo.
+    const erp =
+      key === "empresa"
+        ? await LabProductoresService.sugerencias()
+        : key === "procedencia"
+          ? await LabProductoresService.sugerenciasProcedencia()
+          : null;
+    if (erp && erp.length > 0) return { values: erp.map((i) => i.value), items: erp };
+
     const desde = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
     const kind = kindId ?? null;
     const filas = await prisma.$queryRaw<{ valor: string; n: bigint }[]>`
@@ -221,15 +235,7 @@ export class LabSamplesService {
       LIMIT 300
     `;
     const historial = filas.map((f) => f.valor);
-    // "Empresa" además propone la lista del ERP (tag GRANOS): primero esas, con
-    // CUIT y localidad para distinguir homónimas, y después lo que se cargó a
-    // mano y no está en la lista. El nombre sigue siendo texto libre.
-    if (key !== "empresa") return { values: historial, items: historial.map((value) => ({ value })) };
-    const productores = await LabProductoresService.sugerencias();
-    const vistos = new Set(productores.map((p) => p.value.toUpperCase()));
-    const extra = historial.filter((v) => !vistos.has(v.toUpperCase())).map((value) => ({ value }));
-    const items = [...productores, ...extra];
-    return { values: items.map((i) => i.value), items };
+    return { values: historial, items: historial.map((value) => ({ value })) };
   }
 
   /** Lo que cuenta como alteración tiene que ser una opción real de la lista. */

@@ -213,13 +213,9 @@ describe("sincronizar", () => {
   });
 });
 
-describe("GET /samples/suggest?key=empresa", () => {
-  it("propone primero la lista del ERP con CUIT y localidad, y después lo cargado a mano que no está", async () => {
+describe("GET /samples/suggest: empresa y procedencia salen solo del ERP", () => {
+  it("empresa propone únicamente la lista del ERP, con CUIT y localidad, sin lo cargado a mano", async () => {
     conModulo();
-    prismaMock.$queryRaw.mockResolvedValue([
-      { valor: "Los Alamos SA", n: 5n },
-      { valor: "Don Pedro", n: 2n },
-    ] as any);
     prismaMock.labProductor.findMany.mockResolvedValue([
       { nombre: "EL TRIGAL SRL", cuit: "30700000001", localidad: "SAN FRANCISCO", provincia: "CORDOBA" },
       { nombre: "LOS ALAMOS SA", cuit: "30712345678", localidad: null, provincia: null },
@@ -229,12 +225,43 @@ describe("GET /samples/suggest?key=empresa", () => {
     expect(res.body.data.items).toEqual([
       { value: "EL TRIGAL SRL", label: "30700000001 · SAN FRANCISCO, CORDOBA" },
       { value: "LOS ALAMOS SA", label: "30712345678" },
-      { value: "Don Pedro" },
     ]);
-    expect(res.body.data.values).toEqual(["EL TRIGAL SRL", "LOS ALAMOS SA", "Don Pedro"]);
+    expect(res.body.data.values).toEqual(["EL TRIGAL SRL", "LOS ALAMOS SA"]);
     expect(prismaMock.labProductor.findMany.mock.calls[0][0]).toMatchObject({
       where: { deletedAt: null, activo: true },
     });
+    // El historial ni se consulta.
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("procedencia propone las localidades de esas empresas, sin repetir y con la provincia de etiqueta", async () => {
+    conModulo();
+    prismaMock.labProductor.findMany.mockResolvedValue([
+      { localidad: "MORTEROS", provincia: "CORDOBA" },
+      { localidad: "SAN FRANCISCO", provincia: "CORDOBA" },
+      { localidad: "SAN FRANCISCO", provincia: null },
+    ] as any);
+    const res = await request(app).get("/api/glutenlab/samples/suggest?key=procedencia").set(auth(viewer));
+    expect(res.status).toBe(200);
+    expect(res.body.data.items).toEqual([
+      { value: "MORTEROS", label: "CORDOBA" },
+      { value: "SAN FRANCISCO", label: "CORDOBA" },
+      { value: "SAN FRANCISCO", label: "" },
+    ]);
+    expect(prismaMock.labProductor.findMany.mock.calls[0][0]).toMatchObject({
+      where: { deletedAt: null, activo: true, localidad: { not: null } },
+      distinct: ["localidad", "provincia"],
+    });
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("si la lista del ERP todavía está vacía, cae al historial para no dejar el campo mudo", async () => {
+    conModulo();
+    prismaMock.labProductor.findMany.mockResolvedValue([] as any);
+    prismaMock.$queryRaw.mockResolvedValue([{ valor: "Los Alamos SA", n: 5n }] as any);
+    const res = await request(app).get("/api/glutenlab/samples/suggest?key=empresa").set(auth(viewer));
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ values: ["Los Alamos SA"], items: [{ value: "Los Alamos SA" }] });
   });
 
   it("otros campos no consultan la lista del ERP", async () => {
