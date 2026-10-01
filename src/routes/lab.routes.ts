@@ -15,6 +15,7 @@ import { heartbeatSchema, ingestBatchSchema, reconcileSchema } from "../validati
 import {
   createFieldDefSchema,
   createSampleSchema,
+  rejectSampleSchema,
   updateFieldDefSchema,
   updateSampleSchema,
 } from "../validations/lab.samples";
@@ -181,6 +182,15 @@ router.patch(
   validate(updateSampleSchema),
   LabSamplesController.update,
 );
+// Camión rechazado: lo marca (con nota obligatoria) y lo quita quien registra
+// muestras, QC. Es un dato de calidad de la recepción, como la ficha misma.
+router.post(
+  "/samples/:id/reject",
+  requireModule("glutenlab", "QC"),
+  validate(rejectSampleSchema),
+  LabSamplesController.reject,
+);
+router.delete("/samples/:id/reject", requireModule("glutenlab", "QC"), LabSamplesController.unreject);
 
 router.post(
   "/samples/kinds/:kindId/fields",

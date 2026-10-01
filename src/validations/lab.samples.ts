@@ -76,7 +76,22 @@ const fieldDefBase = {
   suggest: z.boolean().optional(),
   /** TEXT: guardar en mayúsculas. */
   uppercase: z.boolean().optional(),
+  /** Valor con el que arranca el campo en una muestra nueva. En un SELECT, una de las opciones. */
+  defaultValue: z.string().max(80).nullish(),
+  /** SELECT: ofrecer un desplegable para filtrar por este campo en la lista y en Análisis. */
+  filterable: z.boolean().optional(),
 };
+
+/**
+ * Rechazo del camión. La nota es obligatoria: es lo que después lee comercio
+ * para entender por qué esa muestra no terminó en descarga.
+ */
+export const rejectSampleSchema = z.object({
+  params: z.object({ id: z.string().min(1).max(40) }),
+  body: z.object({
+    reason: z.string().trim().min(3, "Contá por qué se rechazó").max(500),
+  }),
+});
 
 export const createFieldDefSchema = z.object({
   params: z.object({ kindId: z.string().min(1).max(40) }),
@@ -103,3 +118,4 @@ export type CreateSampleBody = z.infer<typeof createSampleSchema>["body"];
 export type UpdateSampleBody = z.infer<typeof updateSampleSchema>["body"];
 export type CreateFieldDefBody = z.infer<typeof createFieldDefSchema>["body"];
 export type UpdateFieldDefBody = z.infer<typeof updateFieldDefSchema>["body"];
+export type RejectSampleBody = z.infer<typeof rejectSampleSchema>["body"];

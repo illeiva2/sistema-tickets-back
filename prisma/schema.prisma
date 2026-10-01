@@ -117,6 +117,7 @@ model User {
   moduleGrantsGiven     ModuleGrant[]          @relation("ModuleGrantGranter")
   oauthExchangeCodes    OAuthExchangeCode[]
   labSamplesCreated     LabSample[]            @relation("LabSampleCreator")
+  labSamplesRejected    LabSample[]            @relation("LabSampleRejecter")
   labMeasurementsLoaded LabMeasurement[]       @relation("LabMeasurementCreator")
   labAssistantRequests  LabAssistantRequest[]  @relation("LabAssistantRequester")
 
@@ -1595,6 +1596,14 @@ model LabSampleFieldDef {
   suggest     Boolean      @default(false)
   /// TEXT: se guarda en mayusculas (patentes, lotes).
   uppercase   Boolean      @default(false)
+  /// Valor con el que arranca el campo en una muestra nueva ("Camion" en Tipo
+  /// de ingreso): el caso comun no exige ningun clic. En un SELECT tiene que
+  /// ser una de las opciones. Null = arranca vacio.
+  defaultValue String?     @db.VarChar(80)
+  /// SELECT: la lista de muestras y la vista Analisis ofrecen un desplegable
+  /// para filtrar por este campo (comercio separa las muestras de cliente de
+  /// los camiones sin leer las notas).
+  filterable  Boolean      @default(false)
   sortOrder   Int          @default(0)
   isActive    Boolean      @default(true)
   createdAt   DateTime     @default(now())
@@ -1628,6 +1637,13 @@ model LabSample {
   /// LabSampleFieldDef y puede cambiar sin migrar los valores.
   fields      Json
   notes       String?   @db.Text
+  /// Camion rechazado: cuando, por que y quien lo marco. Es un hecho de la
+  /// recepcion (el camion se fue sin descargar), no un dato del grano: por eso
+  /// vive en la muestra y no en la ficha configurable. Null = no rechazado.
+  /// La nota es obligatoria al marcarlo; el rechazo se puede quitar.
+  rejectedAt     DateTime?
+  rejectedReason String?   @db.VarChar(500)
+  rejectedById   String?
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1635,6 +1651,7 @@ model LabSample {
 
   kind         LabSampleKind    @relation(fields: [kindId], references: [id])
   createdBy    User             @relation("LabSampleCreator", fields: [createdById], references: [id])
+  rejectedBy   User?            @relation("LabSampleRejecter", fields: [rejectedById], references: [id], onDelete: SetNull)
   measurements LabMeasurement[]
 
   @@unique([site, seq])

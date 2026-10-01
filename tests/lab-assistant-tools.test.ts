@@ -127,6 +127,24 @@ describe("buscar_muestras", () => {
     expect(r.summary).toContain("con alteraciones");
   });
 
+  it("con solo_rechazados filtra en la consulta y cada fila dice el motivo, quién y cuándo; sin rechazo no ocupa lugar", async () => {
+    const rechazadaEl = new Date("2026-10-01T13:05:00.000Z");
+    const grid = vi.spyOn(LabSamplesService, "grid").mockResolvedValue(
+      grilla([
+        fila({ rejectedAt: rechazadaEl, rejectedReason: "Olor fuerte", rejectedBy: { id: "u", name: "Ana" } }),
+        fila({ id: "s2", accession: "A-0003-1", rejectedAt: null, rejectedReason: null }),
+      ]) as any,
+    );
+
+    const r = await executeTool("buscar_muestras", { solo_rechazados: true, limite: 10 });
+
+    expect(grid.mock.calls[0][0]).toMatchObject({ rejected: true });
+    const muestras = (r.data as any).muestras;
+    expect(muestras[0].rechazo).toBe("RECHAZADO: Olor fuerte (marcó Ana, 01/10/2026, 10:05)");
+    expect(muestras[1].rechazo).toBeUndefined();
+    expect(r.summary).toContain("rechazados");
+  });
+
   it("una fecha mal formada vuelve como error para que el modelo se corrija, sin consultar", async () => {
     const grid = vi.spyOn(LabSamplesService, "grid");
     const r = await executeTool("buscar_muestras", { desde: "1/9/2026" });
