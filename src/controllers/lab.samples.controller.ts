@@ -22,12 +22,39 @@ const entero = (v: unknown, porDefecto: number): number => {
 const sitio = (v: unknown): LabSite | undefined =>
   v === "MOLINO" || v === "ACOPIO" ? v : undefined;
 
+const booleano = (v: unknown): boolean | undefined =>
+  v === "true" || v === "1" ? true : v === "false" || v === "0" ? false : undefined;
+
+const CLAVE_CAMPO = /^[a-z][a-z0-9_]{1,39}$/;
+/** Tope de filtros por campo: una URL armada a mano no tiene por qué armar una consulta absurda. */
+const MAX_FILTROS_CAMPO = 5;
+
+/**
+ * Filtros por campo de la ficha: `f.<clave>=<valor>`, uno por campo
+ * (`?f.tipo_ingreso=Camión`). Planos a propósito: Express parsea anidados,
+ * pero `f.x` se lee igual en un log, en una URL compartida y en el cliente.
+ */
+const camposDe = (q: Request["query"]): Record<string, string> | undefined => {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(q)) {
+    if (!k.startsWith("f.")) continue;
+    const key = k.slice(2);
+    const val = texto(v);
+    if (!CLAVE_CAMPO.test(key) || !val || val.length > 80) continue;
+    out[key] = val;
+    if (Object.keys(out).length >= MAX_FILTROS_CAMPO) break;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+};
+
 const filtros = (q: Request["query"]): FiltrosMuestras => ({
   site: sitio(q.site),
   kindId: texto(q.kindId),
   q: texto(q.q),
   from: texto(q.from),
   to: texto(q.to),
+  fields: camposDe(q),
+  rejected: booleano(q.rejected),
 });
 
 /** Páginas acotadas: la lista es para operar, no para exportar el histórico. */
@@ -115,6 +142,15 @@ export class LabSamplesController {
 
   static update = oNoEncontrado("No existe esa muestra")((req) =>
     LabSamplesService.update(String(req.params.id), req.body),
+  );
+
+  /** Camión rechazado, con su motivo. El cuerpo lo valida rejectSampleSchema. */
+  static reject = oNoEncontrado("No existe esa muestra")((req) =>
+    LabSamplesService.reject(String(req.params.id), req.user!.id, String(req.body.reason)),
+  );
+
+  static unreject = oNoEncontrado("No existe esa muestra")((req) =>
+    LabSamplesService.unreject(String(req.params.id)),
   );
 
   static createFieldDef = handler(

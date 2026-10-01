@@ -38,7 +38,18 @@ export interface FiltrosMuestras {
   /** Fechas de PLANTA (YYYY-MM-DD), inclusive. */
   from?: string;
   to?: string;
+  /**
+   * Igualdad exacta sobre campos de la ficha (los marcados `filterable` en el
+   * catálogo): `{ tipo_ingreso: "Camión" }`. Una muestra de otro tipo no tiene
+   * la clave y queda afuera, que es lo esperable al filtrar por un campo.
+   */
+  fields?: Record<string, string>;
+  /** true = solo camiones rechazados; false = solo no rechazados; ausente = todas. */
+  rejected?: boolean;
 }
+
+/** Clave válida de un campo de la ficha (la misma regla que el catálogo). */
+const CLAVE_CAMPO = /^[a-z][a-z0-9_]{1,39}$/;
 
 /** Zona del molino. Argentina no aplica horario de verano desde 2009, así que el desfasaje es fijo. */
 const TZ_PLANTA = "America/Argentina/Cordoba";
@@ -63,6 +74,7 @@ const MAX_FUTURO_MS = 24 * 60 * 60 * 1000;
 const INCLUDE = {
   kind: { select: { id: true, code: true, name: true } },
   createdBy: { select: { id: true, name: true } },
+  rejectedBy: { select: { id: true, name: true } },
 } satisfies Prisma.LabSampleInclude;
 
 const CAMPOS_ACTIVOS = {
@@ -100,6 +112,7 @@ export class LabSamplesService {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
     this.validarValoresCondicion(body.type, body.options ?? [], body.conditionValues);
+    this.validarValorInicial(body.type, body.options ?? [], body.defaultValue);
     await this.validarVisibleWhen(kindId, body.key, body.visibleWhen);
 
     try {
@@ -124,6 +137,9 @@ export class LabSamplesService {
           withPercent: body.withPercent ?? false,
           suggest: body.suggest ?? false,
           uppercase: body.uppercase ?? false,
+          defaultValue: body.defaultValue?.trim() || null,
+          // El filtro es un desplegable con las opciones: solo tiene sentido en una lista.
+          filterable: body.type === "SELECT" && (body.filterable ?? false),
         },
       });
     } catch (error) {
@@ -141,6 +157,12 @@ export class LabSamplesService {
       throw new ApiError("VALIDATION_ERROR", "Un campo de lista necesita al menos una opción", 400);
     }
     this.validarValoresCondicion(def.type, body.options ?? optionsOf(def), body.conditionValues);
+    // Al cambiar las opciones, el valor inicial vigente también tiene que seguir siendo una.
+    this.validarValorInicial(
+      def.type,
+      body.options ?? optionsOf(def),
+      body.defaultValue === undefined ? def.defaultValue : body.defaultValue,
+    );
     await this.validarVisibleWhen(def.kindId, def.key, body.visibleWhen);
 
     return prisma.labSampleFieldDef.update({
@@ -169,8 +191,27 @@ export class LabSamplesService {
         withPercent: body.withPercent,
         suggest: body.suggest,
         uppercase: body.uppercase,
+        defaultValue:
+          body.defaultValue === undefined ? undefined : body.defaultValue?.trim() || null,
+        filterable: def.type === "SELECT" ? body.filterable : undefined,
       },
     });
+  }
+
+  /** El valor inicial de una lista tiene que ser una de sus opciones; si no, el formulario arrancaría con algo que no se puede guardar. */
+  private static validarValorInicial(
+    type: string,
+    options: string[],
+    defaultValue: string | null | undefined,
+  ) {
+    const v = defaultValue?.trim();
+    if (!v || type !== "SELECT" || options.includes(v)) return;
+    throw new ApiError(
+      "VALIDATION_ERROR",
+      `El valor inicial "${v}" no es una opción de la lista`,
+      400,
+      [{ field: "body.defaultValue", message: "tiene que ser una de las opciones" }],
+    );
   }
 
   /** La regla de visibilidad tiene que apuntar a OTRO campo del mismo tipo: un typo dejaría el campo invisible para siempre. */
@@ -316,6 +357,17 @@ export class LabSamplesService {
     const desde = f.from && esSoloFecha(f.from) ? inicioDia(f.from.trim()) : undefined;
     const hasta = f.to && esSoloFecha(f.to) ? finDia(f.to.trim()) : undefined;
     if (desde || hasta) where.sampledAt = { gte: desde, lte: hasta };
+
+    // Campos de la ficha: igualdad exacta sobre el JSONB, una condición por
+    // clave. Una clave con forma inválida no llega a la consulta.
+    const porCampo = Object.entries(f.fields ?? {}).filter(
+      ([k, v]) => CLAVE_CAMPO.test(k) && typeof v === "string" && v.trim() !== "",
+    );
+    if (porCampo.length > 0) {
+      where.AND = porCampo.map(([k, v]) => ({ fields: { path: [k], equals: v.trim() } }));
+    }
+    if (f.rejected === true) where.rejectedAt = { not: null };
+    else if (f.rejected === false) where.rejectedAt = null;
 
     let warning: string | undefined;
     const q = f.q?.trim();
@@ -674,6 +726,41 @@ export class LabSamplesService {
       include: INCLUDE,
     });
     return { ...actualizada, conditions: condicionesDe(actual.kind.fields, values) };
+  }
+
+  /**
+   * Marca el camión como rechazado. Es un hecho de la recepción (el camión se
+   * fue sin descargar), no un dato del grano: por eso vive en la muestra y no
+   * en la ficha configurable, y lleva quién lo marcó y cuándo. La nota es
+   * obligatoria: es lo que después lee comercio para entender qué pasó. Volver
+   * a marcar una muestra ya rechazada reemplaza el motivo (no se acumulan).
+   */
+  static async reject(id: string, userId: string, reason: string) {
+    const actual = await prisma.labSample.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!actual) return null;
+    const m = await prisma.labSample.update({
+      where: { id },
+      data: { rejectedAt: new Date(), rejectedReason: reason.trim(), rejectedById: userId },
+      include: INCLUDE,
+    });
+    return this.conCondiciones(m);
+  }
+
+  /** Quita el rechazo (se marcó por error, o el camión finalmente descargó). Queda sin rastro: no es un historial. */
+  static async unreject(id: string) {
+    const actual = await prisma.labSample.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!actual) return null;
+    const m = await prisma.labSample.update({
+      where: { id },
+      data: { rejectedAt: null, rejectedReason: null, rejectedById: null },
+      include: INCLUDE,
+    });
+    return this.conCondiciones(m);
+  }
+
+  private static async conCondiciones<T extends { id: string; kindId: string; fields: unknown }>(m: T) {
+    const condiciones = await this.condicionesPorMuestra([m]);
+    return { ...m, conditions: condiciones.get(m.id) ?? [] };
   }
 
   // ─── Internos ──────────────────────────────────────────────────────────────

@@ -47,7 +47,7 @@ export const TOOLS: ToolDef[] = [
     function: {
       name: "buscar_muestras",
       description:
-        "Lista muestras registradas (las más recientes primero) con su ficha (empresa, patente, acoplado, CTG, silo, producto…), sus alteraciones del grano y el valor de cada análisis. ES LA HERRAMIENTA PARA ENCONTRAR LAS MUESTRAS DE UNA EMPRESA, PERSONA, PATENTE, PROCEDENCIA O LOTE: pasá ese nombre en `texto`. También para listar qué muestras hay en un período.",
+        "Lista muestras registradas (las más recientes primero) con su ficha (empresa, patente, acoplado, CTG, silo, producto, tipo de ingreso…), sus alteraciones del grano, si el camión fue rechazado (con el motivo) y el valor de cada análisis. ES LA HERRAMIENTA PARA ENCONTRAR LAS MUESTRAS DE UNA EMPRESA, PERSONA, PATENTE, PROCEDENCIA O LOTE: pasá ese nombre en `texto`. También para listar qué muestras hay en un período o qué camiones se rechazaron.",
       parameters: {
         type: "object",
         properties: {
@@ -58,6 +58,10 @@ export const TOOLS: ToolDef[] = [
           solo_con_alteraciones: {
             type: "boolean",
             description: "Solo muestras con alguna alteración del grano (brotado, insectos, olor…)",
+          },
+          solo_rechazados: {
+            type: "boolean",
+            description: "Solo muestras cuyo camión fue rechazado",
           },
           limite: {
             type: "integer",
@@ -240,6 +244,18 @@ type FilaGrilla = Awaited<ReturnType<typeof LabSamplesService.grid>>["items"][nu
 const ligaDe = (r: { noLiga?: boolean; analyses?: Partial<Record<LabSource, number>> }): string =>
   r.noLiga ? "NO LIGA (el Glutomatic no formó gluten)" : (r.analyses?.GLUTOMATIC ?? 0) > 0 ? "liga" : "sin Glutomatic todavía";
 
+/** Camión rechazado: motivo, quién lo marcó y cuándo. Undefined si no lo fue, para no ocupar lugar en cada fila. */
+const rechazoDe = (r: {
+  rejectedAt: Date | null;
+  rejectedReason: string | null;
+  rejectedBy?: { name: string } | null;
+}): string | undefined =>
+  r.rejectedAt
+    ? `RECHAZADO: ${r.rejectedReason ?? "sin motivo"}${
+        r.rejectedBy ? ` (marcó ${r.rejectedBy.name}, ${fmtFechaHora(r.rejectedAt)})` : ""
+      }`
+    : undefined;
+
 const filaCompacta = (r: FilaGrilla, extra: AnalysisColumn[], etiquetas: Map<string, string>) => ({
   accesion: r.accession,
   fecha: fmtFechaHora(r.sampledAt),
@@ -248,6 +264,7 @@ const filaCompacta = (r: FilaGrilla, extra: AnalysisColumn[], etiquetas: Map<str
   nombre: r.displayName,
   ficha: fichaLegible(r.fields, etiquetas),
   alteraciones: r.conditions,
+  rechazo: rechazoDe(r),
   gluten: ligaDe(r),
   analisis: Object.fromEntries(
     Object.entries(r.values).map(([k, v]) => [
@@ -264,6 +281,9 @@ const buscarMuestras = async (a: Args): Promise<ToolResult> => {
   if ("error" in f) return fallo("buscar_muestras", f.error);
   const limite = Math.min(Math.max(Number(a.limite) || 20, 1), 50);
   const soloAlteradas = a.solo_con_alteraciones === true || a.solo_con_alteraciones === "true";
+  const soloRechazados = a.solo_rechazados === true || a.solo_rechazados === "true";
+  // Los rechazados sí los filtra la consulta: es una columna de la muestra.
+  if (soloRechazados) f.filtros.rejected = true;
 
   // Con el filtro de alteraciones se traen más filas y se filtra acá: el backend no filtra por eso.
   const [g, etiquetas] = await Promise.all([
@@ -273,7 +293,7 @@ const buscarMuestras = async (a: Args): Promise<ToolResult> => {
   const filas = (soloAlteradas ? g.items.filter((r) => r.conditions.length > 0) : g.items).slice(0, limite);
   return {
     ok: true,
-    summary: `buscar_muestras: ${filas.length} muestra${filas.length === 1 ? "" : "s"} (${f.descripcion}${soloAlteradas ? ", con alteraciones" : ""})`,
+    summary: `buscar_muestras: ${filas.length} muestra${filas.length === 1 ? "" : "s"} (${f.descripcion}${soloAlteradas ? ", con alteraciones" : ""}${soloRechazados ? ", rechazados" : ""})`,
     data: {
       filtro: f.descripcion,
       total_que_cumplen: soloAlteradas ? filas.length : g.total,
@@ -299,6 +319,7 @@ const fichaMuestra = async (a: Args): Promise<ToolResult> => {
       nombre: s.displayName,
       ficha: fichaLegible(s.fields, etiquetas),
       alteraciones: s.conditions,
+      rechazo: rechazoDe(s),
       gluten: ligaDe({ noLiga: s.noLiga, analyses: { GLUTOMATIC: s.measurements.filter((m) => m.source === "GLUTOMATIC").length } }),
       notas: s.notes,
       analisis: s.measurements.map((m) => ({
