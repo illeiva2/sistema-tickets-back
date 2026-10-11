@@ -1154,7 +1154,8 @@ model AgentDevice {
   secretHash      String
   agentVersion    String?
   osName          String? // "Windows 11 Pro"
-  osVersion       String? // "10.0.26100"
+  osVersion       String? // versión comercial: "24H2"
+  osBuild         String? // build + UBR: "26100.4061" (el corte Win10/Win11 es 22000)
   connState       AgentConnState @default(OFFLINE)
   lastSeenAt      DateTime?
   lastEnrolledAt  DateTime       @default(now())

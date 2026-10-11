@@ -18,9 +18,14 @@ vi.mock("nodemailer", () => ({
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { DeepMockProxy } from "vitest-mock-extended";
 import request from "supertest";
-import { createApp, shouldSkipGlobalRateLimit } from "../src/app";
+import {
+  createApp,
+  globalRateLimitKey,
+  shouldSkipGlobalRateLimit,
+} from "../src/app";
 import { prisma } from "../src/lib/database";
 import { AGENT_ENROLL_RATE_LIMIT } from "../src/routes/agent-machine.routes";
+import { normalizeWindowsName } from "../src/services/agents.service";
 import {
   machineEnrollSchema,
   machineHeartbeatSchema,
@@ -205,6 +210,62 @@ describe("API de agentes de monitoreo IT", () => {
     // El login por email/password sí debe seguir limitado (tiene su propio
     // loginLimiter más estricto, pensado para eso).
     expect(shouldSkipGlobalRateLimit("/api/auth/login")).toBe(false);
+  });
+
+  it("limita por usuario autenticado y no por la IP compartida de la oficina", () => {
+    const req = (authorization?: string) =>
+      ({
+        headers: authorization ? { authorization } : {},
+        ip: "200.1.2.3",
+      }) as any;
+    expect(globalRateLimitKey(req(auth("AGENT", "user-a").Authorization))).toBe(
+      "user:user-a",
+    );
+    expect(globalRateLimitKey(req(auth("USER", "user-b").Authorization))).toBe(
+      "user:user-b",
+    );
+    // Un token inventado no consigue un balde propio: vuelve al de la IP.
+    expect(globalRateLimitKey(req("Bearer token-inventado"))).toBe(
+      "ip:200.1.2.3",
+    );
+    expect(globalRateLimitKey(req())).toBe("ip:200.1.2.3");
+  });
+
+  it("acepta hostnames con ñ y acentos y mantiene el contrato strict del inventario", () => {
+    const parse = (overrides: Record<string, any>) =>
+      machineHeartbeatSchema.safeParse(heartbeat(overrides)).success;
+    expect(parse({ hostname: "CONTADURÍA-01" })).toBe(true);
+    expect(parse({ hostname: "PC-ÑANDÚ" })).toBe(true);
+    expect(parse({ hostname: "PC 01" })).toBe(false);
+    expect(parse({ hostname: "-PC01" })).toBe(false);
+    expect(
+      parse({
+        inventory: {
+          physicalDisks: [{ model: "Disco", sizeBytes: 1, mediaType: "FLASH" }],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      parse({ inventory: { hardware: { chassisType: "NOTEBOOK", color: "gris" } } }),
+    ).toBe(false);
+  });
+
+  it("reconoce Windows 11 por build aunque el agente 0.2 diga Windows 10", () => {
+    expect(normalizeWindowsName("Windows 10 Pro", "26100.4061")).toBe(
+      "Windows 11 Pro",
+    );
+    expect(normalizeWindowsName("Windows 10 Pro", "22000")).toBe(
+      "Windows 11 Pro",
+    );
+    expect(normalizeWindowsName("Windows 10 Pro", "19045.5011")).toBe(
+      "Windows 10 Pro",
+    );
+    expect(normalizeWindowsName("Windows 10 Home", null)).toBe(
+      "Windows 10 Home",
+    );
+    expect(
+      normalizeWindowsName("Windows Server 2022 Standard", "20348.2700"),
+    ).toBe("Windows Server 2022 Standard");
   });
 
   it("protege gestión humana para AGENT/ADMIN y valida filtros strict", async () => {
@@ -663,6 +724,85 @@ describe("API de agentes de monitoreo IT", () => {
     });
   });
 
+  it("guarda el build, corrige Windows 11 y suma las unidades al inventario 0.3", async () => {
+    prismaMock.agentDevice.findFirst
+      .mockResolvedValueOnce({
+        id: deviceId,
+        isActive: true,
+        secretHash: hash(deviceSecret),
+      } as any)
+      .mockResolvedValueOnce({
+        id: deviceId,
+        secretHash: hash(deviceSecret),
+        updatedAt: version,
+      } as any);
+    prismaMock.agentDevice.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.agentMetricSample.findFirst.mockResolvedValueOnce({
+      sampledAt: new Date(),
+    } as any);
+    prismaMock.agentMetricSample.deleteMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.agentInventorySnapshot.create.mockResolvedValueOnce({} as any);
+    prismaMock.agentInventorySnapshot.findMany.mockResolvedValueOnce([]);
+
+    const response = await request(app)
+      .post("/api/agent/heartbeat")
+      .set(machineAuth())
+      .send(
+        heartbeat({
+          hostname: "CONTADURÍA-01",
+          os: { name: "Windows 10 Pro", version: "24H2", build: "26100.4061" },
+          inventory: {
+            hardware: {
+              manufacturer: "LENOVO",
+              model: "ThinkBook 16 G8 IRL (21SH)",
+              serialNumber: "PW0ABCDE",
+              chassisType: "NOTEBOOK",
+              baseboardModel: "LNVNB161216",
+            },
+            cpu: { model: "Intel Core Ultra 7", cores: 10, logicalProcessors: 16 },
+            memoryModules: [
+              {
+                capacityBytes: 16 * 1024 ** 3,
+                manufacturer: "Samsung",
+                speedMts: 5600,
+                memoryType: "DDR5",
+                formFactor: "SODIMM",
+                slot: "DIMM0",
+              },
+            ],
+            memorySlots: 2,
+            physicalDisks: [
+              {
+                model: "Micron MTFDKCD512QGN",
+                sizeBytes: 512_110_190_592,
+                mediaType: "SSD",
+                busType: "NVME",
+              },
+            ],
+          },
+        }),
+      );
+
+    expect(response.status).toBe(200);
+    const updated = (prismaMock.agentDevice.updateMany.mock.calls[0][0] as any)
+      .data;
+    expect(updated.hostname).toBe("CONTADURÍA-01");
+    expect(updated.osName).toBe("Windows 11 Pro");
+    expect(updated.osVersion).toBe("24H2");
+    expect(updated.osBuild).toBe("26100.4061");
+    const payload = (
+      prismaMock.agentInventorySnapshot.create.mock.calls[0][0] as any
+    ).data.payload;
+    expect(payload.volumes).toEqual([
+      { name: "C:", totalBytes: 1000, usedBytes: 500 },
+    ]);
+    expect(payload.physicalDisks[0]).toEqual(
+      expect.objectContaining({ mediaType: "SSD", busType: "NVME" }),
+    );
+    expect(payload.hardware.chassisType).toBe("NOTEBOOK");
+    expect(payload.memorySlots).toBe(2);
+  });
+
   it("downsamplea métricas y sólo crea snapshot cuando viene inventario", async () => {
     prismaMock.agentDevice.findFirst
       .mockResolvedValueOnce({
@@ -730,6 +870,70 @@ describe("API de agentes de monitoreo IT", () => {
         where: expect.objectContaining({ AND: expect.any(Array) }),
       }),
     );
+  });
+
+  it("exporta la flota con el último inventario y audita quién exportó", async () => {
+    const otherDeviceId = "cmhgggggggggggggggggggggggg";
+    prismaMock.agentDevice.findMany.mockResolvedValueOnce([
+      makeDevice({ osBuild: "26100.4061" }),
+      makeDevice({
+        id: otherDeviceId,
+        hostname: "PC-SIN-INVENTARIO",
+        isActive: false,
+        assetId: null,
+        asset: null,
+      }),
+    ] as any);
+    (prismaMock.$queryRaw as any).mockResolvedValueOnce([
+      {
+        deviceId,
+        createdAt: version,
+        hardware: { manufacturer: "Dell", serialNumber: "ABC1234" },
+        cpu: { model: "Core i5", cores: 6, logicalProcessors: 12 },
+        memoryModules: [{ capacityBytes: 8 * 1024 ** 3 }],
+        memorySlots: 4,
+        physicalDisks: [{ model: "Samsung SSD 980", mediaType: "SSD" }],
+        volumes: [{ name: "C:\\", totalBytes: 1000, usedBytes: 500 }],
+      },
+    ]);
+    prismaMock.auditLog.create.mockResolvedValueOnce({} as any);
+
+    const response = await request(app)
+      .get("/api/it/agents/devices/export")
+      .set(auth("AGENT"));
+
+    expect(response.status).toBe(200);
+    const [withInventory, withoutInventory] = response.body.data.items;
+    expect(withInventory.state).toBe("ONLINE");
+    expect(withInventory.osBuild).toBe("26100.4061");
+    expect(withInventory.hardware.serialNumber).toBe("ABC1234");
+    expect(withInventory.memorySlots).toBe(4);
+    expect(withInventory.volumes).toHaveLength(1);
+    expect(withInventory.inventoryAt).toBe(version.toISOString());
+    expect(withoutInventory.state).toBe("OFFLINE");
+    expect(withoutInventory.inventoryAt).toBeNull();
+    expect(withoutInventory.hardware).toBeNull();
+    expect(withoutInventory.memorySlots).toBeNull();
+    expect(prismaMock.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        entity: "agent_device",
+        action: "exported",
+        actorId: "agent-1",
+        meta: { deviceCount: 2 },
+      }),
+    });
+
+    expect(
+      (await request(app).get("/api/it/agents/devices/export").set(auth("USER")))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await request(app)
+          .get("/api/it/agents/devices/export?formato=xlsx")
+          .set(auth("AGENT"))
+      ).status,
+    ).toBe(400);
   });
 
   it("detalle incluye métricas recientes, último snapshot y sesiones activas", async () => {

@@ -63,6 +63,7 @@ const deviceListSelect = {
   agentVersion: true,
   osName: true,
   osVersion: true,
+  osBuild: true,
   connState: true,
   lastSeenAt: true,
   lastEnrolledAt: true,
@@ -334,6 +335,35 @@ const ensureAssetAvailable = async (
 
 const mb = (bytes: number) =>
   Math.min(2_147_483_647, Math.round(bytes / 1_048_576));
+
+/**
+ * Windows 11 conserva "Windows 10" en ProductName por compatibilidad y los
+ * agentes 0.2 lo reenvían tal cual. El build (22000+) es lo que distingue a
+ * Windows 11; corregirlo acá arregla también a los equipos que aún no
+ * actualizaron el agente.
+ */
+export const normalizeWindowsName = (
+  name: string,
+  build: string | null | undefined,
+) => {
+  const major = Number.parseInt(build ?? "", 10);
+  return Number.isFinite(major) && major >= 22_000 && /^Windows 10\b/i.test(name)
+    ? name.replace(/^Windows 10/i, "Windows 11")
+    : name;
+};
+
+// Fila del último inventario por equipo para la exportación: sólo las ramas del
+// payload que van a la planilla (el software, que es lo pesado, queda afuera).
+interface LatestInventoryRow {
+  deviceId: string;
+  createdAt: Date;
+  hardware: Prisma.JsonValue | null;
+  cpu: Prisma.JsonValue | null;
+  memoryModules: Prisma.JsonValue | null;
+  memorySlots: Prisma.JsonValue | null;
+  physicalDisks: Prisma.JsonValue | null;
+  volumes: Prisma.JsonValue | null;
+}
 
 const diskUsedPct = (disks: MachineHeartbeatRequest["disks"]) => {
   const total = disks.reduce((sum, disk) => sum + disk.totalBytes, 0);
@@ -612,6 +642,71 @@ export class AgentsService {
       recentMetrics: recentMetricsDesc.reverse(),
       latestSnapshot,
       activeSessions: activeSessions.map(serializeSession),
+    };
+  }
+
+  /**
+   * Flota completa con el último inventario de cada equipo, para la planilla
+   * del relevamiento. Incluye usuarios logueados: queda auditado quién exportó.
+   */
+  static async inventoryExport(actorId: string) {
+    const now = new Date();
+    const [devices, inventories] = await Promise.all([
+      prisma.agentDevice.findMany({
+        where: { deletedAt: null },
+        select: deviceListSelect,
+        orderBy: [{ isActive: "desc" }, { hostname: "asc" }],
+      }),
+      // LATERAL + LIMIT 1 usa el índice (deviceId, createdAt) y sólo lee el
+      // payload del último snapshot de cada equipo, no los 30 que se retienen.
+      prisma.$queryRaw<LatestInventoryRow[]>`
+        SELECT
+          d."id" AS "deviceId",
+          s."createdAt",
+          s."payload"->'hardware' AS "hardware",
+          s."payload"->'cpu' AS "cpu",
+          s."payload"->'memoryModules' AS "memoryModules",
+          s."payload"->'memorySlots' AS "memorySlots",
+          s."payload"->'physicalDisks' AS "physicalDisks",
+          s."payload"->'volumes' AS "volumes"
+        FROM "agent_devices" d
+        JOIN LATERAL (
+          SELECT "createdAt", "payload"
+          FROM "agent_inventory_snapshots"
+          WHERE "deviceId" = d."id"
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+        ) s ON true
+        WHERE d."deletedAt" IS NULL`,
+    ]);
+    const byDevice = new Map(inventories.map((row) => [row.deviceId, row]));
+    await prisma.auditLog.create({
+      data: {
+        entity: "agent_device",
+        entityId: "inventory_export",
+        action: "exported",
+        actorId,
+        meta: { deviceCount: devices.length },
+      },
+    });
+    return {
+      generatedAt: now.toISOString(),
+      items: devices.map((device) => {
+        const inventory = byDevice.get(device.id);
+        return {
+          ...serializeDevice(device, now),
+          inventoryAt: inventory?.createdAt ?? null,
+          hardware: inventory?.hardware ?? null,
+          cpu: inventory?.cpu ?? null,
+          memoryModules: inventory?.memoryModules ?? null,
+          memorySlots:
+            typeof inventory?.memorySlots === "number"
+              ? inventory.memorySlots
+              : null,
+          physicalDisks: inventory?.physicalDisks ?? null,
+          volumes: inventory?.volumes ?? null,
+        };
+      }),
     };
   }
 
@@ -1197,8 +1292,9 @@ export class AgentsService {
           updatedAt: current.updatedAt,
           hostname: data.hostname,
           agentVersion: data.agentVersion,
-          osName: data.os.name,
-          osVersion: data.os.version ?? data.os.build,
+          osName: normalizeWindowsName(data.os.name, data.os.build),
+          osVersion: data.os.version ?? null,
+          osBuild: data.os.build ?? null,
           connState: AgentConnState.ONLINE,
           lastSeenAt: now,
           loggedInUser: data.username ?? null,
@@ -1250,10 +1346,16 @@ export class AgentsService {
       });
 
       if (data.inventory) {
+        // Las unidades (C:, D:...) llegan en cada heartbeat, no dentro del
+        // inventario. Se guardan junto al inventario diario para que el detalle y
+        // la exportación muestren capacidad y uso, también con agentes 0.2.
+        const payload = data.disks.length
+          ? { ...data.inventory, volumes: data.disks }
+          : data.inventory;
         await tx.agentInventorySnapshot.create({
           data: {
             deviceId,
-            payload: data.inventory as Prisma.InputJsonValue,
+            payload: payload as Prisma.InputJsonValue,
             createdAt: now,
           },
         });

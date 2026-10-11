@@ -12,16 +12,36 @@ internal sealed class InventoryCollector
 
     public InventorySnapshot Collect(NetworkCollection network, DateTimeOffset collectedAt)
     {
+        var smbios = SmbiosInventoryReader.Read();
         return new InventorySnapshot(
             collectedAt,
-            ReadHardware(),
+            ReadHardware(smbios),
             ReadCpu(),
-            null,
+            smbios?.MemoryModules,
             ReadSoftware(),
-            network.InventoryAdapters);
+            network.InventoryAdapters,
+            PhysicalDiskCollector.Collect(),
+            smbios?.MemorySlots);
     }
 
-    private static HardwareSnapshot? ReadHardware()
+    private static HardwareSnapshot? ReadHardware(SmbiosInventory? smbios)
+    {
+        // SMBIOS primero; el registro queda de respaldo si el firmware no publica la
+        // tabla. El número de serie solo existe en SMBIOS.
+        var registry = ReadRegistryHardware();
+        var hardware = new HardwareSnapshot(
+            smbios?.Manufacturer ?? registry?.Manufacturer,
+            smbios?.Model ?? registry?.Model,
+            smbios?.SerialNumber,
+            smbios?.BiosVersion ?? registry?.BiosVersion,
+            smbios?.ChassisType,
+            smbios?.BaseboardManufacturer ?? registry?.BaseboardManufacturer,
+            smbios?.BaseboardModel ?? registry?.BaseboardModel,
+            smbios?.BaseboardSerial);
+        return hardware == new HardwareSnapshot(null, null, null, null) ? null : hardware;
+    }
+
+    private static HardwareSnapshot? ReadRegistryHardware()
     {
         try
         {
@@ -32,17 +52,14 @@ internal sealed class InventoryCollector
                 return null;
             }
 
-            var hardware = new HardwareSnapshot(
-                CleanFirmwareValue(ReadValue(key, "SystemManufacturer"), 200),
-                CleanFirmwareValue(ReadValue(key, "SystemProductName"), 200),
-                CleanFirmwareValue(ReadValue(key, "SystemSerialNumber"), 200),
-                CleanFirmwareValue(ReadValue(key, "BIOSVersion"), 200));
-            return hardware.Manufacturer is null
-                   && hardware.Model is null
-                   && hardware.SerialNumber is null
-                   && hardware.BiosVersion is null
-                ? null
-                : hardware;
+            return new HardwareSnapshot(
+                FirmwareText.Clean(ReadValue(key, "SystemManufacturer"), 200),
+                FirmwareText.Clean(ReadValue(key, "SystemProductName"), 200),
+                null,
+                FirmwareText.Clean(ReadValue(key, "BIOSVersion"), 200),
+                null,
+                FirmwareText.Clean(ReadValue(key, "BaseBoardManufacturer"), 200),
+                FirmwareText.Clean(ReadValue(key, "BaseBoardProduct"), 200));
         }
         catch
         {
@@ -64,7 +81,10 @@ internal sealed class InventoryCollector
             // Logical processor count is still available without registry access.
         }
 
-        return new CpuInventorySnapshot(model, null, Math.Clamp(Environment.ProcessorCount, 1, 2_048));
+        return new CpuInventorySnapshot(
+            model,
+            ProcessorTopology.CountPhysicalCores(),
+            Math.Clamp(Environment.ProcessorCount, 1, 2_048));
     }
 
     private static IReadOnlyList<SoftwareSnapshot>? ReadSoftware()
@@ -141,16 +161,5 @@ internal sealed class InventoryCollector
             object value => value.ToString(),
             _ => null,
         };
-    }
-
-    private static string? CleanFirmwareValue(string? value, int maximumLength)
-    {
-        var normalized = StringLimiter.LimitOptional(value, maximumLength);
-        return normalized is null
-               || normalized.Equals("Default string", StringComparison.OrdinalIgnoreCase)
-               || normalized.Contains("To Be Filled", StringComparison.OrdinalIgnoreCase)
-               || normalized.Equals("System Serial Number", StringComparison.OrdinalIgnoreCase)
-            ? null
-            : normalized;
     }
 }

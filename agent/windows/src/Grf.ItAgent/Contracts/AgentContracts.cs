@@ -50,19 +50,27 @@ internal sealed record RemoteServiceSnapshot(bool Available, int? Port);
 
 internal sealed record OsSnapshot(string Name, string? Version, string? Build);
 
+// Los campos agregados en 0.3 van al final y con valor por defecto: el JSON omite
+// los null y la API los acepta como opcionales, así que conviven con agentes 0.2.
 internal sealed record InventorySnapshot(
     DateTimeOffset? CollectedAt,
     HardwareSnapshot? Hardware,
     CpuInventorySnapshot? Cpu,
     IReadOnlyList<MemoryModuleSnapshot>? MemoryModules,
     IReadOnlyList<SoftwareSnapshot>? Software,
-    IReadOnlyList<NetworkAdapterSnapshot>? NetworkAdapters);
+    IReadOnlyList<NetworkAdapterSnapshot>? NetworkAdapters,
+    IReadOnlyList<PhysicalDiskSnapshot>? PhysicalDisks = null,
+    int? MemorySlots = null);
 
 internal sealed record HardwareSnapshot(
     string? Manufacturer,
     string? Model,
     string? SerialNumber,
-    string? BiosVersion);
+    string? BiosVersion,
+    string? ChassisType = null,
+    string? BaseboardManufacturer = null,
+    string? BaseboardModel = null,
+    string? BaseboardSerial = null);
 
 internal sealed record CpuInventorySnapshot(string? Model, int? Cores, int? LogicalProcessors);
 
@@ -70,7 +78,18 @@ internal sealed record MemoryModuleSnapshot(
     long CapacityBytes,
     string? Manufacturer,
     string? PartNumber,
-    string? SerialNumber);
+    string? SerialNumber,
+    int? SpeedMts = null,
+    string? MemoryType = null,
+    string? FormFactor = null,
+    string? Slot = null);
+
+internal sealed record PhysicalDiskSnapshot(
+    string? Model,
+    string? SerialNumber,
+    long? SizeBytes,
+    string? MediaType,
+    string? BusType);
 
 internal sealed record SoftwareSnapshot(string Name, string? Version, string? Publisher);
 

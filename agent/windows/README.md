@@ -15,7 +15,9 @@ Cada heartbeat incluye:
 - versión/build de Windows;
 - estado y puerto detectado de OpenSSH y UltraVNC.
 
-Una vez por día de forma predeterminada agrega inventario: fabricante/modelo/serie/BIOS, modelo y procesadores lógicos, hasta 500 aplicaciones instaladas a nivel máquina y hasta 64 adaptadores de red. El payload se reduce automáticamente hasta un máximo seguro de 450 KB para quedar por debajo del parser de 512 KiB de la API.
+Una vez por día de forma predeterminada agrega inventario: fabricante, modelo, número de serie, BIOS, tipo de gabinete y placa base (leídos de la tabla SMBIOS del firmware; en Lenovo el modelo incluye el nombre comercial y el tipo de máquina), modelo de procesador con núcleos físicos e hilos, módulos de RAM (capacidad, tipo DDR, velocidad, formato y ranura) y cantidad de ranuras, discos físicos (modelo, serie, capacidad, SSD/HDD e interfaz; se omiten USB y discos virtuales), hasta 500 aplicaciones instaladas a nivel máquina y hasta 64 adaptadores de red. El payload se reduce automáticamente hasta un máximo seguro de 450 KB para quedar por debajo del parser de 512 KiB de la API.
+
+El nombre de Windows se corrige por build: Windows 11 conserva "Windows 10" en el registro, así que un build 22000 o superior se informa como Windows 11.
 
 ## Seguridad
 
@@ -45,7 +47,7 @@ POST /api/agent/enroll
   "deviceSecret": "<base64url-43>",
   "machineGuid": "550e8400-e29b-41d4-a716-446655440000",
   "hostname": "PC-001",
-  "agentVersion": "0.2.0",
+  "agentVersion": "0.3.0",
   "osName": "Windows 11 Pro",
   "osVersion": "24H2"
 }
@@ -132,6 +134,14 @@ local o el despliegue masivo. En una PC ya enrolada conserva `credentials.dat` y
 token. En PCs nuevas se puede reutilizar un único token de enrolamiento por lote; las
 actualizaciones posteriores sólo usan HTTPS anónimo hacia GitHub Releases.
 
+**0.3.0 y el orden de despliegue.** La 0.3.0 envía campos nuevos de inventario (SMBIOS, discos
+físicos, detalle de RAM). La API valida el contrato en modo estricto, así que **primero tiene que
+estar desplegado el back** que los acepta (incluida la migración `20261011120000_agent_os_build`);
+un back anterior rechazaría esos heartbeats. El back nuevo sigue aceptando agentes 0.2: les
+corrige el nombre de Windows 11 por build y guarda las unidades (C:, D:) junto al inventario.
+Los equipos con 0.2 instalada sin actualizador habilitado se actualizan reinstalando el paquete
+(local o remoto); conservan su enrolamiento.
+
 ## Release gate .NET
 
 El agente productivo apunta a `net10.0-windows` y se publica self-contained para `win-x64`. `publish.ps1` bloquea cualquier release que no use ese target. Las PCs administradas no necesitan tener un runtime .NET instalado. Referencia: [política oficial de soporte de .NET](https://dotnet.microsoft.com/platform/support/policy/dotnet-core).
@@ -194,8 +204,11 @@ Set-Item WSMan:\localhost\Client\TrustedHosts `
   -Value "PC-001,PC-002,192.168.1.25" -Concatenate -Force
 ```
 
-Preparar `equipos.txt` con un hostname o IPv4 por línea. Primero verificar conectividad y
-permisos sin modificar los equipos:
+Preparar `equipos.txt` con un hostname o IPv4 por línea, **fuera** de `artifacts\win-x64`:
+`publish.ps1` vacía esa carpeta en cada publicación. Del paquete sólo viajan a cada PC
+`GRF.ITAgent.exe`, `install.ps1`, `update-agent.ps1` y `config.example.json`; cualquier otro
+archivo de la carpeta queda en la PC de IT. Primero verificar conectividad y permisos sin
+modificar los equipos:
 
 ```powershell
 $equipos = Get-Content .\equipos.txt
@@ -224,6 +237,27 @@ SHA-256 del ejecutable antes y después de transferirlo, invoca el `install.ps1`
 elimina el staging mediante una limpieza acotada. El estado `INSTALLED` confirma la instalación
 local y la tarea programada; el enrolamiento contra la API ocurre en segundo plano. Si la copia
 o instalación falla, los demás equipos continúan y el resumen identifica fase y causa.
+
+El preflight también lee el `MachineGuid`, el nombre real y la versión del agente ya instalada
+en cada equipo:
+
+- `DUPLICATE_MACHINE_GUID`: dos PCs distintas comparten la identidad (clonadas de la misma imagen
+  sin Sysprep). La segunda no se toca: instaladas así, aparecerían como un único equipo en el
+  sistema. Hay que regenerar su identidad antes de instalar.
+- `DUPLICATE_TARGET`: el mismo equipo figura dos veces en la lista (por nombre y por IP).
+- Un nombre con ñ o acentos se acepta desde la 0.3, pero WinRM/Kerberos suelen fallar por
+  nombre: conviene listar esos equipos por IP. Queda como observación en el resumen.
+- Si el equipo ya tenía el agente, se informa la versión y se actualiza en el lugar sin pedir
+  un token nuevo.
+
+Al final se listan los equipos que requieren atención. Para conservar el resultado del
+relevamiento:
+
+```powershell
+.\deploy-remotely.ps1 -ComputerName $equipos -PackagePath .\artifacts\win-x64 `
+  -BaseUrl "https://sistema-tickets-back.onrender.com/" -PreflightOnly |
+  Export-Csv -Path .\preflight.csv -NoTypeInformation -Encoding UTF8
+```
 
 Para WinRM sobre HTTPS, agregar `-UseSSL`. Si una cuenta administradora local personalizada
 llega con un token UAC filtrado, el preflight la rechazará; debe corregirse esa política en el

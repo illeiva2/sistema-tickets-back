@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
@@ -48,6 +49,14 @@ internal static class Program
             ("Scheduler persiste intervalo y backoff entre procesos", UpdateAttemptScheduleTest),
             ("CLI separa preparación, validación y ejecución", UpdateCliOptionsTest),
             ("Versión del agente conserva metadata SemVer", AgentVersionSelectionTest),
+            ("SMBIOS informa serie, gabinete, placa y módulos de RAM", SmbiosInventoryTest),
+            ("SMBIOS cae a la serie del gabinete y tolera tablas truncadas", SmbiosFallbackAndTruncationTest),
+            ("Textos de relleno del firmware se informan como null", FirmwareTextTest),
+            ("Descriptor de almacenamiento arma modelo, serie e interfaz", StorageDescriptorTest),
+            ("Núcleos físicos salen de los registros de topología", ProcessorTopologyTest),
+            ("Windows 11 se reconoce por build aunque diga Windows 10", WindowsElevenNameTest),
+            ("Hostname admite ñ y acentos pero no espacios", HostnameContractTest),
+            ("Contrato JSON incluye discos físicos y detalle de RAM", InventoryJsonContractTest),
         };
 
         var failures = 0;
@@ -493,7 +502,7 @@ internal static class Program
         Assert.Equal("9.8.7", AgentVersion.Select("not-semver", new Version(9, 8, 7, 6)));
         Assert.Equal("0.1.0", AgentVersion.Select("1.2", new Version(9, 8)));
         Assert.True(SemanticVersion.TryParse(AgentVersion.Current, out _));
-        Assert.Equal("0.2.0", AgentVersion.Current);
+        Assert.Equal("0.3.0", AgentVersion.Current);
         return Task.CompletedTask;
     }
 
@@ -545,6 +554,353 @@ internal static class Program
             new OsSnapshot("Windows", "11", "26100"),
             "0.1.0",
             inventory);
+    }
+
+    private static Task SmbiosInventoryTest()
+    {
+        var raw = RawSmbios(
+            SmbiosStructureBytes(0, 0x0000, 0x18, bytes =>
+            {
+                bytes[0x04] = 1;
+                bytes[0x05] = 2;
+            }, "Dell Inc.", "1.21.0"),
+            SmbiosStructureBytes(1, 0x0001, 0x1B, bytes =>
+            {
+                bytes[0x04] = 1;
+                bytes[0x05] = 2;
+                bytes[0x07] = 3;
+            }, "Dell Inc.", "OptiPlex 7090", "ABC1234"),
+            SmbiosStructureBytes(2, 0x0002, 0x0F, bytes =>
+            {
+                bytes[0x04] = 1;
+                bytes[0x05] = 2;
+                bytes[0x07] = 3;
+            }, "Dell Inc.", "0J8N3T", "/ABC1234/CNFCW0024J00AB/"),
+            // Gabinete de escritorio con traba (bit 7 encendido).
+            SmbiosStructureBytes(3, 0x0003, 0x15, bytes => bytes[0x05] = 0x83),
+            // Arreglo de memoria del sistema con 4 ranuras declaradas.
+            SmbiosStructureBytes(16, 0x1000, 0x17, bytes =>
+            {
+                bytes[0x04] = 3;
+                bytes[0x05] = 3;
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x0D, 2), 4);
+            }),
+            // Arreglo de flash del firmware: sus dispositivos no son RAM.
+            SmbiosStructureBytes(16, 0x1001, 0x17, bytes =>
+            {
+                bytes[0x05] = 5;
+                BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x0D, 2), 1);
+            }),
+            MemoryDevice(0x1100, 0x1000, 8_192, 0x09, 0x1A, 3_200, null, "DIMM1", "Samsung", "12345678", "M378A1K43EB2-CWE"),
+            // 32 GB: tamaño y velocidad extendidos (SMBIOS 3.3).
+            MemoryDevice(0x1101, 0x1000, 0x7FFF, 0x0D, 0x22, 0xFFFF, (32_768u, 5_600u), "DIMM2", "Manufacturer00", "00000000", "PartNum0"),
+            MemoryDevice(0x1102, 0x1000, 0, 0x09, 0x1A, 0, null, "DIMM3", null, null, null),
+            MemoryDevice(0x1103, 0x1001, 16, 0x0B, 0x0F, 0, null, "FLASH", null, null, null),
+            SmbiosStructureBytes(127, 0xFFFF, 4, _ => { }));
+
+        var inventory = SmbiosInventoryReader.FromStructures(SmbiosParser.Parse(raw));
+        Assert.Equal("Dell Inc.", inventory.Manufacturer);
+        Assert.Equal("OptiPlex 7090", inventory.Model);
+        Assert.Equal("ABC1234", inventory.SerialNumber);
+        Assert.Equal("1.21.0", inventory.BiosVersion);
+        Assert.Equal("DESKTOP", inventory.ChassisType);
+        Assert.Equal("0J8N3T", inventory.BaseboardModel);
+        Assert.Equal("/ABC1234/CNFCW0024J00AB/", inventory.BaseboardSerial);
+        Assert.Equal(4, inventory.MemorySlots);
+
+        var modules = Assert.NotNull(inventory.MemoryModules);
+        Assert.Equal(2, modules.Count);
+        Assert.Equal(new MemoryModuleSnapshot(
+            8_192L * 1_048_576,
+            "Samsung",
+            "M378A1K43EB2-CWE",
+            "12345678",
+            3_200,
+            "DDR4",
+            "DIMM",
+            "DIMM1"), modules[0]);
+        Assert.Equal(new MemoryModuleSnapshot(
+            32_768L * 1_048_576,
+            null,
+            null,
+            null,
+            5_600,
+            "DDR5",
+            "SODIMM",
+            "DIMM2"), modules[1]);
+        return Task.CompletedTask;
+    }
+
+    private static Task SmbiosFallbackAndTruncationTest()
+    {
+        var system = SmbiosStructureBytes(1, 0x0001, 0x1B, bytes =>
+        {
+            bytes[0x04] = 1;
+            bytes[0x05] = 2;
+            bytes[0x07] = 3;
+        }, "To Be Filled By O.E.M.", "System Product Name", "Default string");
+        var chassis = SmbiosStructureBytes(3, 0x0003, 0x15, bytes =>
+        {
+            bytes[0x05] = 0x0A;
+            bytes[0x07] = 1;
+        }, "NB-77-XYZ");
+        var raw = RawSmbios(system, chassis);
+
+        var inventory = SmbiosInventoryReader.FromStructures(SmbiosParser.Parse(raw));
+        Assert.Null(inventory.Manufacturer);
+        Assert.Null(inventory.Model);
+        Assert.Equal("NB-77-XYZ", inventory.SerialNumber);
+        Assert.Equal("NOTEBOOK", inventory.ChassisType);
+        Assert.Null(inventory.MemoryModules);
+        Assert.Null(inventory.MemorySlots);
+
+        // Cortada a mitad de la segunda estructura: se conserva la primera y no lanza.
+        // Lenovo: nombre comercial en Version y tipo de máquina en ProductName.
+        Assert.Equal(
+            "ThinkBook 16 G8 IRL (21SH)",
+            SmbiosInventoryReader.FriendlyModel("LENOVO", "21SH", "ThinkBook 16 G8 IRL"));
+        Assert.Equal("Latitude 5420", SmbiosInventoryReader.FriendlyModel("Dell Inc.", "Latitude 5420", "1.0"));
+        Assert.Equal("21SH", SmbiosInventoryReader.FriendlyModel("LENOVO", "21SH", null));
+
+        var truncated = raw[..(raw.Length - 6)];
+        var structures = SmbiosParser.Parse(truncated);
+        Assert.Equal(1, structures.Count(structure => structure.Type == 1));
+        Assert.Equal(0, SmbiosParser.Parse(new byte[3]).Count);
+        return Task.CompletedTask;
+    }
+
+    private static Task FirmwareTextTest()
+    {
+        Assert.Null(FirmwareText.Clean("To Be Filled By O.E.M.", 200));
+        Assert.Null(FirmwareText.Clean("Default string", 200));
+        Assert.Null(FirmwareText.Clean("System Serial Number", 200));
+        Assert.Null(FirmwareText.Clean("00000000", 200));
+        Assert.Null(FirmwareText.Clean("Unknown", 200));
+        Assert.Null(FirmwareText.Clean("Manufacturer00", 200));
+        Assert.Null(FirmwareText.Clean("   ", 200));
+        Assert.Equal("SN-77", FirmwareText.Clean("  SN-77  ", 200));
+        Assert.Equal("Kingston", FirmwareText.Clean("Kingston", 200));
+        Assert.Equal("ABC", FirmwareText.Clean("ABCDEF", 3));
+        return Task.CompletedTask;
+    }
+
+    private static Task StorageDescriptorTest()
+    {
+        var nvme = Assert.NotNull(PhysicalDiskCollector.ParseDeviceDescriptor(
+            StorageDescriptor(null, "Samsung SSD 980 500GB", "0025_3881_0000_0000.", 17, removable: false)));
+        Assert.Equal("Samsung SSD 980 500GB", nvme.Model);
+        Assert.Equal("0025_3881_0000_0000", nvme.SerialNumber);
+        Assert.Equal("NVME", PhysicalDiskCollector.BusTypeName(nvme.BusType));
+        Assert.False(PhysicalDiskCollector.IsExcludedBus(nvme.BusType));
+
+        var sata = Assert.NotNull(PhysicalDiskCollector.ParseDeviceDescriptor(
+            StorageDescriptor("ATA", "WDC WD10EZEX-08WN4A0", "     WD-WCC6Y0ABCDEF", 11, removable: false)));
+        Assert.Equal("WDC WD10EZEX-08WN4A0", sata.Model);
+        Assert.Equal("WD-WCC6Y0ABCDEF", sata.SerialNumber);
+        Assert.Equal("SATA", PhysicalDiskCollector.BusTypeName(sata.BusType));
+
+        var usb = Assert.NotNull(PhysicalDiskCollector.ParseDeviceDescriptor(
+            StorageDescriptor("SanDisk", "Cruzer Blade", null, 7, removable: true)));
+        Assert.Equal("SanDisk Cruzer Blade", usb.Model);
+        Assert.True(usb.Removable);
+        Assert.True(PhysicalDiskCollector.IsExcludedBus(usb.BusType));
+        Assert.Null(PhysicalDiskCollector.ParseDeviceDescriptor(new byte[16]));
+        return Task.CompletedTask;
+    }
+
+    private static Task ProcessorTopologyTest()
+    {
+        var buffer = new byte[48 * 3 + 56];
+        for (var index = 0; index < 3; index++)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(index * 48, 4), 0);
+            BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(index * 48 + 4, 4), 48);
+        }
+
+        // Un registro de caché (relación 2) no cuenta como núcleo.
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(144, 4), 2);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(148, 4), 56);
+        Assert.Equal(3, ProcessorTopology.CountCoreRecords(buffer));
+
+        var corrupt = new byte[16];
+        BinaryPrimitives.WriteInt32LittleEndian(corrupt.AsSpan(4, 4), 0);
+        Assert.Null(ProcessorTopology.CountCoreRecords(corrupt));
+
+        // En el equipo que corre las pruebas, si Windows responde, el dato es coherente.
+        var cores = ProcessorTopology.CountPhysicalCores();
+        Assert.True(cores is null || (cores > 0 && cores <= Environment.ProcessorCount));
+        return Task.CompletedTask;
+    }
+
+    private static Task WindowsElevenNameTest()
+    {
+        Assert.Equal("Windows 11 Pro", WindowsIdentityCollector.NormalizeProductName("Windows 10 Pro", "26100"));
+        Assert.Equal("Windows 11 Pro", WindowsIdentityCollector.NormalizeProductName("Windows 10 Pro", "22000"));
+        Assert.Equal("Windows 10 Pro", WindowsIdentityCollector.NormalizeProductName("Windows 10 Pro", "19045"));
+        Assert.Equal("Windows 10 Home", WindowsIdentityCollector.NormalizeProductName("Windows 10 Home", null));
+        Assert.Equal(
+            "Windows Server 2022 Standard",
+            WindowsIdentityCollector.NormalizeProductName("Windows Server 2022 Standard", "20348"));
+        return Task.CompletedTask;
+    }
+
+    private static Task HostnameContractTest()
+    {
+        Assert.True(MachineIdentity.IsValidHostname("CONTADURÍA-01"));
+        Assert.True(MachineIdentity.IsValidHostname("PC-ÑANDÚ"));
+        Assert.True(MachineIdentity.IsValidHostname("pc_grf.01"));
+        Assert.False(MachineIdentity.IsValidHostname("PC 01"));
+        Assert.False(MachineIdentity.IsValidHostname("-PC01"));
+        Assert.False(MachineIdentity.IsValidHostname("PC01."));
+        Assert.False(MachineIdentity.IsValidHostname(string.Empty));
+        return Task.CompletedTask;
+    }
+
+    private static Task InventoryJsonContractTest()
+    {
+        var inventory = new InventorySnapshot(
+            DateTimeOffset.UtcNow,
+            new HardwareSnapshot("Dell Inc.", "OptiPlex 7090", "ABC1234", "1.21.0", "DESKTOP", "Dell Inc.", "0J8N3T", null),
+            new CpuInventorySnapshot("Intel(R) Core(TM) i5-10500", 6, 12),
+            [new MemoryModuleSnapshot(8_589_934_592, "Samsung", "M378A1K43EB2-CWE", null, 3_200, "DDR4", "DIMM", "DIMM1")],
+            null,
+            null,
+            [new PhysicalDiskSnapshot("Samsung SSD 980 500GB", null, 500_107_862_016, "SSD", "NVME")],
+            4);
+        var payload = HeartbeatPayloadLimiter.Serialize(CreateHeartbeat(inventory));
+        using var document = JsonDocument.Parse(payload.Bytes);
+        var json = document.RootElement.GetProperty("inventory");
+        Assert.Equal("DESKTOP", json.GetProperty("hardware").GetProperty("chassisType").GetString());
+        Assert.False(json.GetProperty("hardware").TryGetProperty("baseboardSerial", out _));
+        Assert.Equal(6, json.GetProperty("cpu").GetProperty("cores").GetInt32());
+        var module = json.GetProperty("memoryModules")[0];
+        Assert.Equal(3_200, module.GetProperty("speedMts").GetInt32());
+        Assert.Equal("DDR4", module.GetProperty("memoryType").GetString());
+        Assert.Equal("DIMM1", module.GetProperty("slot").GetString());
+        var disk = json.GetProperty("physicalDisks")[0];
+        Assert.Equal(500_107_862_016L, disk.GetProperty("sizeBytes").GetInt64());
+        Assert.Equal("SSD", disk.GetProperty("mediaType").GetString());
+        Assert.Equal("NVME", disk.GetProperty("busType").GetString());
+        Assert.Equal(4, json.GetProperty("memorySlots").GetInt32());
+        CryptographicOperations.ZeroMemory(payload.Bytes);
+        return Task.CompletedTask;
+    }
+
+    private static byte[] SmbiosStructureBytes(
+        byte type,
+        ushort handle,
+        int length,
+        Action<byte[]> fill,
+        params string[] strings)
+    {
+        var formatted = new byte[length];
+        formatted[0] = type;
+        formatted[1] = (byte)length;
+        BinaryPrimitives.WriteUInt16LittleEndian(formatted.AsSpan(2, 2), handle);
+        fill(formatted);
+
+        using var stream = new MemoryStream();
+        stream.Write(formatted);
+        if (strings.Length == 0)
+        {
+            stream.WriteByte(0);
+        }
+
+        foreach (var text in strings)
+        {
+            stream.Write(Encoding.ASCII.GetBytes(text));
+            stream.WriteByte(0);
+        }
+
+        stream.WriteByte(0);
+        return stream.ToArray();
+    }
+
+    private static byte[] MemoryDevice(
+        ushort handle,
+        ushort arrayHandle,
+        ushort size,
+        byte formFactor,
+        byte memoryType,
+        ushort speed,
+        (uint SizeMb, uint SpeedMts)? extended,
+        string locator,
+        string? manufacturer,
+        string? serial,
+        string? partNumber)
+    {
+        var strings = new List<string> { locator };
+        byte AddString(string? value)
+        {
+            if (value is null)
+            {
+                return 0;
+            }
+
+            strings.Add(value);
+            return (byte)strings.Count;
+        }
+
+        var manufacturerIndex = AddString(manufacturer);
+        var serialIndex = AddString(serial);
+        var partIndex = AddString(partNumber);
+        return SmbiosStructureBytes(17, handle, extended is null ? 0x28 : 0x5C, bytes =>
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x04, 2), arrayHandle);
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x0C, 2), size);
+            bytes[0x0E] = formFactor;
+            bytes[0x10] = 1;
+            bytes[0x12] = memoryType;
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0x15, 2), speed);
+            bytes[0x17] = manufacturerIndex;
+            bytes[0x18] = serialIndex;
+            bytes[0x1A] = partIndex;
+            if (extended is { } values)
+            {
+                BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x1C, 4), values.SizeMb);
+                BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x54, 4), values.SpeedMts);
+            }
+        }, strings.ToArray());
+    }
+
+    private static byte[] RawSmbios(params byte[][] structures)
+    {
+        var table = structures.SelectMany(structure => structure).ToArray();
+        var raw = new byte[8 + table.Length];
+        raw[1] = 3;
+        raw[2] = 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(raw.AsSpan(4, 4), (uint)table.Length);
+        table.CopyTo(raw, 8);
+        return raw;
+    }
+
+    private static byte[] StorageDescriptor(string? vendor, string? product, string? serial, int busType, bool removable)
+    {
+        var buffer = new List<byte>(new byte[36]);
+        int Append(string? value)
+        {
+            if (value is null)
+            {
+                return 0;
+            }
+
+            var offset = buffer.Count;
+            buffer.AddRange(Encoding.ASCII.GetBytes(value));
+            buffer.Add(0);
+            return offset;
+        }
+
+        var vendorOffset = Append(vendor);
+        var productOffset = Append(product);
+        var serialOffset = Append(serial);
+        var bytes = buffer.ToArray();
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(4, 4), bytes.Length);
+        bytes[10] = removable ? (byte)1 : (byte)0;
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(12, 4), vendorOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(16, 4), productOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(24, 4), serialOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(28, 4), busType);
+        return bytes;
     }
 }
 
