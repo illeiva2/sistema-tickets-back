@@ -87,10 +87,23 @@ begin {
             throw "El hash local de GRF.ITAgent.exe no coincide con SHA256SUMS.txt."
         }
 
+        # Se copia solo lo que install.ps1 necesita. Cualquier otro archivo de la carpeta
+        # (listas de equipos, notas, restos de pruebas) no debe viajar a cada PC.
+        $deployFiles = @(
+            foreach ($deployName in @(
+                "GRF.ITAgent.exe",
+                "install.ps1",
+                "update-agent.ps1",
+                "config.example.json"
+            )) {
+                Get-Item -LiteralPath (Join-Path $fullPath $deployName) -Force -ErrorAction Stop
+            }
+        )
+
         return [PSCustomObject]@{
             Path = $fullPath
             AgentHash = $expectedHash
-            TopLevelItems = @(Get-ChildItem -LiteralPath $fullPath -Force)
+            DeployFiles = $deployFiles
         }
     }
 
@@ -112,14 +125,21 @@ begin {
             [Parameter(Mandatory = $true)][string]$Status,
             [Parameter(Mandatory = $true)][string]$Phase,
             [Parameter(Mandatory = $true)][string]$Message,
-            [Parameter(Mandatory = $true)][System.Diagnostics.Stopwatch]$Stopwatch
+            [Parameter(Mandatory = $true)][System.Diagnostics.Stopwatch]$Stopwatch,
+            [object]$Preflight,
+            [string]$Notes
         )
 
+        $hasPreflight = $null -ne $Preflight
         return [PSCustomObject]@{
             ComputerName = $Target
             Status = $Status
             Phase = $Phase
             Message = $Message
+            Notes = if ([string]::IsNullOrWhiteSpace($Notes)) { $null } else { $Notes }
+            RemoteName = if ($hasPreflight) { $Preflight.ComputerName } else { $null }
+            MachineGuid = if ($hasPreflight) { $Preflight.MachineGuid } else { $null }
+            InstalledVersion = if ($hasPreflight) { $Preflight.InstalledAgentVersion } else { $null }
             DurationSeconds = [Math]::Round($Stopwatch.Elapsed.TotalSeconds, 1)
         }
     }
@@ -169,6 +189,9 @@ begin {
         -OpenTimeout ($ConnectionTimeoutSeconds * 1000) `
         -OperationTimeout 180000
     $results = [System.Collections.Generic.List[object]]::new()
+    # MachineGuid -> preflight del primer equipo que lo informó en esta corrida.
+    $machineGuidOwners = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
 }
 
 process {
@@ -189,6 +212,8 @@ end {
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $session = $null
         $stagingPath = $null
+        $preflight = $null
+        $notesText = ""
         $phase = "WINRM"
         $installCompleted = $false
         $cleanupError = $null
@@ -224,12 +249,30 @@ end {
             $preflight = Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
                 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
                 $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+                $machineGuid = $null
+                try {
+                    $machineGuid = [string](Get-ItemProperty `
+                        -LiteralPath "HKLM:\SOFTWARE\Microsoft\Cryptography" `
+                        -Name "MachineGuid" `
+                        -ErrorAction Stop).MachineGuid
+                }
+                catch {
+                    $machineGuid = $null
+                }
+                $installedExecutable = Join-Path $env:ProgramFiles "GRF\ITAgent\GRF.ITAgent.exe"
+                $installedVersion = $null
+                if (Test-Path -LiteralPath $installedExecutable -PathType Leaf) {
+                    $installedVersion = [string](Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion
+                }
                 [PSCustomObject]@{
                     IsAdministrator = $principal.IsInRole(
                         [System.Security.Principal.WindowsBuiltInRole]::Administrator)
                     Is64BitOperatingSystem = [Environment]::Is64BitOperatingSystem
                     PowerShellVersion = $PSVersionTable.PSVersion.ToString()
                     OperatingSystem = [Environment]::OSVersion.VersionString
+                    ComputerName = $env:COMPUTERNAME
+                    MachineGuid = $machineGuid
+                    InstalledAgentVersion = $installedVersion
                 }
             }
 
@@ -240,13 +283,58 @@ end {
                 throw "El equipo no es Windows x64."
             }
 
+            # El sistema identifica cada PC por su MachineGuid. Dos equipos clonados de la
+            # misma imagen sin Sysprep comparten el valor y, una vez instalados, se pisarían
+            # entre sí en el inventario. Se frena antes de tocar el segundo equipo.
+            if ([string]::IsNullOrWhiteSpace($preflight.MachineGuid)) {
+                throw "No se pudo leer el MachineGuid del equipo; el agente no podría identificarlo."
+            }
+            if ($machineGuidOwners.ContainsKey($preflight.MachineGuid)) {
+                $owner = $machineGuidOwners[$preflight.MachineGuid]
+                $sameComputer = [string]$owner.Preflight.ComputerName -eq [string]$preflight.ComputerName
+                $status = if ($sameComputer) { "DUPLICATE_TARGET" } else { "DUPLICATE_MACHINE_GUID" }
+                $message = if ($sameComputer) {
+                    "Es el mismo equipo que '$($owner.Target)' (listado dos veces, por nombre e IP); se omite."
+                }
+                else {
+                    "Comparte el MachineGuid con '$($owner.Target)' ($($owner.Preflight.ComputerName)): " +
+                        "parece un clon de la misma imagen. Regenerar la identidad (Sysprep) antes de " +
+                        "instalar; si no, ambos equipos aparecen como uno solo en el sistema."
+                }
+                [void]$results.Add((New-DeploymentResult `
+                    -Target $target `
+                    -Status $status `
+                    -Phase $phase `
+                    -Message $message `
+                    -Stopwatch $stopwatch `
+                    -Preflight $preflight))
+                continue
+            }
+            $machineGuidOwners[$preflight.MachineGuid] = [PSCustomObject]@{
+                Target = $target
+                Preflight = $preflight
+            }
+
+            $notes = [System.Collections.Generic.List[string]]::new()
+            if ([string]$preflight.ComputerName -match '[^\x00-\x7F]') {
+                $notes.Add("El nombre del equipo tiene ñ o acentos: el agente 0.3 lo acepta, " +
+                    "pero WinRM/Kerberos pueden fallar por nombre; conviene apuntar por IP.")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($preflight.InstalledAgentVersion)) {
+                $notes.Add("Ya tiene el agente $($preflight.InstalledAgentVersion): se actualiza " +
+                    "en el lugar y conserva su enrolamiento.")
+            }
+            $notesText = $notes -join " "
+
             if ($PreflightOnly) {
                 [void]$results.Add((New-DeploymentResult `
                     -Target $target `
                     -Status "READY" `
                     -Phase $phase `
                     -Message "WinRM y permisos administrativos disponibles; no se hicieron cambios." `
-                    -Stopwatch $stopwatch))
+                    -Stopwatch $stopwatch `
+                    -Preflight $preflight `
+                    -Notes $notesText))
                 continue
             }
 
@@ -258,7 +346,9 @@ end {
                     -Status "WHATIF" `
                     -Phase $phase `
                     -Message "Preflight correcto; la instalación fue omitida por WhatIf/confirmación." `
-                    -Stopwatch $stopwatch))
+                    -Stopwatch $stopwatch `
+                    -Preflight $preflight `
+                    -Notes $notesText))
                 continue
             }
 
@@ -331,12 +421,11 @@ end {
                     return $stage
                 }
 
-            foreach ($item in $package.TopLevelItems) {
+            foreach ($item in $package.DeployFiles) {
                 Copy-Item `
                     -LiteralPath $item.FullName `
                     -Destination $stagingPath `
                     -ToSession $session `
-                    -Recurse `
                     -Force `
                     -ErrorAction Stop
             }
@@ -484,7 +573,9 @@ end {
                 -Status "FAILED" `
                 -Phase $phase `
                 -Message $failureMessage `
-                -Stopwatch $stopwatch))
+                -Stopwatch $stopwatch `
+                -Preflight $preflight `
+                -Notes $notesText))
         }
         elseif ($installCompleted) {
             if ($null -eq $cleanupError) {
@@ -493,7 +584,9 @@ end {
                     -Status "INSTALLED" `
                     -Phase "COMPLETE" `
                     -Message "Instalación local completada y staging eliminado; el enrolamiento ocurre en segundo plano." `
-                    -Stopwatch $stopwatch))
+                    -Stopwatch $stopwatch `
+                    -Preflight $preflight `
+                    -Notes $notesText))
             }
             else {
                 [void]$results.Add((New-DeploymentResult `
@@ -501,13 +594,34 @@ end {
                     -Status "INSTALLED_CLEANUP_PENDING" `
                     -Phase "CLEANUP" `
                     -Message "El agente quedó instalado, pero no se pudo limpiar el staging protegido: $cleanupError" `
-                    -Stopwatch $stopwatch))
+                    -Stopwatch $stopwatch `
+                    -Preflight $preflight `
+                    -Notes $notesText))
             }
         }
     }
 
     Write-Host ""
     Write-Host "Resumen de despliegue:"
-    $results | Format-Table ComputerName, Status, Phase, DurationSeconds -AutoSize | Out-Host
+    $results |
+        Format-Table ComputerName, Status, Phase, RemoteName, InstalledVersion, DurationSeconds -AutoSize |
+        Out-Host
+    $attention = @($results | Where-Object {
+        $_.Status -notin @("INSTALLED", "READY", "WHATIF") -or $null -ne $_.Notes
+    })
+    if ($attention.Count -gt 0) {
+        Write-Host "Requieren atención o tienen observaciones:"
+        foreach ($item in $attention) {
+            $parts = if ($item.Status -in @("INSTALLED", "READY", "WHATIF")) {
+                @($item.Notes)
+            }
+            else {
+                @($item.Message, $item.Notes)
+            }
+            $detail = @($parts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join " "
+            Write-Host "  [$($item.ComputerName)] $($item.Status): $detail"
+        }
+        Write-Host ""
+    }
     Write-Output $results.ToArray()
 }

@@ -1,6 +1,7 @@
-import express, { Application } from "express";
+import express, { Application, Request } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import jwt, { type JwtPayload } from "jsonwebtoken";
 import path from "path";
 import { config } from "./config";
 import { logger } from "./lib/logger";
@@ -43,6 +44,32 @@ export const shouldSkipGlobalRateLimit = (pathName: string) =>
   pathName.startsWith("/thumbnails");
 
 /**
+ * Clave del limitador global. Con un JWT válido cada usuario tiene su propio
+ * balde; sin token (o con uno vencido o inválido) se usa la IP, como antes.
+ * Toda la oficina sale a internet por la misma IP (NAT): con un único balde por
+ * IP, el refresco de la vista en vivo de agentes (cada 30 s, por pestaña) más el
+ * uso normal del resto del staff agotaban los 300/15 min y todos recibían 429.
+ * Verificar la firma (y no sólo leer el token) evita que alguien invente tokens
+ * para conseguir baldes nuevos.
+ */
+export const globalRateLimitKey = (req: Request): string => {
+  const header = req.headers.authorization;
+  if (header?.startsWith("Bearer ")) {
+    try {
+      const decoded = jwt.verify(header.substring(7), config.jwt.secret) as
+        | (JwtPayload & { id?: string; userId?: string })
+        | string;
+      const userId =
+        typeof decoded === "object" ? decoded.id || decoded.userId : undefined;
+      if (typeof userId === "string" && userId) return `user:${userId}`;
+    } catch {
+      // Token vencido o adulterado: cae al balde por IP.
+    }
+  }
+  return `ip:${req.ip ?? "desconocida"}`;
+};
+
+/**
  * Construye la app Express con toda la configuración (middlewares, rutas,
  * error handlers). NO arranca el servidor: eso es responsabilidad de
  * src/index.ts. Esta separación permite que los tests instancien la app
@@ -82,6 +109,7 @@ export const createApp = (): Application => {
       standardHeaders: true,
       legacyHeaders: false,
       message: tooManyRequests,
+      keyGenerator: (req) => globalRateLimitKey(req),
       skip: (req) => {
         const p = req.path;
         return shouldSkipGlobalRateLimit(p);

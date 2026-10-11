@@ -183,13 +183,16 @@ const machineGuidSchema = z
     "MachineGuid inválido",
   );
 
+// Windows admite ñ y acentos en el nombre del equipo (p. ej. CONTADURÍA): letras
+// y dígitos Unicode más '.', '_' y '-'. El destino de acceso remoto sigue
+// exigiendo ASCII por separado (startRemoteSession usa la IP si la hay).
 const hostnameSchema = z
   .string()
   .trim()
   .min(1)
   .max(255)
   .regex(
-    /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9])?$/,
+    /^[\p{L}\p{N}](?:[\p{L}\p{N}._-]{0,253}[\p{L}\p{N}])?$/u,
     "Hostname inválido",
   );
 
@@ -214,12 +217,19 @@ const serviceStateSchema = z
   })
   .strict();
 
+// Los campos marcados "0.3" los envía el agente desde esa versión (lectura de
+// SMBIOS y discos físicos). Son opcionales: los agentes 0.2 siguen validando.
 const hardwareInventorySchema = z
   .object({
     manufacturer: nullableText(200),
     model: nullableText(200),
     serialNumber: nullableText(200),
     biosVersion: nullableText(200),
+    // 0.3: tipo de gabinete SMBIOS normalizado (DESKTOP, NOTEBOOK, ALL_IN_ONE...).
+    chassisType: nullableText(50),
+    baseboardManufacturer: nullableText(200),
+    baseboardModel: nullableText(200),
+    baseboardSerial: nullableText(200),
   })
   .strict();
 
@@ -237,6 +247,22 @@ const memoryModuleSchema = z
     manufacturer: nullableText(200),
     partNumber: nullableText(200),
     serialNumber: nullableText(200),
+    // 0.3
+    speedMts: z.number().int().min(1).max(100_000).optional(),
+    memoryType: nullableText(30),
+    formFactor: nullableText(30),
+    slot: nullableText(100),
+  })
+  .strict();
+
+// 0.3: disco físico (no volumen). El tamaño puede faltar si el driver no lo informa.
+const physicalDiskSchema = z
+  .object({
+    model: nullableText(200),
+    serialNumber: nullableText(200),
+    sizeBytes: nonNegativeBytes.optional(),
+    mediaType: z.enum(["SSD", "HDD"]).optional(),
+    busType: nullableText(30),
   })
   .strict();
 
@@ -268,6 +294,9 @@ export const agentInventorySchema = z
     memoryModules: z.array(memoryModuleSchema).max(32).optional(),
     software: z.array(softwareSchema).max(500).optional(),
     networkAdapters: z.array(networkAdapterSchema).max(64).optional(),
+    // 0.3
+    physicalDisks: z.array(physicalDiskSchema).max(32).optional(),
+    memorySlots: z.number().int().min(0).max(256).optional(),
   })
   .strict();
 

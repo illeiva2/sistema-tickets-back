@@ -77,6 +77,11 @@ export class AgentsController {
     handle(async (req) => AgentsService.getDevice(req.params.id), "device"),
   ];
 
+  static inventoryExport = [
+    validate(z.object({ query: z.object({}).strict() })),
+    handle(async (req) => AgentsService.inventoryExport(user(req).id)),
+  ];
+
   static linkAsset = [
     validate(z.object({ params: agentDeviceIdParamsSchema, body: linkAgentAssetSchema })),
     handle(

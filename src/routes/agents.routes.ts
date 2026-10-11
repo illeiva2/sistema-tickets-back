@@ -17,6 +17,8 @@ router.post(
 );
 
 router.get("/devices", ...authorize, ...AgentsController.listDevices);
+// Antes de "/devices/:id": si no, "export" se tomaría como id y fallaría la validación.
+router.get("/devices/export", ...authorize, ...AgentsController.inventoryExport);
 router.get("/devices/:id", ...authorize, ...AgentsController.getDevice);
 router.patch("/devices/:id", ...authorize, ...AgentsController.linkAsset);
 router.post(
