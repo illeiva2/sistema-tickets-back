@@ -83,7 +83,7 @@ internal static class LinkInference
 
         var links = new Dictionary<string, LinkSnapshot>(StringComparer.Ordinal);
         var fdbParents = AddFdbLinks(devices, owners, known, managementVlan, links);
-        var lldpPeers = AddLldpLinks(devices, byKey, owners, byIp, byName, links);
+        var lldpPeers = AddLldpLinks(NeighborSources(devices, cachedAps, byKey), byKey, owners, byIp, byName, links);
 
         // Un AP con vecino LLDP ya tiene su puerto exacto: el padre por tabla MAC sobra (y si un
         // switch del camino no se pudo leer, apunta a un switch de más arriba).
@@ -219,9 +219,44 @@ internal static class LinkInference
         return parents;
     }
 
+    /// <summary>
+    /// Vecinos LLDP por equipo y puerto: los de esta corrida y, para los APs que no se leyeron ahora
+    /// (UniFi se consulta cada 5 minutos), los de la última lectura de UniFi. Así el enlace de un AP
+    /// no cambia de una corrida a la siguiente.
+    /// </summary>
+    private static IEnumerable<(string Self, string Port, NeighborSnapshot Neighbor)> NeighborSources(
+        IReadOnlyList<PollResult> devices,
+        IReadOnlyList<CachedAp> cachedAps,
+        IReadOnlyDictionary<string, PollResult> byKey)
+    {
+        foreach (var device in devices)
+        {
+            if (!device.Snapshot.Reachable || device.Snapshot.Ports is null)
+            {
+                continue;
+            }
+
+            foreach (var port in device.Snapshot.Ports)
+            {
+                foreach (var neighbor in port.Neighbors ?? [])
+                {
+                    yield return (device.Snapshot.Key, port.Key, neighbor);
+                }
+            }
+        }
+
+        foreach (var ap in cachedAps.Where(ap => !byKey.ContainsKey(ap.Key)))
+        {
+            foreach (var cached in ap.Neighbors ?? [])
+            {
+                yield return (ap.Key, cached.Port, cached.Neighbor);
+            }
+        }
+    }
+
     /// <summary>Agrega los enlaces LLDP y devuelve, por equipo, con quiénes tiene uno.</summary>
     private static Dictionary<string, HashSet<string>> AddLldpLinks(
-        IReadOnlyList<PollResult> devices,
+        IEnumerable<(string Self, string Port, NeighborSnapshot Neighbor)> sources,
         IReadOnlyDictionary<string, PollResult> byKey,
         IReadOnlyDictionary<string, string> owners,
         IReadOnlyDictionary<string, string> byIp,
@@ -239,37 +274,25 @@ internal static class LinkInference
             set.Add(b);
         }
 
-        foreach (var device in devices)
+        foreach (var (self, port, neighbor) in sources)
         {
-            if (!device.Snapshot.Reachable || device.Snapshot.Ports is null)
+            if (neighbor.Protocol == NeighborProtocols.Mndp)
             {
                 continue;
             }
 
-            var self = device.Snapshot.Key;
-            foreach (var port in device.Snapshot.Ports)
+            var target = (neighbor.Mac is { } mac && owners.TryGetValue(mac, out var byMac) ? byMac : null)
+                ?? (neighbor.Ip is { } ip && byIp.TryGetValue(ip, out var byAddress) ? byAddress : null)
+                ?? (NormalizeName(neighbor.Name) is { Length: > 0 } name && byName.TryGetValue(name, out var named) ? named : null);
+            if (target is null || target == self)
             {
-                foreach (var neighbor in port.Neighbors ?? [])
-                {
-                    if (neighbor.Protocol == NeighborProtocols.Mndp)
-                    {
-                        continue;
-                    }
-
-                    var target = (neighbor.Mac is { } mac && owners.TryGetValue(mac, out var byMac) ? byMac : null)
-                        ?? (neighbor.Ip is { } ip && byIp.TryGetValue(ip, out var byAddress) ? byAddress : null)
-                        ?? (NormalizeName(neighbor.Name) is { Length: > 0 } name && byName.TryGetValue(name, out var named) ? named : null);
-                    if (target is null || target == self)
-                    {
-                        continue;
-                    }
-
-                    var remotePort = RemotePort(target, neighbor.Port, byKey);
-                    Add(links, self, [port.Key], target, remotePort is null ? [] : [remotePort], LinkSources.Lldp);
-                    Peer(self, target);
-                    Peer(target, self);
-                }
+                continue;
             }
+
+            var remotePort = RemotePort(target, neighbor.Port, byKey);
+            Add(links, self, [port], target, remotePort is null ? [] : [remotePort], LinkSources.Lldp);
+            Peer(self, target);
+            Peer(target, self);
         }
 
         return peers;
@@ -321,6 +344,14 @@ internal static class LinkInference
                 // El mismo enlace visto desde los dos lados: se completa el lado que faltaba.
                 firstPorts = existing.A.Ports.Count > 0 ? existing.A.Ports.ToList() : firstPorts;
                 secondPorts = existing.B.Ports.Count > 0 ? existing.B.Ports.ToList() : secondPorts;
+            }
+            else
+            {
+                // LLDP sobre un enlace de las tablas MAC: el lado que el vecino no pudo decir queda
+                // como estaba. Pasa con los TP-Link y HPE, que anuncian como puerto la MAC del
+                // switch (la misma en todos): sin esto, el AP perdía el puerto del switch.
+                firstPorts = firstPorts.Count > 0 ? firstPorts : existing.A.Ports.ToList();
+                secondPorts = secondPorts.Count > 0 ? secondPorts : existing.B.Ports.ToList();
             }
         }
 

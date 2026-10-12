@@ -29,6 +29,9 @@ internal static class Program
             ("UniFi: APs, estado, modelo comercial y vecino LLDP", UniFiMappingTest),
             ("Enlaces: árbol por tablas MAC y LLDP con el puerto exacto", LinkInferenceTreeTest),
             ("Enlaces: un AP de la última lectura de UniFi se ubica igual", LinkInferenceCachedApTest),
+            ("Enlaces: el LLDP del AP sin puerto reconocible conserva el de la tabla MAC", LinkInferenceApLldpKeepsFdbPortTest),
+            ("Enlaces: entre lecturas de UniFi el AP mantiene su enlace LLDP y sus clientes", LinkInferenceCachedApLldpTest),
+            ("Estado: los vecinos LLDP de los APs se guardan y se leen", CollectorStateCachedNeighborsTest),
             ("Enlaces: MNDP no cuenta como conexión directa", LinkInferenceIgnoresMndpTest),
             ("Enlaces: la VLAN de gestión manda aunque otra VLAN entre por un AP", LinkInferenceManagementVlanTest),
             ("Equipos finales: puerto de acceso, Wi-Fi por AP, compartidos y VLAN excluida", EndpointInferenceTest),
@@ -369,6 +372,11 @@ internal static class Program
         Assert.Null(down.Clients);
         Assert.Equal(2, cache.Count);
         Assert.Equal("FC:EC:DA:3D:AF:54", cache[0].Mac);
+        // El vecino LLDP queda guardado para las corridas que no leen UniFi; el del AP caído, no.
+        var cached = cache[0].Neighbors!.Single();
+        Assert.Equal("eth0", cached.Port);
+        Assert.Equal("74:4D:28:2C:B8:81", cached.Neighbor.Mac);
+        Assert.Null(cache[1].Neighbors);
         return Task.CompletedTask;
     }
 
@@ -446,6 +454,58 @@ internal static class Program
     {
         var links = LinkInference.Infer(Tree(withAp: false), [new CachedAp("ap-fc:ec:da:3d:af:54", ApMac, "AP-010 - Taller - Galpón")]);
         Assert.True(links.Any(link => Describe(link) == "10.0.0.6[10]-ap-fc:ec:da:3d:af:54[]:fdb"), string.Join(" | ", links.Select(Describe)));
+        return Task.CompletedTask;
+    }
+
+    // Caso real del AP-016: el TP-Link Entrepiso no informa vecinos LLDP y el AP lo ve por LLDP con
+    // la MAC del switch como "puerto" (la misma en todos los puertos), que no ubica nada.
+    private static NeighborSnapshot SwitchWideLldp => new() { Protocol = "lldp", Mac = EdgeMac, Port = EdgeMac.ToLowerInvariant() };
+
+    private static Task LinkInferenceApLldpKeepsFdbPortTest()
+    {
+        var devices = Tree();
+        devices[4] = Device("ap-fc:ec:da:3d:af:54", "ap", [ApMac], [], ports: [Port("eth0", SwitchWideLldp)], name: "AP-010 - Taller - Galpón");
+        var links = LinkInference.Infer(devices, []);
+        Assert.True(links.Any(link => Describe(link) == "10.0.0.6[10]-ap-fc:ec:da:3d:af:54[eth0]:lldp"), string.Join(" | ", links.Select(Describe)));
+        return Task.CompletedTask;
+    }
+
+    private static Task LinkInferenceCachedApLldpTest()
+    {
+        // Entre lecturas de UniFi (el AP no está en esta corrida) el enlace sale igual que con el AP leído.
+        var cached = new CachedAp("ap-fc:ec:da:3d:af:54", ApMac, "AP-010 - Taller - Galpón", null, [new CachedNeighbor("eth0", SwitchWideLldp)]);
+        var devices = Tree(withAp: false);
+        devices[3] = Device("10.0.0.6", "access", [EdgeMac], [(RouterMac, ["49"]), (ApMac, ["10"]), (Wifi, ["10"])]);
+        var links = LinkInference.Infer(devices, [cached]);
+        Assert.True(links.Any(link => Describe(link) == "10.0.0.6[10]-ap-fc:ec:da:3d:af:54[eth0]:lldp"), string.Join(" | ", links.Select(Describe)));
+
+        // Y el cliente Wi-Fi de ese puerto sigue siendo del AP.
+        var wifi = EndpointInference.Infer(devices, [cached], links, new EndpointsSection()).Single();
+        Assert.Equal("10.0.0.6/10 via ap-fc:ec:da:3d:af:54", $"{wifi.Device}/{wifi.Port} via {wifi.Via}");
+        return Task.CompletedTask;
+    }
+
+    private static Task CollectorStateCachedNeighborsTest()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"grf-colector-estado-{Guid.NewGuid():N}.json");
+        try
+        {
+            var state = new CollectorState();
+            state.UniFi.Aps = [new CachedAp("ap-fc:ec:da:3d:af:54", ApMac, "AP-010", "10.1.1.66", [new CachedNeighbor("eth0", SwitchWideLldp)])];
+            state.Save(path);
+            var loaded = CollectorState.Load(path).UniFi.Aps.Single();
+            Assert.Equal("eth0", loaded.Neighbors!.Single().Port);
+            Assert.Equal(EdgeMac, loaded.Neighbors!.Single().Neighbor.Mac);
+
+            // Un estado de la 0.2.0 (sin vecinos) se sigue leyendo.
+            File.WriteAllText(path, """{ "pins": {}, "uniFi": { "aps": [ { "key": "ap-x", "mac": "FC:EC:DA:00:00:01", "name": "AP" } ] } }""");
+            Assert.Null(CollectorState.Load(path).UniFi.Aps.Single().Neighbors);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
         return Task.CompletedTask;
     }
 

@@ -131,6 +131,11 @@ Notas de campo:
   puertos físicos los forman: esos enlaces se envían como `lag130`, `lag131`…
 - Algunos TP-Link numeran la tabla MAC por puerto físico (1..28) y otros por puerto de bridge
   (49153..): se aceptan las dos formas.
+- Los TP-Link y los HPE anuncian por LLDP, como "puerto", la MAC del switch (la misma en todos los
+  puertos). Cuando el switch no informa sus vecinos (el TP-Link Entrepiso), el AP sabe a qué switch
+  está conectado pero no a qué puerto: el puerto sale de la tabla MAC.
+- UniFi se lee cada 5 minutos; en las corridas del medio se usan los APs y sus vecinos LLDP de la
+  última lectura (en `state.json`), así los enlaces no cambian de una corrida a la otra.
 
 ## Desinstalar
 
