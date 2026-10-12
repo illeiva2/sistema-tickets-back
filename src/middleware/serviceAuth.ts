@@ -6,7 +6,8 @@ const invalid = () =>
   new ApiError("SERVICE_AUTH_INVALID", "Credenciales de servicio inválidas", 401);
 
 /**
- * Autenticación para agentes de servicio (no personas): el pusher del molino.
+ * Autenticación para agentes de servicio (no personas): el pusher del molino,
+ * el relé del asistente y el colector de red de la planta.
  *
  * Clon del patrón de agentAuth.ts. Va en archivo aparte y no se mezcla con la
  * autenticación de usuarios: son dos poblaciones distintas, con credenciales de

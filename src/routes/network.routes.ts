@@ -1,12 +1,16 @@
 import { UserRole } from "@prisma/client";
 import { Router } from "express";
 import NetworkController from "../controllers/network.controller";
+import NetworkLiveController from "../controllers/networkLive.controller";
 import { authMiddleware, requireRole } from "../middleware/auth";
 
 const router = Router();
 const authorize = [authMiddleware, requireRole([UserRole.AGENT, UserRole.ADMIN])];
 
 router.get("/lookups", ...authorize, ...NetworkController.lookups);
+
+// Lo que informa el colector de la planta (switches, router, APs y sus puertos).
+router.get("/live", ...authorize, ...NetworkLiveController.view);
 
 router.get("/sites", ...authorize, ...NetworkController.listSites);
 router.post("/sites", ...authorize, ...NetworkController.createSite);

@@ -40,6 +40,9 @@ export const shouldSkipGlobalRateLimit = (pathName: string) =>
   // El relé del asistente (modelo local en srv-mf-03) hace long-poll cada ~25 s
   // desde la misma IP de la oficina: mismo caso que la ingesta, mismo trato.
   pathName.startsWith("/api/glutenlab/assistant/jobs") ||
+  // El colector de red de la planta: un envío por minuto desde la misma NAT.
+  // Tiene su propio limitador y exige credencial de servicio.
+  pathName.startsWith("/api/network-collector/") ||
   pathName.startsWith("/uploads") ||
   pathName.startsWith("/thumbnails");
 
@@ -122,6 +125,8 @@ export const createApp = (): Application => {
   // general. express.json marca el request como parseado y el parser siguiente
   // no vuelve a procesarlo.
   app.use("/api/agent", express.json({ limit: "512kb" }));
+  // Un envío del colector con ~30 equipos y sus puertos ronda los 150 KB.
+  app.use("/api/network-collector", express.json({ limit: "2mb" }));
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
 
