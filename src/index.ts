@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { createApp } from "./app";
 import LabWatchdog from "./services/lab.watchdog";
 import LabAssistantService from "./services/lab.assistant.service";
+import NetworkWatchdog from "./services/networkLive.watchdog";
 
 const app = createApp();
 const PORT = config.server.port;
@@ -36,6 +37,26 @@ setTimeout(() => {
   timer.unref();
   logger.info("Watchdog de laboratorio activo (cada 5 min)");
 }, 60_000).unref();
+
+// ─── Watchdog de Red en vivo ──────────────────────────────────────────────────
+// Cada minuto: el colector manda cada minuto y una caída se avisa a los 3 min.
+// Mismas limitaciones que el del laboratorio (vive en este proceso). Se apaga
+// sin tocar código con NETWORK_WATCHDOG_DISABLED=1.
+const NETWORK_WATCHDOG_INTERVAL_MS = 60 * 1000;
+
+if (process.env.NETWORK_WATCHDOG_DISABLED !== "1") {
+  setTimeout(() => {
+    const tick = () => {
+      void NetworkWatchdog.run().catch((err) =>
+        logger.error({ err }, "Falló una corrida del watchdog de red"),
+      );
+    };
+    tick();
+    const timer = setInterval(tick, NETWORK_WATCHDOG_INTERVAL_MS);
+    timer.unref();
+    logger.info("Watchdog de red activo (cada 1 min)");
+  }, 90_000).unref();
+}
 
 // ─── Asistente de laboratorio: consultas colgadas ────────────────────────────
 // El relé del molino vence lo colgado cada vez que pide trabajo; pero si el

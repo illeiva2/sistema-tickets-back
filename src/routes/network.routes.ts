@@ -12,6 +12,14 @@ router.get("/lookups", ...authorize, ...NetworkController.lookups);
 // Lo que informa el colector de la planta (switches, router, APs y sus puertos).
 router.get("/live", ...authorize, ...NetworkLiveController.view);
 router.get("/live/search", ...authorize, ...NetworkLiveController.search);
+router.get("/live/events", ...authorize, ...NetworkLiveController.events);
+// Silenciar las alertas de un equipo decide a quién se despierta: sólo ADMIN.
+router.patch(
+  "/live/devices/:id/alerts",
+  authMiddleware,
+  requireRole([UserRole.ADMIN]),
+  ...NetworkLiveController.muteAlerts,
+);
 
 router.get("/sites", ...authorize, ...NetworkController.listSites);
 router.post("/sites", ...authorize, ...NetworkController.createSite);

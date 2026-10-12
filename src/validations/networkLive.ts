@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { z } from "zod";
+import { LIVE_EVENT_KINDS } from "../services/networkLive.events";
 
 export const LIVE_SOURCES = ["routeros", "snmp", "unifi"] as const;
 export const LIVE_ROLES = ["router", "core", "access", "ap"] as const;
@@ -131,6 +132,31 @@ export const networkLiveSearchSchema = z
     q: z.string().trim().min(2, "Escribí al menos 2 caracteres").max(100),
   })
   .strict();
+
+/** Historial: desde/hasta (por defecto, las últimas 24 h), equipo y puerto, MAC, tipos y tope. */
+export const networkLiveEventsSchema = z
+  .object({
+    since: z.coerce.date().optional(),
+    until: z.coerce.date().optional(),
+    deviceId: z.string().trim().min(1).max(40).optional(),
+    portKey: z.string().trim().min(1).max(64).optional(),
+    mac: requiredMac.optional().refine((value) => value !== null, "MAC inválida"),
+    kinds: z
+      .string()
+      .max(400)
+      .optional()
+      .transform((value) => (value ? value.split(",").map((kind) => kind.trim()).filter(Boolean) : undefined))
+      .pipe(z.array(z.enum(LIVE_EVENT_KINDS)).max(LIVE_EVENT_KINDS.length).optional()),
+    limit: z.coerce.number().int().min(1).max(500).default(200),
+  })
+  .strict()
+  .refine((query) => !query.portKey || query.deviceId, { message: "El puerto va con su equipo", path: ["portKey"] });
+
+/** Silenciar (o volver a escuchar) las alertas de un equipo. */
+export const networkLiveMuteSchema = z.object({
+  params: z.object({ id: z.string().trim().min(1).max(40) }),
+  body: z.object({ muted: z.boolean() }).strict(),
+});
 
 /**
  * Envío del colector de red. A diferencia del agente de las PCs, no es
