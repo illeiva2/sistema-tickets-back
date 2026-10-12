@@ -31,6 +31,9 @@ internal static class Program
             ("Enlaces: un AP de la última lectura de UniFi se ubica igual", LinkInferenceCachedApTest),
             ("Enlaces: MNDP no cuenta como conexión directa", LinkInferenceIgnoresMndpTest),
             ("Enlaces: la VLAN de gestión manda aunque otra VLAN entre por un AP", LinkInferenceManagementVlanTest),
+            ("Equipos finales: puerto de acceso, Wi-Fi por AP, compartidos y VLAN excluida", EndpointInferenceTest),
+            ("Equipos finales: gana el switch más profundo y nada queda en troncales", EndpointDeepestSwitchTest),
+            ("RouterOS: concesiones DHCP con nombre e IP activa", RouterOsLeasesTest),
             ("Nombres de AP con y sin acentos coinciden", NormalizeNameTest),
             ("Certificados: huella anotada, primer uso y cambio", CertificatePinsTest),
             ("Configuración exige HTTPS, IPs válidas y drivers conocidos", ConfigurationTest),
@@ -504,6 +507,136 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private const string Pc1 = "AA:BB:CC:00:00:01";
+    private const string Pc2 = "AA:BB:CC:00:00:02";
+    private const string Phone = "AA:BB:CC:00:00:03";
+    private const string Wifi = "AA:BB:CC:00:00:04";
+    private const string Guest = "AA:BB:CC:00:00:05";
+
+    /// <summary>
+    /// Router → núcleo (SwOS, sin VLAN) → switch de acceso con: una PC en ether5, PC + teléfono en
+    /// ether6, tres equipos en ether7 (switch sin gestión), y un AP en ether10 con un cliente Wi-Fi
+    /// y un invitado (VLAN 300).
+    /// </summary>
+    private static (List<PollResult> Devices, List<LinkSnapshot> Links) AccessScenario()
+    {
+        var unmanaged = new[] { "AA:BB:CC:00:00:11", "AA:BB:CC:00:00:12", "AA:BB:CC:00:00:13" };
+        var router = new PollResult
+        {
+            Snapshot = new DeviceSnapshot { Key = "10.0.0.1", Source = "routeros", Role = "router", Reachable = true, ManagementIp = "10.0.0.1", Ports = [] },
+            Macs = new HashSet<string> { RouterMac },
+            Fdb = [new FdbEntry(CoreMac, ["ether1"], 999), new FdbEntry(Pc1, ["ether1"], 200)],
+            Arp = [new ArpEntry("192.168.100.41", Pc1, 200), new ArpEntry("192.168.90.7", Guest, 300), new ArpEntry("10.0.0.3", AccessMac, 999)],
+            Leases = [new LeaseEntry(Pc1, "192.168.100.41", "PC-ADMIN-01"), new LeaseEntry(Wifi, "10.6.0.5", "celular")],
+        };
+        var core = new PollResult
+        {
+            Snapshot = new DeviceSnapshot { Key = "10.0.0.11", Source = "snmp", Role = "core", Reachable = true, ManagementIp = "10.0.0.11", Ports = [] },
+            Macs = new HashSet<string> { CoreMac },
+            Fdb = [new FdbEntry(RouterMac, ["24"], null), new FdbEntry(AccessMac, ["lag130"], null), new FdbEntry(Pc1, ["lag130"], null), new FdbEntry(Pc2, ["lag130"], null)],
+        };
+        var access = new PollResult
+        {
+            Snapshot = new DeviceSnapshot { Key = "10.0.0.3", Source = "routeros", Role = "access", Reachable = true, ManagementIp = "10.0.0.3", Ports = [] },
+            Macs = new HashSet<string> { "74:4D:28:2C:B8:82" },
+            Fdb =
+            [
+                new FdbEntry(RouterMac, ["sfp-sfpplus1", "sfp-sfpplus2"], 999),
+                new FdbEntry(Pc1, ["ether5"], 200),
+                new FdbEntry("01:00:5E:00:00:FB", ["ether5"], 200),
+                new FdbEntry(Pc2, ["ether6"], 200),
+                new FdbEntry(Phone, ["ether6"], 200),
+                .. unmanaged.Select(mac => new FdbEntry(mac, ["ether7"], 200)),
+                new FdbEntry(ApMac, ["ether10"], 1),
+                new FdbEntry(Wifi, ["ether10"], 600),
+                new FdbEntry(Guest, ["ether10"], 300),
+            ],
+        };
+        var ap = new PollResult
+        {
+            Snapshot = new DeviceSnapshot { Key = "ap-fc:ec:da:3d:af:54", Source = "unifi", Role = "ap", Reachable = true, Ports = [] },
+            Macs = new HashSet<string> { ApMac },
+        };
+        List<LinkSnapshot> links =
+        [
+            new(new LinkEnd("10.0.0.1", ["ether1"]), new LinkEnd("10.0.0.11", ["24"]), "fdb"),
+            new(new LinkEnd("10.0.0.11", ["lag130"]), new LinkEnd("10.0.0.3", ["sfp-sfpplus1", "sfp-sfpplus2"]), "fdb"),
+            new(new LinkEnd("10.0.0.3", ["ether10"]), new LinkEnd("ap-fc:ec:da:3d:af:54", ["eth0"]), "lldp"),
+        ];
+        return ([router, core, access, ap], links);
+    }
+
+    private static Task EndpointInferenceTest()
+    {
+        var (devices, links) = AccessScenario();
+        var endpoints = EndpointInference.Infer(devices, [], links, new EndpointsSection { ExcludeVlans = [300] });
+        string Describe(EndpointSnapshot endpoint) =>
+            $"{endpoint.Mac}@{endpoint.Device}/{endpoint.Port}" +
+            (endpoint.Via is null ? "" : $" via {endpoint.Via}") +
+            (endpoint.Shared == true ? " compartido" : "");
+        Assert.SequenceEqual(
+            new[]
+            {
+                // Orden por equipo, puerto (texto) y MAC.
+                $"{Wifi}@10.0.0.3/ether10 via ap-fc:ec:da:3d:af:54",
+                $"{Pc1}@10.0.0.3/ether5",
+                $"{Pc2}@10.0.0.3/ether6",
+                $"{Phone}@10.0.0.3/ether6",
+                "AA:BB:CC:00:00:11@10.0.0.3/ether7 compartido",
+                "AA:BB:CC:00:00:12@10.0.0.3/ether7 compartido",
+                "AA:BB:CC:00:00:13@10.0.0.3/ether7 compartido",
+            },
+            endpoints.Select(Describe));
+        var pc = endpoints.Single(endpoint => endpoint.Mac == Pc1);
+        Assert.Equal("192.168.100.41", pc.Ip);
+        Assert.Equal("PC-ADMIN-01", pc.Hostname);
+        Assert.Equal(200, pc.Vlan);
+        var wifi = endpoints.Single(endpoint => endpoint.Mac == Wifi);
+        Assert.Equal("10.6.0.5", wifi.Ip);
+        Assert.Equal("celular", wifi.Hostname);
+        Assert.Equal(0, EndpointInference.Infer(devices, [], links, new EndpointsSection { Enabled = false }).Count);
+        return Task.CompletedTask;
+    }
+
+    private static Task EndpointDeepestSwitchTest()
+    {
+        // La PC aparece en un puerto "de acceso" del núcleo (mal leído) y en el ether5 del switch
+        // de abajo: gana el de abajo, que es el más profundo.
+        var (devices, links) = AccessScenario();
+        var core = devices[1];
+        devices[1] = new PollResult
+        {
+            Snapshot = core.Snapshot,
+            Macs = core.Macs,
+            Fdb = [.. core.Fdb, new FdbEntry(Pc1, ["5"], null)],
+        };
+        var endpoints = EndpointInference.Infer(devices, [], links, new EndpointsSection());
+        Assert.Equal("10.0.0.3", endpoints.Single(endpoint => endpoint.Mac == Pc1).Device);
+        Assert.False(endpoints.Any(endpoint => endpoint.Device == "10.0.0.1" || endpoint.Port.StartsWith("lag", StringComparison.Ordinal)));
+        // Sin excluir la VLAN 300, el invitado aparece como cliente Wi-Fi.
+        Assert.True(endpoints.Any(endpoint => endpoint.Mac == Guest && endpoint.Via is not null));
+        return Task.CompletedTask;
+    }
+
+    private static Task RouterOsLeasesTest()
+    {
+        var readout = new RouterOsReadout
+        {
+            Identity = Row(("name", "RB_MainRouter")),
+            DhcpLeases =
+            [
+                Row(("address", "192.168.100.41"), ("mac-address", "aa:bb:cc:00:00:01"), ("host-name", "PC-ADMIN-01"), ("status", "bound")),
+                Row(("address", "10.6.0.0"), ("active-address", "10.6.0.5"), ("mac-address", "AA:BB:CC:00:00:04"), ("active-mac-address", "AA:BB:CC:00:00:04")),
+                Row(("address", "10.6.0.9"), ("mac-address", "no-es-mac")),
+            ],
+        };
+        var result = RouterOsMapping.Build(new DeviceEntry { Ip = "10.0.0.1", Driver = "routeros", Role = "router" }, readout, 100);
+        Assert.Equal(2, result.Leases.Count);
+        Assert.Equal(new LeaseEntry("AA:BB:CC:00:00:01", "192.168.100.41", "PC-ADMIN-01"), result.Leases[0]);
+        Assert.Equal(new LeaseEntry("AA:BB:CC:00:00:04", "10.6.0.5", null), result.Leases[1]);
+        return Task.CompletedTask;
+    }
+
     private static Task NormalizeNameTest()
     {
         Assert.Equal(LinkInference.NormalizeName("AP-010 - Taller - Galpón"), LinkInference.NormalizeName("AP-010-Taller-Galpn"));
@@ -546,6 +679,14 @@ internal static class Program
                 new DeviceEntry { Ip = "10.0.0.6", Driver = "snmp", Role = "jefe", CertificateSha256 = "zz" },
             ],
         };
+        var withBadVlan = new CollectorConfig
+        {
+            Api = valid.Api,
+            Devices = valid.Devices,
+            Endpoints = new EndpointsSection { ExcludeVlans = [5000] },
+        };
+        Assert.True(string.Join(" | ", withBadVlan.Validate()).Contains("ExcludeVlans", StringComparison.Ordinal));
+
         var errors = string.Join(" | ", invalid.Validate());
         foreach (var expected in new[] { "https", "ClientSlug", "no es una IP", "\"routeros\" o \"snmp\"", "repetida", "Role", "CertificateSha256" })
         {
@@ -562,8 +703,10 @@ internal static class Program
             DateTimeOffset.Parse("2026-10-12T15:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse("2026-10-12T15:00:05Z", System.Globalization.CultureInfo.InvariantCulture),
             [new DeviceSnapshot { Key = "10.0.0.5", Source = "routeros", Role = "access", Reachable = false, Error = "sin conexión" }],
-            [new LinkSnapshot(new LinkEnd("10.0.0.11", ["3"]), new LinkEnd("10.0.0.5", []), "fdb")]);
+            [new LinkSnapshot(new LinkEnd("10.0.0.11", ["3"]), new LinkEnd("10.0.0.5", []), "fdb")],
+            [new EndpointSnapshot { Mac = "AA:BB:CC:00:00:01", Device = "10.0.0.3", Port = "ether5", Vlan = 200 }]);
         var json = JsonSerializer.Serialize(payload, SnapshotJson.Options);
+        Assert.True(json.Contains("\"endpoints\":[{\"mac\":\"AA:BB:CC:00:00:01\",\"device\":\"10.0.0.3\",\"port\":\"ether5\",\"vlan\":200}]", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"startedAt\":\"2026-10-12T15:00:00+00:00\"", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"reachable\":false", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"links\":[{\"a\":{\"device\":\"10.0.0.11\",\"ports\":[\"3\"]}", StringComparison.Ordinal), json);

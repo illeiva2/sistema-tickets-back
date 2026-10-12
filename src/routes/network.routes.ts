@@ -11,6 +11,7 @@ router.get("/lookups", ...authorize, ...NetworkController.lookups);
 
 // Lo que informa el colector de la planta (switches, router, APs y sus puertos).
 router.get("/live", ...authorize, ...NetworkLiveController.view);
+router.get("/live/search", ...authorize, ...NetworkLiveController.search);
 
 router.get("/sites", ...authorize, ...NetworkController.listSites);
 router.post("/sites", ...authorize, ...NetworkController.createSite);

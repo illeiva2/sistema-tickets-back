@@ -54,12 +54,14 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
         results.AddRange(aps);
 
         var links = LinkInference.Infer(results, state.UniFi.Aps);
+        var endpoints = EndpointInference.Infer(results, state.UniFi.Aps, links, config.Endpoints);
         var payload = new SnapshotPayload(
             new CollectorInfo(Version, Environment.MachineName),
             startedAt,
             DateTimeOffset.UtcNow,
             results.Select(result => result.Snapshot).ToList(),
-            links);
+            links,
+            config.Endpoints.Enabled ? endpoints : null);
 
         return new CollectionRun(payload, uniFiPolled, results);
     }

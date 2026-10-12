@@ -11,7 +11,8 @@ internal sealed record SnapshotPayload(
     DateTimeOffset StartedAt,
     DateTimeOffset FinishedAt,
     IReadOnlyList<DeviceSnapshot> Devices,
-    IReadOnlyList<LinkSnapshot> Links);
+    IReadOnlyList<LinkSnapshot> Links,
+    IReadOnlyList<EndpointSnapshot>? Endpoints = null);
 
 internal sealed record CollectorInfo(string Version, string Host);
 
@@ -61,6 +62,23 @@ internal sealed record NeighborSnapshot
 }
 
 internal sealed record LinkSnapshot(LinkEnd A, LinkEnd B, string Source);
+
+/// <summary>
+/// Equipo final (PC, impresora, cámara, teléfono, cliente Wi-Fi) en el puerto de acceso donde
+/// está conectado. Via = AP por el que se conecta si es inalámbrico; Shared = el puerto tiene
+/// varios equipos detrás (un switch sin gestión, por ejemplo).
+/// </summary>
+internal sealed record EndpointSnapshot
+{
+    public required string Mac { get; init; }
+    public required string Device { get; init; }
+    public required string Port { get; init; }
+    public int? Vlan { get; init; }
+    public string? Ip { get; init; }
+    public string? Hostname { get; init; }
+    public string? Via { get; init; }
+    public bool? Shared { get; init; }
+}
 
 internal sealed record LinkEnd(string Device, IReadOnlyList<string> Ports);
 

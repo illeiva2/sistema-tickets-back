@@ -10,6 +10,7 @@ export const LIVE_LINK_SOURCES = ["lldp", "fdb"] as const;
 export const MAX_LIVE_DEVICES = 300;
 export const MAX_LIVE_PORTS = 1000;
 export const MAX_LIVE_LINKS = 2000;
+export const MAX_LIVE_ENDPOINTS = 10_000;
 
 // Lo que mandan los equipos se limpia en vez de rechazarse: un nombre con un
 // carácter de control o un modelo demasiado largo no puede tirar abajo el envío
@@ -107,6 +108,30 @@ const linkSchema = z.object({
   source: z.enum(LIVE_LINK_SOURCES).catch("fdb"),
 });
 
+/** MAC obligatoria: un equipo final sin MAC válida se descarta (ver el transform del envío). */
+const requiredMac = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const compact = value.replace(/[.\-:\s]/g, "").toUpperCase();
+  return /^[0-9A-F]{12}$/.test(compact) ? compact.match(/.{2}/g)!.join(":") : null;
+}, z.string().nullable());
+
+const endpointSchema = z.object({
+  mac: requiredMac,
+  device: requiredText(120),
+  port: requiredText(64),
+  vlan: optionalInt(1, 4094),
+  ip: lenientIp.optional(),
+  hostname: optionalText(120),
+  via: optionalText(120),
+  shared: z.boolean().nullish(),
+});
+
+export const networkLiveSearchSchema = z
+  .object({
+    q: z.string().trim().min(2, "Escribí al menos 2 caracteres").max(100),
+  })
+  .strict();
+
 /**
  * Envío del colector de red. A diferencia del agente de las PCs, no es
  * `.strict()`: un colector más nuevo puede mandar campos que este back todavía
@@ -128,5 +153,17 @@ export const collectorSnapshotSchema = z.object({
         return devices.filter((device) => !seen.has(device.key) && seen.add(device.key));
       }),
     links: z.array(linkSchema).max(MAX_LIVE_LINKS).default([]),
+    // Ausente = el colector no informó equipos finales (versión vieja): no se toca lo guardado.
+    endpoints: z
+      .array(endpointSchema)
+      .max(MAX_LIVE_ENDPOINTS)
+      .optional()
+      .transform((endpoints) => {
+        if (!endpoints) return endpoints;
+        const seen = new Set<string>();
+        return endpoints.filter(
+          (endpoint) => endpoint.mac !== null && !seen.has(endpoint.mac) && seen.add(endpoint.mac),
+        );
+      }),
   }),
 });

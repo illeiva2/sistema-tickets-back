@@ -23,6 +23,7 @@ internal sealed class RouterOsReadout
     public IReadOnlyList<Dictionary<string, string>> BridgeHosts { get; init; } = [];
     public IReadOnlyList<Dictionary<string, string>> Arp { get; init; } = [];
     public IReadOnlyList<Dictionary<string, string>> Vlans { get; init; } = [];
+    public IReadOnlyList<Dictionary<string, string>> DhcpLeases { get; init; } = [];
 }
 
 /// <summary>Traduce lo leído de un MikroTik al contrato del back. Sin red: se prueba con datos fijos.</summary>
@@ -178,6 +179,13 @@ internal static partial class RouterOsMapping
                 .Select(row => (Ip: Get(row, "address"), Mac: Mac.Normalize(Get(row, "mac-address")), Interface: Get(row, "interface")))
                 .Where(item => item.Ip is not null && item.Mac is not null)
                 .Select(item => new ArpEntry(item.Ip!, item.Mac!, item.Interface is not null && vlanIds.TryGetValue(item.Interface, out var vlan) ? vlan : null))
+                .ToList(),
+            Leases = readout.DhcpLeases
+                .Select(row => new LeaseEntry(
+                    Mac.Normalize(Get(row, "active-mac-address") ?? Get(row, "mac-address")) ?? "",
+                    Get(row, "active-address") ?? Get(row, "address"),
+                    Get(row, "host-name")))
+                .Where(lease => lease.Mac.Length > 0)
                 .ToList(),
         };
     }
