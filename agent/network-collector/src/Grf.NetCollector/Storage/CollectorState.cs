@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Grf.NetCollector.Contracts;
 
 namespace Grf.NetCollector.Storage;
 
@@ -54,5 +55,11 @@ internal sealed class UniFiState
     public List<CachedAp> Aps { get; set; } = [];
 }
 
-/// <summary>AP conocido por la última lectura de UniFi: alcanza para ubicarlo en las tablas MAC.</summary>
-internal sealed record CachedAp(string Key, string Mac, string Name, string? Ip = null);
+/// <summary>
+/// AP conocido por la última lectura de UniFi: alcanza para ubicarlo en las tablas MAC y, con sus
+/// vecinos LLDP, para que su enlace sea el mismo en las corridas que no leen UniFi.
+/// </summary>
+internal sealed record CachedAp(string Key, string Mac, string Name, string? Ip = null, List<CachedNeighbor>? Neighbors = null);
+
+/// <summary>Vecino LLDP que un AP informa en uno de sus puertos.</summary>
+internal sealed record CachedNeighbor(string Port, NeighborSnapshot Neighbor);

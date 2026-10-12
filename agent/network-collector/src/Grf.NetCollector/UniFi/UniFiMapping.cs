@@ -54,6 +54,7 @@ internal static class UniFiMapping
             var state = Int(device, "state");
             var connected = state == 1;
             var modelCode = Text(device, "model");
+            var ports = BuildPorts(device, connected);
 
             results.Add(new PollResult
             {
@@ -74,14 +75,23 @@ internal static class UniFiMapping
                     SerialNumber = Text(device, "serial"),
                     UptimeSeconds = connected ? Int(device, "uptime") : null,
                     Clients = connected ? (int?)(Int(device, "num_sta") ?? 0) : null,
-                    Ports = BuildPorts(device, connected),
+                    Ports = ports,
                 },
                 Macs = new HashSet<string>(StringComparer.Ordinal) { mac },
             });
-            cache.Add(new CachedAp(key, mac, name, Text(device, "ip")));
+            // Un AP desconectado puede traer una tabla LLDP vieja: no se guarda (tampoco cuenta ahora).
+            cache.Add(new CachedAp(key, mac, name, Text(device, "ip"), connected ? CachedNeighbors(ports) : null));
         }
 
         return (results, cache);
+    }
+
+    private static List<CachedNeighbor>? CachedNeighbors(List<PortSnapshot> ports)
+    {
+        var neighbors = ports
+            .SelectMany(port => (port.Neighbors ?? []).Select(neighbor => new CachedNeighbor(port.Key, neighbor)))
+            .ToList();
+        return neighbors.Count == 0 ? null : neighbors;
     }
 
     private static List<PortSnapshot> BuildPorts(JsonElement device, bool connected)
