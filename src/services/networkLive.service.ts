@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
+import { deviceEvents, portEvent, portList, type LiveEventInput } from "./networkLive.events";
 
 // Formas ya validadas por src/validations/networkLive.ts. Se tipan a mano porque
 // el tsconfig no es estricto y la inferencia de Zod no sirve (igual que en lab).
@@ -290,6 +291,7 @@ export class NetworkLiveService {
     const creates: Prisma.NetworkLiveEndpointCreateManyInput[] = [];
     const updates: Prisma.PrismaPromise<unknown>[] = [];
     const touched: string[] = [];
+    const events: LiveEventInput[] = [];
     let saved = 0;
 
     for (const endpoint of endpoints) {
@@ -313,6 +315,15 @@ export class NetworkLiveService {
           hostname: endpoint.hostname ?? null,
           lastSeenAt: receivedAt,
         });
+        events.push({
+          collector,
+          at: receivedAt,
+          kind: "endpoint_new",
+          deviceId,
+          portKey: endpoint.port,
+          macAddress: endpoint.mac,
+          detail: { vlan: fields.vlan, viaDeviceId: fields.viaDeviceId },
+        });
         continue;
       }
 
@@ -334,6 +345,19 @@ export class NetworkLiveService {
             data: { ...fields, ipAddress, hostname, lastSeenAt: receivedAt, ...(moved ? { movedAt: receivedAt } : {}) },
           }),
         );
+        if (moved) {
+          events.push({
+            collector,
+            at: receivedAt,
+            kind: "endpoint_moved",
+            deviceId,
+            portKey: endpoint.port,
+            macAddress: endpoint.mac,
+            peerDeviceId: current.deviceId,
+            peerPortKey: current.portKey,
+            detail: { vlan: fields.vlan, viaDeviceId: fields.viaDeviceId },
+          });
+        }
       } else if (receivedAt.getTime() - current.lastSeenAt.getTime() >= ENDPOINT_TOUCH_MS) {
         touched.push(current.id);
       }
@@ -351,6 +375,7 @@ export class NetworkLiveService {
         data: { lastSeenAt: receivedAt },
       });
     }
+    if (events.length) await prisma.networkLiveEvent.createMany({ data: events });
     return saved;
   }
 
@@ -401,7 +426,7 @@ export class NetworkLiveService {
   ) {
     const existing = await tx.networkLiveDevice.findUnique({
       where: { collector_key: { collector, key: device.key } },
-      select: { id: true },
+      select: { id: true, reachable: true, uptimeSeconds: true },
     });
 
     const status = {
@@ -452,14 +477,20 @@ export class NetworkLiveService {
           })
         ).id;
 
+    // Historial: la caída o la vuelta del equipo y los cambios de enlace de sus puertos, en la
+    // misma transacción que el estado que los produjo.
+    const events = deviceEvents(collector, id, existing, device, receivedAt);
     if (device.reachable && device.ports?.length) {
-      await NetworkLiveService.savePorts(tx, id, device.ports, receivedAt);
+      events.push(...(await NetworkLiveService.savePorts(tx, collector, id, device.ports, receivedAt)));
     }
+    if (events.length) await tx.networkLiveEvent.createMany({ data: events });
     return id;
   }
 
+  /** Guarda los puertos que cambiaron y devuelve los eventos de enlace (cayó, volvió, otra velocidad). */
   static async savePorts(
     tx: Prisma.TransactionClient,
+    collector: string,
     deviceId: string,
     ports: LivePortInput[],
     receivedAt: Date,
@@ -467,6 +498,7 @@ export class NetworkLiveService {
     const current = await tx.networkLivePort.findMany({ where: { deviceId }, select: PORT_SELECT });
     const byKey = new Map(current.map((port) => [port.key, port as StoredPort]));
     const creates: Prisma.NetworkLivePortCreateManyInput[] = [];
+    const events: LiveEventInput[] = [];
 
     for (const port of ports) {
       const stored = byKey.get(port.key);
@@ -476,10 +508,13 @@ export class NetworkLiveService {
         creates.push({ deviceId, ...(write.data as Omit<Prisma.NetworkLivePortCreateManyInput, "deviceId">) });
       } else {
         await tx.networkLivePort.update({ where: { id: stored!.id }, data: write.data });
+        const event = portEvent(collector, deviceId, stored, port, receivedAt);
+        if (event) events.push(event);
       }
     }
 
     if (creates.length) await tx.networkLivePort.createMany({ data: creates, skipDuplicates: true });
+    return events;
   }
 
   static async saveLinks(collector: string, links: LiveLinkInput[], receivedAt: Date) {
@@ -518,10 +553,21 @@ export class NetworkLiveService {
     const storedByPair = new Map(stored.map((link) => [`${link.aDeviceId}|${link.bDeviceId}`, link]));
 
     const writes: Prisma.PrismaPromise<unknown>[] = [];
+    const events: LiveEventInput[] = [];
     for (const [pair, link] of wanted) {
       const current = storedByPair.get(pair);
       if (!current) {
         writes.push(prisma.networkLiveLink.create({ data: { collector, ...link, lastSeenAt: receivedAt } }));
+        events.push({
+          collector,
+          at: receivedAt,
+          kind: "link_new",
+          deviceId: link.aDeviceId,
+          portKey: portList(link.aPorts),
+          peerDeviceId: link.bDeviceId,
+          peerPortKey: portList(link.bPorts),
+          detail: { source: link.source, aPorts: link.aPorts, bPorts: link.bPorts },
+        });
         continue;
       }
       const changed =
@@ -539,19 +585,21 @@ export class NetworkLiveService {
     }
 
     if (writes.length) await prisma.$transaction(writes);
+    if (events.length) await prisma.networkLiveEvent.createMany({ data: events });
     return wanted.size;
   }
 
   // ─── Lectura (pantalla "Red en vivo") ───────────────────────────────────────
 
   static async liveView(now = new Date()) {
-    const [collectors, devices, links] = await Promise.all([
+    const [collectors, devices, links, alerts] = await Promise.all([
       prisma.networkCollector.findMany({ orderBy: { slug: "asc" } }),
       prisma.networkLiveDevice.findMany({
         orderBy: { name: "asc" },
         include: { ports: { orderBy: [{ position: "asc" }, { key: "asc" }] } },
       }),
       prisma.networkLiveLink.findMany({ orderBy: { firstSeenAt: "asc" } }),
+      prisma.networkLiveAlert.findMany({ where: { resolvedAt: null }, orderBy: { openedAt: "asc" } }),
     ]);
 
     const lastReceived = new Map(collectors.map((c) => [c.slug, c.lastReceivedAt.getTime()]));
@@ -599,6 +647,7 @@ export class NetworkLiveService {
           lastError: device.lastError,
           lastPolledAt: device.lastPolledAt.toISOString(),
           lastOkAt: device.lastOkAt?.toISOString() ?? null,
+          alertsMuted: device.alertsMuted,
           ports: device.ports
             .filter((port) => current.has(port.key))
             .map((port) => ({
@@ -631,6 +680,84 @@ export class NetworkLiveService {
           lastSeenAt: link.lastSeenAt.toISOString(),
         })),
       endpoints: endpoints.map((endpoint) => NetworkLiveService.endpointView(endpoint, agents)),
+      // Incidentes avisados que siguen abiertos (equipo caído, colector mudo).
+      alerts: alerts.map((alert) => ({
+        id: alert.id,
+        kind: alert.kind,
+        deviceId: alert.deviceId,
+        openedAt: alert.openedAt.toISOString(),
+        lastNotifiedAt: alert.lastNotifiedAt?.toISOString() ?? null,
+        ticketId: alert.ticketId,
+        detail: alert.detail,
+      })),
+    };
+  }
+
+  // ─── Historial ──────────────────────────────────────────────────────────────
+
+  /**
+   * Eventos más nuevos primero. Filtrando por equipo (y puerto) también trae los que lo tienen del
+   * otro lado: el enlace nuevo visto desde el vecino, o el equipo final que se fue de ese puerto.
+   */
+  static async events(params: {
+    since: Date;
+    until?: Date;
+    deviceId?: string;
+    portKey?: string;
+    mac?: string;
+    kinds?: string[];
+    limit: number;
+  }, now = new Date()) {
+    const { since, until, deviceId, portKey, mac, kinds, limit } = params;
+    const where: Prisma.NetworkLiveEventWhereInput = {
+      at: { gte: since, ...(until ? { lte: until } : {}) },
+      ...(kinds?.length ? { kind: { in: kinds } } : {}),
+      ...(mac ? { macAddress: mac } : {}),
+      ...(deviceId
+        ? {
+            OR: [
+              { deviceId, ...(portKey ? { portKey } : {}) },
+              { peerDeviceId: deviceId, ...(portKey ? { peerPortKey: portKey } : {}) },
+            ],
+          }
+        : {}),
+    };
+    const rows = await prisma.networkLiveEvent.findMany({ where, orderBy: { at: "desc" }, take: limit + 1 });
+    const page = rows.slice(0, limit);
+
+    // Los equipos finales se nombran como en la pantalla: la PC del agente, el nombre DHCP o la IP.
+    const macs = [...new Set(page.map((event) => event.macAddress).filter((value): value is string => Boolean(value)))];
+    const endpoints = macs.length
+      ? await prisma.networkLiveEndpoint.findMany({
+          where: { macAddress: { in: macs } },
+          select: { macAddress: true, ipAddress: true, hostname: true },
+        })
+      : [];
+    const agents = await NetworkLiveService.agentsFor(endpoints, now);
+    const endpointByMac = new Map(endpoints.map((endpoint) => [endpoint.macAddress, endpoint]));
+
+    return {
+      events: page.map((event) => {
+        const endpoint = event.macAddress ? endpointByMac.get(event.macAddress) : undefined;
+        const agent = endpoint
+          ? (agents.byMac.get(endpoint.macAddress) ?? (endpoint.ipAddress ? agents.byIp.get(endpoint.ipAddress) : undefined))
+          : undefined;
+        return {
+          id: event.id,
+          at: event.at.toISOString(),
+          kind: event.kind,
+          deviceId: event.deviceId,
+          portKey: event.portKey,
+          macAddress: event.macAddress,
+          peerDeviceId: event.peerDeviceId,
+          peerPortKey: event.peerPortKey,
+          detail: event.detail ?? null,
+          endpoint: endpoint
+            ? { ip: endpoint.ipAddress, hostname: endpoint.hostname, agent: agent ?? null }
+            : null,
+        };
+      }),
+      hasMore: rows.length > limit,
     };
   }
 

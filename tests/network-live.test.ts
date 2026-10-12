@@ -326,6 +326,7 @@ describe("Pantalla Red en vivo", () => {
       lastError: null,
       lastPollMs: 500,
       lastOkAt: null,
+      alertsMuted: false,
       createdAt: ago(86_400_000),
       updatedAt: ago(30_000),
     };
@@ -369,16 +370,24 @@ describe("Pantalla Red en vivo", () => {
       { id: "l2", collector: COLLECTOR, aDeviceId: "d1", aPorts: ["ether2"], bDeviceId: "d3", bPorts: ["eth0"], source: "lldp", firstSeenAt: ago(86_400_000), lastSeenAt: ago(60 * 60_000) },
     ] as any);
     prismaMock.networkLiveEndpoint.findMany.mockResolvedValue([]);
+    prismaMock.networkLiveAlert.findMany.mockResolvedValue([
+      { id: "al-1", collector: COLLECTOR, kind: "device_down", deviceId: "d2", openedAt: ago(5 * 60_000), resolvedAt: null, lastNotifiedAt: ago(5 * 60_000), ticketId: "t-1", detail: "HPE no responde desde hace 8 min." },
+    ] as any);
 
     const res = await request(app).get("/api/it/network/live").set(auth("AGENT"));
 
     expect(res.status).toBe(200);
-    const { collectors, devices, links } = res.body.data;
+    const { collectors, devices, links, alerts } = res.body.data;
     expect(collectors[0]).toMatchObject({ slug: COLLECTOR, stale: false, devicesOk: 2 });
     expect(devices.map((d: any) => d.status)).toEqual(["ok", "down", "stale"]);
     expect(devices[0].ports.map((p: any) => p.key)).toEqual(["ether1"]);
     expect(devices[0].ports[0].neighbors).toEqual([]);
+    expect(devices[0].alertsMuted).toBe(false);
     expect(links.map((l: any) => l.id)).toEqual(["l1"]);
+    expect(alerts).toEqual([
+      expect.objectContaining({ id: "al-1", kind: "device_down", deviceId: "d2", ticketId: "t-1", detail: "HPE no responde desde hace 8 min." }),
+    ]);
+    expect(prismaMock.networkLiveAlert.findMany.mock.calls[0][0]).toMatchObject({ where: { resolvedAt: null } });
   });
 
   it("los APs tienen más margen que los switches antes de pasar a 'sin datos'", () => {
@@ -474,6 +483,7 @@ describe("Red en vivo F2: equipos finales", () => {
     ] as any);
     prismaMock.networkLiveDevice.findMany.mockResolvedValue([]);
     prismaMock.networkLiveLink.findMany.mockResolvedValue([]);
+    prismaMock.networkLiveAlert.findMany.mockResolvedValue([]);
     const endpoint = (mac: string, ip: string | null) => ({
       id: mac, collector: COLLECTOR, macAddress: mac, deviceId: "dev-s1", portKey: "ether5", vlan: 200, ipAddress: ip,
       hostname: null, viaDeviceId: null, sharedPort: false, firstSeenAt: new Date(now - 3_600_000), lastSeenAt: new Date(now - 30_000), movedAt: null,

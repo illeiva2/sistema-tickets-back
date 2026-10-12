@@ -1170,6 +1170,8 @@ model NetworkLiveDevice {
   lastPollMs    Int?
   lastPolledAt  DateTime
   lastOkAt      DateTime?
+  // Sin avisos aunque se caiga (equipo de prueba, AP que se sabe apagado).
+  alertsMuted   Boolean   @default(false)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -1178,6 +1180,8 @@ model NetworkLiveDevice {
   linksB       NetworkLiveLink[]     @relation("LiveLinkB")
   endpoints    NetworkLiveEndpoint[] @relation("EndpointDevice")
   viaEndpoints NetworkLiveEndpoint[] @relation("EndpointVia")
+  events       NetworkLiveEvent[]    @relation("EventDevice")
+  alerts       NetworkLiveAlert[]    @relation("AlertDevice")
 
   @@unique([collector, key])
   @@map("network_live_devices")
@@ -1257,6 +1261,51 @@ model NetworkLiveEndpoint {
   @@index([ipAddress])
   @@index([lastSeenAt])
   @@map("network_live_endpoints")
+}
+
+// Historial: lo que cambió en la red, tal como lo vio el back al comparar cada
+// envío con lo guardado (equipo caído o de vuelta, puerto sin enlace, PC que se
+// mudó de puerto…). Sólo se agrega; nunca se borra.
+model NetworkLiveEvent {
+  id           String   @id @default(cuid())
+  collector    String   @db.VarChar(64)
+  at           DateTime @default(now())
+  kind         String   @db.VarChar(32)
+  deviceId     String?
+  portKey      String?  @db.VarChar(64)
+  macAddress   String?  @db.VarChar(17)
+  // El otro extremo: el equipo de enfrente en un enlace nuevo, o de dónde venía un equipo final que se mudó.
+  peerDeviceId String?
+  peerPortKey  String?  @db.VarChar(64)
+  detail       Json?
+
+  device NetworkLiveDevice? @relation("EventDevice", fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([at])
+  @@index([deviceId, at])
+  @@index([peerDeviceId, at])
+  @@index([macAddress, at])
+  @@map("network_live_events")
+}
+
+// Incidente avisado (equipo caído, colector mudo): uno abierto por equipo, con
+// su ticket. Se cierra solo cuando se recupera.
+model NetworkLiveAlert {
+  id             String    @id @default(cuid())
+  collector      String    @db.VarChar(64)
+  kind           String    @db.VarChar(32) // device_down | collector_silent
+  deviceId       String?
+  openedAt       DateTime  @default(now())
+  resolvedAt     DateTime?
+  lastNotifiedAt DateTime?
+  ticketId       String?
+  detail         String?   @db.VarChar(500)
+
+  device NetworkLiveDevice? @relation("AlertDevice", fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([resolvedAt])
+  @@index([deviceId, openedAt])
+  @@map("network_live_alerts")
 }
 
 // Último envío de cada colector: dice si la planta sigue informando aunque
