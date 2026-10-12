@@ -19,6 +19,7 @@ internal sealed class CollectorConfig
     public RouterOsSection RouterOs { get; init; } = new();
     public SnmpSection Snmp { get; init; } = new();
     public UniFiSection? UniFi { get; init; }
+    public EndpointsSection Endpoints { get; init; } = new();
     public List<DeviceEntry> Devices { get; init; } = [];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -115,6 +116,16 @@ internal sealed class CollectorConfig
             }
         }
 
+        if (Endpoints.ExcludeVlans.Any(vlan => vlan is < 1 or > 4094))
+        {
+            errors.Add("Endpoints.ExcludeVlans: las VLAN van de 1 a 4094");
+        }
+
+        if (Endpoints.SharedPortThreshold is < 2 or > 100)
+        {
+            errors.Add("Endpoints.SharedPortThreshold tiene que estar entre 2 y 100");
+        }
+
         if (UniFi is not null)
         {
             if (!Uri.TryCreate(UniFi.Url, UriKind.Absolute, out var unifi) || unifi.Scheme != Uri.UriSchemeHttps)
@@ -177,6 +188,15 @@ internal sealed class UniFiSection
     /// AWS, así que no se hace en todas las corridas.
     /// </summary>
     public int EveryMinutes { get; init; } = 5;
+}
+
+internal sealed class EndpointsSection
+{
+    public bool Enabled { get; init; } = true;
+    /// <summary>VLANs cuyos equipos no se informan (p. ej. la de invitados): son datos de terceros.</summary>
+    public List<int> ExcludeVlans { get; init; } = [];
+    /// <summary>Desde cuántos equipos en un mismo puerto se lo marca como compartido.</summary>
+    public int SharedPortThreshold { get; init; } = 3;
 }
 
 internal sealed class DeviceEntry

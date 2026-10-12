@@ -28,7 +28,20 @@ clientes). También envía los **enlaces** entre equipos, que deduce así:
 2. **LLDP.** Un vecino LLDP o CDP en un puerto es una conexión directa y da el puerto exacto. MNDP
    no cuenta: los MikroTik lo difunden por toda la VLAN.
 
-Las tablas MAC completas no se envían; sólo los enlaces que salen de ellas.
+Desde la versión 0.2 también envía los **equipos finales** (PCs, impresoras, cámaras, teléfonos,
+clientes Wi-Fi): por cada MAC que no es de la infraestructura, el switch y el puerto de acceso
+donde está, la VLAN, la IP (de la tabla ARP del router o de la concesión DHCP) y el nombre que
+pidió por DHCP. Se ubican así:
+
+- Se descartan los puertos que van a otro switch (los de los enlaces, aquellos donde aparece la MAC
+  de un switch o del router) y los agregados `lagNNN`: lo que queda es el puerto de acceso.
+- Si un equipo aparece en varios switches, gana el más profundo del árbol.
+- Las MACs que aparecen en el puerto de un AP son clientes Wi-Fi de ese AP.
+- Un puerto con varios equipos (3 o más) se marca como compartido: suele ser un switch sin gestión
+  o un grabador de cámaras.
+
+Las tablas MAC completas no se envían; sólo los enlaces y dónde está cada equipo final. Los nombres
+DHCP pueden incluir nombres de personas: la pantalla la ven sólo los agentes y administradores.
 
 ## Archivos
 
@@ -88,6 +101,10 @@ La carpeta de datos queda sólo para SYSTEM y Administradores.
 
 Ver `appsettings.example.json`. Por equipo: `Ip`, `Driver` (`routeros` o `snmp`), `Role`
 (`router`, `core` o `access`) y, para los MikroTik, opcionalmente `CertificateSha256`.
+
+La sección `Endpoints` es opcional: `Enabled` (sí por defecto), `ExcludeVlans` (VLANs cuyos
+equipos no se envían; en GRF, la 300 de invitados) y `SharedPortThreshold` (desde cuántos equipos
+un puerto se marca compartido; 3 por defecto).
 
 Los certificados de los MikroTik y del controlador UniFi son autofirmados. Si la configuración trae
 la huella, se exige esa; si no, la primera que se ve queda anotada en `state.json` y desde ahí se

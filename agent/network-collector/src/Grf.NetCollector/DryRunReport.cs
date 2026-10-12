@@ -25,6 +25,21 @@ internal static class DryRunReport
                 $" · {device.PollMs} ms");
         }
 
+        if (payload.Endpoints is { } endpoints)
+        {
+            // Sin nombres ni MACs: el resumen puede terminar en un log o una captura.
+            Console.WriteLine();
+            Console.WriteLine(
+                $"Equipos finales: {endpoints.Count} ({endpoints.Count(endpoint => endpoint.Via is null)} cableados, " +
+                $"{endpoints.Count(endpoint => endpoint.Via is not null)} por Wi-Fi) · {endpoints.Count(endpoint => endpoint.Ip is not null)} con IP · " +
+                $"{endpoints.Count(endpoint => endpoint.Hostname is not null)} con nombre DHCP · " +
+                $"{endpoints.Where(endpoint => endpoint.Shared == true).Select(endpoint => (endpoint.Device, endpoint.Port)).Distinct().Count()} puertos compartidos");
+            foreach (var group in endpoints.GroupBy(endpoint => endpoint.Device).OrderByDescending(group => group.Count()))
+            {
+                Console.WriteLine($"  {names.GetValueOrDefault(group.Key, group.Key),-28} {group.Count(),4} equipos en {group.Select(endpoint => endpoint.Port).Distinct().Count()} puertos");
+            }
+        }
+
         Console.WriteLine();
         Console.WriteLine($"Enlaces deducidos: {payload.Links.Count}");
         foreach (var link in payload.Links)

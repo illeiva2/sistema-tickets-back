@@ -45,6 +45,9 @@ internal sealed class RouterOsPoller(RouterOsSection settings, string? password,
                 BridgeHosts = api.TryPrint("/interface/bridge/host/print", "=.proplist=mac-address,on-interface,vid,local") ?? [],
                 Arp = entry.Role == "router" ? api.TryPrint("/ip/arp/print", "=.proplist=address,mac-address,interface") ?? [] : [],
                 Vlans = entry.Role == "router" ? api.TryPrint("/interface/vlan/print", "=.proplist=name,vlan-id") ?? [] : [],
+                DhcpLeases = entry.Role == "router"
+                    ? api.TryPrint("/ip/dhcp-server/lease/print", "=.proplist=address,active-address,mac-address,active-mac-address,host-name,status") ?? []
+                    : [],
             };
 
             return RouterOsMapping.Build(entry, readout, clock.ElapsedMilliseconds);

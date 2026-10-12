@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
 
@@ -51,12 +52,25 @@ export interface LiveLinkInput {
   source: string;
 }
 
+export interface LiveEndpointInput {
+  mac: string;
+  device: string;
+  port: string;
+  vlan?: number | null;
+  ip?: string | null;
+  hostname?: string | null;
+  via?: string | null;
+  shared?: boolean | null;
+}
+
 export interface CollectorSnapshotInput {
   collector: { version?: string | null; host?: string | null };
   startedAt: string;
   finishedAt: string;
   devices: LiveDeviceInput[];
   links: LiveLinkInput[];
+  /** Ausente en colectores 0.1: en ese caso no se tocan los equipos finales guardados. */
+  endpoints?: LiveEndpointInput[];
 }
 
 export type LiveDeviceStatus = "ok" | "down" | "stale";
@@ -72,6 +86,13 @@ export const COLLECTOR_STALE_AFTER_MS = 3 * 60_000;
 export const LINK_VISIBLE_MS = 10 * 60_000;
 /** Un enlace sin cambios se "toca" (lastSeenAt) cada tanto, no en cada envío. */
 export const LINK_TOUCH_MS = 4 * 60_000;
+/** Lo mismo para los equipos finales: son cientos, se tocan cada 5 min si no cambian. */
+export const ENDPOINT_TOUCH_MS = 5 * 60_000;
+/** Un equipo final que no aparece hace más de 10 min deja de mostrarse como conectado. */
+export const ENDPOINT_VISIBLE_MS = 10 * 60_000;
+/** La IP de un agente sólo sirve para reconocerlo si informó hace poco: las IPs se reasignan. */
+export const AGENT_IP_MATCH_MS = 24 * 60 * 60_000;
+export const SEARCH_LIMIT = 25;
 
 const TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
 
@@ -211,6 +232,9 @@ export class NetworkLiveService {
     }
 
     const links = await NetworkLiveService.saveLinks(collector, input.links, receivedAt);
+    const endpoints = input.endpoints
+      ? await NetworkLiveService.saveEndpoints(collector, input.endpoints, receivedAt)
+      : null;
     const devicesOk = input.devices.filter((device) => device.reachable).length;
     const run = {
       version: input.collector.version ?? null,
@@ -227,7 +251,146 @@ export class NetworkLiveService {
       update: run,
     });
 
-    return { devices: input.devices.length, devicesOk, links };
+    return { devices: input.devices.length, devicesOk, links, ...(endpoints === null ? {} : { endpoints }) };
+  }
+
+  /**
+   * Equipos finales: una fila por MAC. Sólo se escribe lo que cambió (otro puerto, otra VLAN,
+   * IP o nombre nuevos); lo que sigue igual se "toca" cada 5 min. Nada se borra.
+   */
+  static async saveEndpoints(collector: string, endpoints: LiveEndpointInput[], receivedAt: Date) {
+    if (!endpoints.length) return 0;
+
+    const keys = [
+      ...new Set(endpoints.flatMap((endpoint) => (endpoint.via ? [endpoint.device, endpoint.via] : [endpoint.device]))),
+    ];
+    const devices = await prisma.networkLiveDevice.findMany({
+      where: { collector, key: { in: keys } },
+      select: { id: true, key: true },
+    });
+    const idByKey = new Map(devices.map((device) => [device.key, device.id]));
+
+    const stored = await prisma.networkLiveEndpoint.findMany({
+      where: { collector },
+      select: {
+        id: true,
+        macAddress: true,
+        deviceId: true,
+        portKey: true,
+        vlan: true,
+        ipAddress: true,
+        hostname: true,
+        viaDeviceId: true,
+        sharedPort: true,
+        lastSeenAt: true,
+      },
+    });
+    const byMac = new Map(stored.map((endpoint) => [endpoint.macAddress, endpoint]));
+
+    const creates: Prisma.NetworkLiveEndpointCreateManyInput[] = [];
+    const updates: Prisma.PrismaPromise<unknown>[] = [];
+    const touched: string[] = [];
+    let saved = 0;
+
+    for (const endpoint of endpoints) {
+      const deviceId = idByKey.get(endpoint.device);
+      if (!deviceId) continue;
+      saved++;
+      const fields = {
+        deviceId,
+        portKey: endpoint.port,
+        vlan: endpoint.vlan ?? null,
+        viaDeviceId: endpoint.via ? (idByKey.get(endpoint.via) ?? null) : null,
+        sharedPort: endpoint.shared ?? false,
+      };
+      const current = byMac.get(endpoint.mac);
+      if (!current) {
+        creates.push({
+          collector,
+          macAddress: endpoint.mac,
+          ...fields,
+          ipAddress: endpoint.ip ?? null,
+          hostname: endpoint.hostname ?? null,
+          lastSeenAt: receivedAt,
+        });
+        continue;
+      }
+
+      // Si esta vez no vino IP o nombre (el ARP o la concesión vencieron) se conserva lo último conocido.
+      const ipAddress = endpoint.ip ?? current.ipAddress;
+      const hostname = endpoint.hostname ?? current.hostname;
+      const moved = current.deviceId !== fields.deviceId || current.portKey !== fields.portKey;
+      const changed =
+        moved ||
+        current.vlan !== fields.vlan ||
+        current.viaDeviceId !== fields.viaDeviceId ||
+        current.sharedPort !== fields.sharedPort ||
+        current.ipAddress !== ipAddress ||
+        current.hostname !== hostname;
+      if (changed) {
+        updates.push(
+          prisma.networkLiveEndpoint.update({
+            where: { id: current.id },
+            data: { ...fields, ipAddress, hostname, lastSeenAt: receivedAt, ...(moved ? { movedAt: receivedAt } : {}) },
+          }),
+        );
+      } else if (receivedAt.getTime() - current.lastSeenAt.getTime() >= ENDPOINT_TOUCH_MS) {
+        touched.push(current.id);
+      }
+    }
+
+    if (creates.length) {
+      await prisma.networkLiveEndpoint.createMany({ data: creates, skipDuplicates: true });
+    }
+    for (let index = 0; index < updates.length; index += 50) {
+      await prisma.$transaction(updates.slice(index, index + 50));
+    }
+    if (touched.length) {
+      await prisma.networkLiveEndpoint.updateMany({
+        where: { id: { in: touched } },
+        data: { lastSeenAt: receivedAt },
+      });
+    }
+    return saved;
+  }
+
+  /**
+   * Agentes de PC que corresponden a estos equipos finales: por MAC (lo seguro) o, si no, por IP
+   * cuando el agente informó hace poco.
+   */
+  static async agentsFor(endpoints: { macAddress: string; ipAddress: string | null }[], now: Date) {
+    const macs = [...new Set(endpoints.map((endpoint) => endpoint.macAddress))];
+    const ips = [...new Set(endpoints.map((endpoint) => endpoint.ipAddress).filter((ip): ip is string => Boolean(ip)))];
+    if (!macs.length && !ips.length) return { byMac: new Map(), byIp: new Map() };
+
+    const agents = await prisma.agentDevice.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        OR: [
+          ...(macs.length ? [{ primaryMac: { in: macs } }] : []),
+          ...(ips.length ? [{ primaryIp: { in: ips } }] : []),
+        ],
+      },
+      select: { id: true, hostname: true, loggedInUser: true, primaryMac: true, primaryIp: true, lastSeenAt: true, assetId: true },
+    });
+
+    type AgentSummary = { id: string; hostname: string; loggedInUser: string | null; assetId: string | null };
+    const summary = (agent: (typeof agents)[number]): AgentSummary => ({
+      id: agent.id,
+      hostname: agent.hostname,
+      loggedInUser: agent.loggedInUser,
+      assetId: agent.assetId,
+    });
+    const byMac = new Map<string, AgentSummary>();
+    const byIp = new Map<string, AgentSummary>();
+    for (const agent of agents) {
+      if (agent.primaryMac) byMac.set(agent.primaryMac.toUpperCase(), summary(agent));
+      if (agent.primaryIp && agent.lastSeenAt && now.getTime() - agent.lastSeenAt.getTime() <= AGENT_IP_MATCH_MS) {
+        byIp.set(agent.primaryIp, summary(agent));
+      }
+    }
+    return { byMac, byIp };
   }
 
   static async saveDevice(
@@ -393,6 +556,17 @@ export class NetworkLiveService {
 
     const lastReceived = new Map(collectors.map((c) => [c.slug, c.lastReceivedAt.getTime()]));
 
+    // Equipos finales conectados ahora: vistos en el último rato respecto del último envío.
+    const newest = collectors.length ? Math.max(...collectors.map((c) => c.lastReceivedAt.getTime())) : null;
+    const endpoints =
+      newest === null
+        ? []
+        : await prisma.networkLiveEndpoint.findMany({
+            where: { lastSeenAt: { gte: new Date(newest - ENDPOINT_VISIBLE_MS) } },
+            orderBy: [{ deviceId: "asc" }, { portKey: "asc" }, { macAddress: "asc" }],
+          });
+    const agents = await NetworkLiveService.agentsFor(endpoints, now);
+
     return {
       generatedAt: now.toISOString(),
       collectors: collectors.map((c) => ({
@@ -456,6 +630,100 @@ export class NetworkLiveService {
           firstSeenAt: link.firstSeenAt.toISOString(),
           lastSeenAt: link.lastSeenAt.toISOString(),
         })),
+      endpoints: endpoints.map((endpoint) => NetworkLiveService.endpointView(endpoint, agents)),
+    };
+  }
+
+  static endpointView(
+    endpoint: Prisma.NetworkLiveEndpointGetPayload<object>,
+    agents: Awaited<ReturnType<typeof NetworkLiveService.agentsFor>>,
+  ) {
+    const agent =
+      agents.byMac.get(endpoint.macAddress) ?? (endpoint.ipAddress ? agents.byIp.get(endpoint.ipAddress) : undefined);
+    return {
+      mac: endpoint.macAddress,
+      deviceId: endpoint.deviceId,
+      portKey: endpoint.portKey,
+      vlan: endpoint.vlan,
+      ip: endpoint.ipAddress,
+      hostname: endpoint.hostname,
+      viaDeviceId: endpoint.viaDeviceId,
+      shared: endpoint.sharedPort,
+      firstSeenAt: endpoint.firstSeenAt.toISOString(),
+      lastSeenAt: endpoint.lastSeenAt.toISOString(),
+      movedAt: endpoint.movedAt?.toISOString() ?? null,
+      agent: agent ?? null,
+    };
+  }
+
+  // ─── Búsqueda ("¿dónde está X?") ────────────────────────────────────────────
+
+  /**
+   * Busca equipos finales por MAC, IP, nombre DHCP, nombre de la PC o usuario logueado (estos
+   * dos, vía el agente), incluidos los que ya no están conectados: devuelve dónde se los vio por
+   * última vez.
+   */
+  static async search(query: string, now = new Date()) {
+    const text = query.trim();
+    const compact = text.replace(/[.\-:\s]/g, "").toUpperCase();
+    const mac = /^[0-9A-F]{12}$/.test(compact) ? compact.match(/.{2}/g)!.join(":") : null;
+    const ip = isIP(text) !== 0 ? text : null;
+
+    const agentMatches = mac || ip
+      ? []
+      : await prisma.agentDevice.findMany({
+          where: {
+            isActive: true,
+            deletedAt: null,
+            OR: [
+              { hostname: { contains: text, mode: "insensitive" } },
+              { loggedInUser: { contains: text, mode: "insensitive" } },
+            ],
+          },
+          select: { primaryMac: true, primaryIp: true },
+          take: 50,
+        });
+    const agentMacs = agentMatches.map((agent) => agent.primaryMac).filter((value): value is string => Boolean(value));
+    const agentIps = ip
+      ? (
+          await prisma.agentDevice.findMany({
+            where: { isActive: true, deletedAt: null, primaryIp: ip },
+            select: { primaryMac: true },
+            take: 10,
+          })
+        )
+          .map((agent) => agent.primaryMac)
+          .filter((value): value is string => Boolean(value))
+      : [];
+
+    const conditions: Prisma.NetworkLiveEndpointWhereInput[] = [];
+    if (mac) conditions.push({ macAddress: mac });
+    if (ip) conditions.push({ ipAddress: ip });
+    if (!mac && !ip) conditions.push({ hostname: { contains: text, mode: "insensitive" } });
+    const macsFromAgents = [...agentMacs, ...agentIps];
+    if (macsFromAgents.length) conditions.push({ macAddress: { in: macsFromAgents } });
+
+    const found = await prisma.networkLiveEndpoint.findMany({
+      where: { OR: conditions },
+      orderBy: { lastSeenAt: "desc" },
+      take: SEARCH_LIMIT,
+      include: { device: { select: { id: true, name: true, role: true } } },
+    });
+    const collectors = await prisma.networkCollector.findMany({ select: { slug: true, lastReceivedAt: true } });
+    const lastReceived = new Map(collectors.map((c) => [c.slug, c.lastReceivedAt.getTime()]));
+    const agents = await NetworkLiveService.agentsFor(found, now);
+
+    return {
+      query: text,
+      results: found.map((endpoint) => {
+        const last = lastReceived.get(endpoint.collector);
+        return {
+          ...NetworkLiveService.endpointView(endpoint, agents),
+          deviceName: endpoint.device.name,
+          deviceRole: endpoint.device.role,
+          online: last !== undefined && endpoint.lastSeenAt.getTime() >= last - ENDPOINT_VISIBLE_MS,
+        };
+      }),
     };
   }
 }

@@ -1,8 +1,9 @@
 import { NextFunction, Request, Response } from "express";
+import { z } from "zod";
 import { ApiError } from "../lib/errors";
 import { validate } from "../middleware/validation";
 import NetworkLiveService, { CollectorSnapshotInput } from "../services/networkLive.service";
-import { collectorSnapshotSchema } from "../validations/networkLive";
+import { collectorSnapshotSchema, networkLiveSearchSchema } from "../validations/networkLive";
 
 export class NetworkLiveController {
   /** Envío del colector de la planta: credencial de servicio, no una persona. */
@@ -19,6 +20,18 @@ export class NetworkLiveController {
           req.body as CollectorSnapshotInput,
         );
         res.json({ success: true, data: result });
+      } catch (error) {
+        next(error);
+      }
+    },
+  ];
+
+  /** "¿Dónde está X?": por MAC, IP, nombre DHCP, nombre de la PC o usuario logueado. */
+  static search = [
+    validate(z.object({ query: networkLiveSearchSchema })),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        res.json({ success: true, data: await NetworkLiveService.search(String(req.query.q)) });
       } catch (error) {
         next(error);
       }

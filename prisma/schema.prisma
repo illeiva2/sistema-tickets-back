@@ -1173,9 +1173,11 @@ model NetworkLiveDevice {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  ports  NetworkLivePort[]
-  linksA NetworkLiveLink[] @relation("LiveLinkA")
-  linksB NetworkLiveLink[] @relation("LiveLinkB")
+  ports        NetworkLivePort[]
+  linksA       NetworkLiveLink[]     @relation("LiveLinkA")
+  linksB       NetworkLiveLink[]     @relation("LiveLinkB")
+  endpoints    NetworkLiveEndpoint[] @relation("EndpointDevice")
+  viaEndpoints NetworkLiveEndpoint[] @relation("EndpointVia")
 
   @@unique([collector, key])
   @@map("network_live_devices")
@@ -1227,6 +1229,34 @@ model NetworkLiveLink {
   @@index([collector])
   @@index([bDeviceId])
   @@map("network_live_links")
+}
+
+// Equipo final (PC, impresora, cámara, teléfono…) visto en un puerto de acceso.
+// Lo deduce el colector de las tablas MAC: una fila por MAC; si se muda de
+// puerto se actualiza y queda movedAt. No se borra: lo que deja de verse se oculta.
+model NetworkLiveEndpoint {
+  id          String    @id @default(cuid())
+  collector   String    @db.VarChar(64)
+  macAddress  String    @db.VarChar(17)
+  deviceId    String // switch donde está conectado
+  portKey     String    @db.VarChar(64)
+  vlan        Int?
+  ipAddress   String?   @db.VarChar(45)
+  hostname    String?   @db.VarChar(120) // nombre que pidió por DHCP
+  viaDeviceId String? // AP por el que se conecta (cliente Wi-Fi)
+  sharedPort  Boolean   @default(false) // el puerto tiene varios equipos detrás
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime
+  movedAt     DateTime? // último cambio de puerto
+
+  device NetworkLiveDevice  @relation("EndpointDevice", fields: [deviceId], references: [id], onDelete: Cascade)
+  via    NetworkLiveDevice? @relation("EndpointVia", fields: [viaDeviceId], references: [id], onDelete: SetNull)
+
+  @@unique([collector, macAddress])
+  @@index([deviceId, portKey])
+  @@index([ipAddress])
+  @@index([lastSeenAt])
+  @@map("network_live_endpoints")
 }
 
 // Último envío de cada colector: dice si la planta sigue informando aunque
