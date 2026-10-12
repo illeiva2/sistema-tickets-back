@@ -1138,6 +1138,114 @@ model NetworkTopologyNodePosition {
 }
 
 // ---------------------------------------------------------------------------
+// RED EN VIVO (colector on-prem)
+// ---------------------------------------------------------------------------
+// Lo que informan los propios equipos (API de RouterOS, SNMP, controlador
+// UniFi), empujado por el colector de la planta con credencial de servicio. Es
+// estado observado, no documentación: no se edita a mano y vive aparte del
+// inventario manual (NetworkDevice) para que el sondeo de cada minuto no choque
+// con las ediciones de las personas.
+
+// Equipo visto por un colector. La clave es estable dentro del colector: la IP
+// de gestión para router y switches, "ap-<mac>" para los APs.
+model NetworkLiveDevice {
+  id            String    @id @default(cuid())
+  collector     String    @db.VarChar(64) // slug del ServiceClient que lo informa
+  key           String    @db.VarChar(120)
+  source        String    @db.VarChar(16) // routeros | snmp | unifi
+  role          String    @db.VarChar(16) // router | core | access | ap
+  name          String    @db.VarChar(120)
+  managementIp  String?   @db.VarChar(45)
+  macAddress    String?   @db.VarChar(17)
+  vendor        String?   @db.VarChar(60)
+  model         String?   @db.VarChar(80)
+  firmware      String?   @db.VarChar(80)
+  serialNumber  String?   @db.VarChar(80)
+  uptimeSeconds Int?
+  clients       Int? // APs: clientes Wi-Fi asociados
+  // Puertos del último envío: los que dejan de aparecer no se borran, se ocultan.
+  portKeys      String[]  @default([])
+  reachable     Boolean   @default(false)
+  lastError     String?   @db.VarChar(300)
+  lastPollMs    Int?
+  lastPolledAt  DateTime
+  lastOkAt      DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  ports  NetworkLivePort[]
+  linksA NetworkLiveLink[] @relation("LiveLinkA")
+  linksB NetworkLiveLink[] @relation("LiveLinkB")
+
+  @@unique([collector, key])
+  @@map("network_live_devices")
+}
+
+// Puerto físico con su último estado. Se reescribe sólo cuando algo cambia;
+// linkChangedAt es el último cambio de enlace o velocidad que vio el back.
+model NetworkLivePort {
+  id            String    @id @default(cuid())
+  deviceId      String
+  key           String    @db.VarChar(64) // nombre de fábrica o ifIndex: no cambia si renombran el puerto
+  name          String    @db.VarChar(120)
+  description   String?   @db.VarChar(200)
+  position      Int
+  kind          String    @db.VarChar(16) // copper | sfp | sfpplus | combo | wireless | other
+  adminUp       Boolean
+  linkUp        Boolean
+  speedMbps     Int?
+  fullDuplex    Boolean?
+  pvid          Int?
+  neighbors     Json? // vecinos LLDP/MNDP vistos en el puerto
+  linkChangedAt DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  device NetworkLiveDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, key])
+  @@map("network_live_ports")
+}
+
+// Enlace entre dos equipos, deducido por el colector (LLDP o tablas MAC). Cada
+// envío trae el conjunto completo; los que dejan de aparecer quedan con su
+// lastSeenAt viejo (historial) y la pantalla deja de mostrarlos.
+model NetworkLiveLink {
+  id          String   @id @default(cuid())
+  collector   String   @db.VarChar(64)
+  aDeviceId   String
+  aPorts      String[]
+  bDeviceId   String
+  bPorts      String[]
+  source      String   @db.VarChar(16) // lldp | fdb
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  aDevice NetworkLiveDevice @relation("LiveLinkA", fields: [aDeviceId], references: [id], onDelete: Cascade)
+  bDevice NetworkLiveDevice @relation("LiveLinkB", fields: [bDeviceId], references: [id], onDelete: Cascade)
+
+  @@unique([aDeviceId, bDeviceId])
+  @@index([collector])
+  @@index([bDeviceId])
+  @@map("network_live_links")
+}
+
+// Último envío de cada colector: dice si la planta sigue informando aunque
+// ningún equipo cambie.
+model NetworkCollector {
+  slug           String   @id @db.VarChar(64)
+  version        String?  @db.VarChar(32)
+  host           String?  @db.VarChar(64)
+  lastStartedAt  DateTime
+  lastFinishedAt DateTime
+  lastReceivedAt DateTime
+  devicesTotal   Int
+  devicesOk      Int
+  createdAt      DateTime @default(now())
+
+  @@map("network_collectors")
+}
+
+// ---------------------------------------------------------------------------
 // MÓDULO AGENTE DE MONITOREO + ACCESO REMOTO
 // ---------------------------------------------------------------------------
 

@@ -1,0 +1,6 @@
+artifacts/
+**/bin/
+**/obj/
+# La configuración real (IPs y huellas de la planta) vive sólo en el servidor.
+appsettings.json
+*.local.json
