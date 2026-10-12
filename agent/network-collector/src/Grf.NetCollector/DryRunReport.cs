@@ -40,6 +40,20 @@ internal static class DryRunReport
             }
         }
 
+        if (payload.WifiClients is { } wifi)
+        {
+            // También sin nombres ni MACs.
+            Console.WriteLine();
+            Console.WriteLine(
+                $"Clientes Wi-Fi (UniFi): {wifi.Count} · " +
+                string.Join(" · ", wifi.GroupBy(client => client.Band ?? "?").OrderBy(group => group.Key, StringComparer.Ordinal).Select(group => $"{group.Count()} en {group.Key} GHz")) +
+                $" · {wifi.Count(client => client.Signal is < -75)} con señal débil (< -75 dBm)");
+            foreach (var group in wifi.GroupBy(client => client.Ap).OrderByDescending(group => group.Count()))
+            {
+                Console.WriteLine($"  {names.GetValueOrDefault(group.Key, group.Key),-40} {group.Count(),3} clientes");
+            }
+        }
+
         Console.WriteLine();
         Console.WriteLine($"Enlaces deducidos: {payload.Links.Count}");
         foreach (var link in payload.Links)

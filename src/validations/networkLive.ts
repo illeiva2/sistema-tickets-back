@@ -12,6 +12,7 @@ export const MAX_LIVE_DEVICES = 300;
 export const MAX_LIVE_PORTS = 1000;
 export const MAX_LIVE_LINKS = 2000;
 export const MAX_LIVE_ENDPOINTS = 10_000;
+export const MAX_LIVE_WIFI_CLIENTS = 5_000;
 
 // Lo que mandan los equipos se limpia en vez de rechazarse: un nombre con un
 // carácter de control o un modelo demasiado largo no puede tirar abajo el envío
@@ -127,6 +128,22 @@ const endpointSchema = z.object({
   shared: z.boolean().nullish(),
 });
 
+/** Cliente Wi-Fi según UniFi: lo raro (banda desconocida, señal positiva) queda en null. */
+const wifiClientSchema = z.object({
+  mac: requiredMac,
+  ap: requiredText(120),
+  ssid: optionalText(64),
+  band: z.enum(["2.4", "5", "6"]).nullish().catch(null),
+  channel: optionalInt(1, 299).catch(null),
+  signal: optionalInt(-130, -1).catch(null),
+  txKbps: optionalInt(0, 100_000_000).catch(null),
+  rxKbps: optionalInt(0, 100_000_000).catch(null),
+  uptimeSeconds: optionalInt(0, 2_000_000_000).catch(null),
+  hostname: optionalText(120),
+  ip: lenientIp.optional(),
+  vlan: optionalInt(1, 4094).catch(null),
+});
+
 export const networkLiveSearchSchema = z
   .object({
     q: z.string().trim().min(2, "Escribí al menos 2 caracteres").max(100),
@@ -190,6 +207,16 @@ export const collectorSnapshotSchema = z.object({
         return endpoints.filter(
           (endpoint) => endpoint.mac !== null && !seen.has(endpoint.mac) && seen.add(endpoint.mac),
         );
+      }),
+    // Sólo en las corridas que leen UniFi (cada 5 min); ausente = no se toca lo guardado.
+    wifiClients: z
+      .array(wifiClientSchema)
+      .max(MAX_LIVE_WIFI_CLIENTS)
+      .optional()
+      .transform((clients) => {
+        if (!clients) return clients;
+        const seen = new Set<string>();
+        return clients.filter((client) => client.mac !== null && !seen.has(client.mac) && seen.add(client.mac));
       }),
   }),
 });

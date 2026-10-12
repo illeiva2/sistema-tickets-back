@@ -27,6 +27,7 @@ internal static class Program
             ("SNMP SwOS: la tabla MAC sobre agregados queda como lagNNN", SnmpSwOsLagTest),
             ("Modelo y firmware de SwOS, HPE y TP-Link", DescribeModelTest),
             ("UniFi: APs, estado, modelo comercial y vecino LLDP", UniFiMappingTest),
+            ("UniFi: clientes Wi-Fi sin cableados, invitados ni VLAN excluida", UniFiClientsTest),
             ("Enlaces: árbol por tablas MAC y LLDP con el puerto exacto", LinkInferenceTreeTest),
             ("Enlaces: un AP de la última lectura de UniFi se ubica igual", LinkInferenceCachedApTest),
             ("Enlaces: el LLDP del AP sin puerto reconocible conserva el de la tabla MAC", LinkInferenceApLldpKeepsFdbPortTest),
@@ -377,6 +378,40 @@ internal static class Program
         Assert.Equal("eth0", cached.Port);
         Assert.Equal("74:4D:28:2C:B8:81", cached.Neighbor.Mac);
         Assert.Null(cache[1].Neighbors);
+        return Task.CompletedTask;
+    }
+
+    private static Task UniFiClientsTest()
+    {
+        using var document = JsonDocument.Parse("""
+            [
+              { "mac": "aa:bb:cc:00:00:01", "is_wired": true, "ip": "192.168.100.41" },
+              { "mac": "aa:bb:cc:00:00:02", "is_wired": false, "is_guest": true, "ap_mac": "fc:ec:da:3d:af:54", "essid": "GRF_Publico" },
+              { "mac": "aa:bb:cc:00:00:03", "is_wired": false, "ap_mac": "fc:ec:da:3d:af:54", "essid": "GRF", "vlan": 300 },
+              { "mac": "aa:bb:cc:00:00:04", "is_wired": false, "ap_mac": "FC:EC:DA:3D:AF:54", "essid": "GRF_Privado", "radio": "na",
+                "channel": 44, "signal": -61, "tx_rate": 866700, "rx_rate": 780000, "uptime": 3600, "hostname": "notebook-ana", "ip": "192.168.110.20", "vlan": 200 },
+              { "mac": "aa:bb:cc:00:00:05", "is_wired": false, "ap_mac": "74:ac:b9:c3:dc:34", "essid": "AERO", "radio": "ng",
+                "channel": 6, "signal": -82, "name": "Lector depósito", "hostname": "esp32-01" },
+              { "mac": "aa:bb:cc:00:00:04", "is_wired": false, "ap_mac": "74:ac:b9:c3:dc:34", "essid": "GRF" },
+              { "mac": "aa:bb:cc:00:00:06", "is_wired": false, "essid": "GRF" },
+              { "mac": "aa:bb:cc:00:00:07", "ap_mac": "74:ac:b9:c3:dc:34" }
+            ]
+            """);
+        var clients = UniFiMapping.BuildClients(document.RootElement, new HashSet<int> { 300 });
+        // Fuera: cableado, invitado, VLAN 300, MAC repetida, sin AP y sin is_wired.
+        Assert.SequenceEqual(new[] { "AA:BB:CC:00:00:05", "AA:BB:CC:00:00:04" }, clients.Select(client => client.Mac));
+        var notebook = clients.Single(client => client.Mac == "AA:BB:CC:00:00:04");
+        Assert.Equal("ap-fc:ec:da:3d:af:54", notebook.Ap);
+        Assert.Equal("5", notebook.Band);
+        Assert.Equal(44, notebook.Channel);
+        Assert.Equal(-61, notebook.Signal);
+        Assert.Equal(866700, notebook.TxKbps);
+        Assert.Equal("notebook-ana", notebook.Hostname);
+        Assert.Equal(200, notebook.Vlan);
+        var reader = clients.Single(client => client.Mac == "AA:BB:CC:00:00:05");
+        Assert.Equal("2.4", reader.Band);
+        Assert.Equal("Lector depósito", reader.Hostname);
+        Assert.Equal("ap-74:ac:b9:c3:dc:34", reader.Ap);
         return Task.CompletedTask;
     }
 
@@ -764,9 +799,11 @@ internal static class Program
             DateTimeOffset.Parse("2026-10-12T15:00:05Z", System.Globalization.CultureInfo.InvariantCulture),
             [new DeviceSnapshot { Key = "10.0.0.5", Source = "routeros", Role = "access", Reachable = false, Error = "sin conexión" }],
             [new LinkSnapshot(new LinkEnd("10.0.0.11", ["3"]), new LinkEnd("10.0.0.5", []), "fdb")],
-            [new EndpointSnapshot { Mac = "AA:BB:CC:00:00:01", Device = "10.0.0.3", Port = "ether5", Vlan = 200 }]);
+            [new EndpointSnapshot { Mac = "AA:BB:CC:00:00:01", Device = "10.0.0.3", Port = "ether5", Vlan = 200 }],
+            [new WifiClientSnapshot { Mac = "AA:BB:CC:00:00:04", Ap = "ap-fc:ec:da:3d:af:54", Band = "5", Signal = -61, TxKbps = 866700 }]);
         var json = JsonSerializer.Serialize(payload, SnapshotJson.Options);
         Assert.True(json.Contains("\"endpoints\":[{\"mac\":\"AA:BB:CC:00:00:01\",\"device\":\"10.0.0.3\",\"port\":\"ether5\",\"vlan\":200}]", StringComparison.Ordinal), json);
+        Assert.True(json.Contains("\"wifiClients\":[{\"mac\":\"AA:BB:CC:00:00:04\",\"ap\":\"ap-fc:ec:da:3d:af:54\",\"band\":\"5\",\"signal\":-61,\"txKbps\":866700}]", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"startedAt\":\"2026-10-12T15:00:00+00:00\"", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"reachable\":false", StringComparison.Ordinal), json);
         Assert.True(json.Contains("\"links\":[{\"a\":{\"device\":\"10.0.0.11\",\"ports\":[\"3\"]}", StringComparison.Ordinal), json);

@@ -370,6 +370,7 @@ describe("Pantalla Red en vivo", () => {
       { id: "l2", collector: COLLECTOR, aDeviceId: "d1", aPorts: ["ether2"], bDeviceId: "d3", bPorts: ["eth0"], source: "lldp", firstSeenAt: ago(86_400_000), lastSeenAt: ago(60 * 60_000) },
     ] as any);
     prismaMock.networkLiveEndpoint.findMany.mockResolvedValue([]);
+    prismaMock.networkLiveWifiClient.findMany.mockResolvedValue([]);
     prismaMock.networkLiveAlert.findMany.mockResolvedValue([
       { id: "al-1", collector: COLLECTOR, kind: "device_down", deviceId: "d2", openedAt: ago(5 * 60_000), resolvedAt: null, lastNotifiedAt: ago(5 * 60_000), ticketId: "t-1", detail: "HPE no responde desde hace 8 min." },
     ] as any);
@@ -484,6 +485,7 @@ describe("Red en vivo F2: equipos finales", () => {
     prismaMock.networkLiveDevice.findMany.mockResolvedValue([]);
     prismaMock.networkLiveLink.findMany.mockResolvedValue([]);
     prismaMock.networkLiveAlert.findMany.mockResolvedValue([]);
+    prismaMock.networkLiveWifiClient.findMany.mockResolvedValue([]);
     const endpoint = (mac: string, ip: string | null) => ({
       id: mac, collector: COLLECTOR, macAddress: mac, deviceId: "dev-s1", portKey: "ether5", vlan: 200, ipAddress: ip,
       hostname: null, viaDeviceId: null, sharedPort: false, firstSeenAt: new Date(now - 3_600_000), lastSeenAt: new Date(now - 30_000), movedAt: null,

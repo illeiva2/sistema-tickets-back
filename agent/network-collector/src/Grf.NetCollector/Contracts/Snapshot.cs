@@ -12,7 +12,8 @@ internal sealed record SnapshotPayload(
     DateTimeOffset FinishedAt,
     IReadOnlyList<DeviceSnapshot> Devices,
     IReadOnlyList<LinkSnapshot> Links,
-    IReadOnlyList<EndpointSnapshot>? Endpoints = null);
+    IReadOnlyList<EndpointSnapshot>? Endpoints = null,
+    IReadOnlyList<WifiClientSnapshot>? WifiClients = null);
 
 internal sealed record CollectorInfo(string Version, string Host);
 
@@ -78,6 +79,30 @@ internal sealed record EndpointSnapshot
     public string? Hostname { get; init; }
     public string? Via { get; init; }
     public bool? Shared { get; init; }
+}
+
+/// <summary>
+/// Cliente Wi-Fi según el controlador UniFi: a qué AP y red está asociado y con qué señal. Sólo
+/// lo necesario para ubicarlo y ver si se conecta bien; sin invitados ni datos de uso.
+/// </summary>
+internal sealed record WifiClientSnapshot
+{
+    public required string Mac { get; init; }
+    /// <summary>Clave del AP (la misma que en los equipos: "ap-" + MAC).</summary>
+    public required string Ap { get; init; }
+    public string? Ssid { get; init; }
+    /// <summary>"2.4", "5" o "6" (GHz).</summary>
+    public string? Band { get; init; }
+    public int? Channel { get; init; }
+    /// <summary>Señal en dBm (negativa: -50 es muy buena, -80 mala).</summary>
+    public int? Signal { get; init; }
+    public int? TxKbps { get; init; }
+    public int? RxKbps { get; init; }
+    /// <summary>Hace cuánto está asociado.</summary>
+    public long? UptimeSeconds { get; init; }
+    public string? Hostname { get; init; }
+    public string? Ip { get; init; }
+    public int? Vlan { get; init; }
 }
 
 internal sealed record LinkEnd(string Device, IReadOnlyList<string> Ports);

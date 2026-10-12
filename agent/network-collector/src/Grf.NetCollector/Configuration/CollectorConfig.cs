@@ -188,6 +188,11 @@ internal sealed class UniFiSection
     /// AWS, así que no se hace en todas las corridas.
     /// </summary>
     public int EveryMinutes { get; init; } = 5;
+    /// <summary>
+    /// Leer también los clientes Wi-Fi (red, banda, señal) en cada lectura. Nunca los invitados
+    /// ni los de las VLANs excluidas en Endpoints.
+    /// </summary>
+    public bool ReadClients { get; init; } = true;
 }
 
 internal sealed class EndpointsSection

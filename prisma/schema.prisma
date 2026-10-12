@@ -1182,6 +1182,7 @@ model NetworkLiveDevice {
   viaEndpoints NetworkLiveEndpoint[] @relation("EndpointVia")
   events       NetworkLiveEvent[]    @relation("EventDevice")
   alerts       NetworkLiveAlert[]    @relation("AlertDevice")
+  wifiClients  NetworkLiveWifiClient[] @relation("WifiClientAp")
 
   @@unique([collector, key])
   @@map("network_live_devices")
@@ -1286,6 +1287,35 @@ model NetworkLiveEvent {
   @@index([peerDeviceId, at])
   @@index([macAddress, at])
   @@map("network_live_events")
+}
+
+// Cliente Wi-Fi según el controlador UniFi (cada 5 min): a qué AP y red está
+// asociado y con qué señal. Una fila por MAC con lo último; sin invitados ni
+// datos de uso. No se borra: lo que deja de verse se oculta por lastSeenAt.
+model NetworkLiveWifiClient {
+  id            String   @id @default(cuid())
+  collector     String   @db.VarChar(64)
+  macAddress    String   @db.VarChar(17)
+  apDeviceId    String
+  ssid          String?  @db.VarChar(64)
+  band          String?  @db.VarChar(8) // 2.4 | 5 | 6 (GHz)
+  channel       Int?
+  signal        Int? // dBm
+  txKbps        Int?
+  rxKbps        Int?
+  uptimeSeconds Int?
+  hostname      String?  @db.VarChar(120)
+  ipAddress     String?  @db.VarChar(45)
+  vlan          Int?
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime
+
+  ap NetworkLiveDevice @relation("WifiClientAp", fields: [apDeviceId], references: [id], onDelete: Cascade)
+
+  @@unique([collector, macAddress])
+  @@index([apDeviceId])
+  @@index([lastSeenAt])
+  @@map("network_live_wifi_clients")
 }
 
 // Incidente avisado (equipo caído, colector mudo): uno abierto por equipo, con

@@ -16,8 +16,11 @@ switches y los APs, y lo envía al sistema de tickets para la pantalla **IT → 
 
 Cada minuto, por cada equipo: nombre, modelo, firmware, serie, uptime y sus puertos físicos
 (enlace, velocidad, dúplex, VLAN nativa, descripción y vecinos LLDP/MNDP). Cada 5 minutos se suma
-la lista de APs del controlador UniFi (estado, modelo y cantidad de clientes; nunca datos de los
-clientes). También envía los **enlaces** entre equipos, que deduce así:
+la lista de APs del controlador UniFi (estado, modelo y cantidad de clientes) y, desde la 0.3, los
+**clientes Wi-Fi**: a qué AP y red están asociados, banda, canal, señal, velocidad, hace cuánto,
+nombre e IP. Nunca los invitados (`is_guest`) ni los de las VLANs excluidas en `Endpoints`, y nada
+de uso (bytes, sitios, aplicaciones). Se apaga con `"UniFi": { "ReadClients": false }`. También
+envía los **enlaces** entre equipos, que deduce así:
 
 1. **Tablas MAC.** El colector consulta a cada equipo desde el servidor, así que la respuesta de
    cada uno sube por todos los switches que tiene arriba hasta el router. Cada switch aprende la

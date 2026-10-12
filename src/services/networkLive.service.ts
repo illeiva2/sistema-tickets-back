@@ -64,6 +64,21 @@ export interface LiveEndpointInput {
   shared?: boolean | null;
 }
 
+export interface LiveWifiClientInput {
+  mac: string;
+  ap: string;
+  ssid?: string | null;
+  band?: string | null;
+  channel?: number | null;
+  signal?: number | null;
+  txKbps?: number | null;
+  rxKbps?: number | null;
+  uptimeSeconds?: number | null;
+  hostname?: string | null;
+  ip?: string | null;
+  vlan?: number | null;
+}
+
 export interface CollectorSnapshotInput {
   collector: { version?: string | null; host?: string | null };
   startedAt: string;
@@ -72,6 +87,8 @@ export interface CollectorSnapshotInput {
   links: LiveLinkInput[];
   /** Ausente en colectores 0.1: en ese caso no se tocan los equipos finales guardados. */
   endpoints?: LiveEndpointInput[];
+  /** Sólo en las corridas que leen UniFi (colector 0.3+); ausente = no se toca lo guardado. */
+  wifiClients?: LiveWifiClientInput[];
 }
 
 export type LiveDeviceStatus = "ok" | "down" | "stale";
@@ -93,6 +110,8 @@ export const ENDPOINT_TOUCH_MS = 5 * 60_000;
 export const ENDPOINT_VISIBLE_MS = 10 * 60_000;
 /** La IP de un agente sólo sirve para reconocerlo si informó hace poco: las IPs se reasignan. */
 export const AGENT_IP_MATCH_MS = 24 * 60 * 60_000;
+/** Los clientes Wi-Fi llegan con UniFi cada 5 min: se muestran mientras sigan en la última lectura. */
+export const WIFI_VISIBLE_MS = 12 * 60_000;
 export const SEARCH_LIMIT = 25;
 
 const TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
@@ -236,6 +255,9 @@ export class NetworkLiveService {
     const endpoints = input.endpoints
       ? await NetworkLiveService.saveEndpoints(collector, input.endpoints, receivedAt)
       : null;
+    const wifiClients = input.wifiClients
+      ? await NetworkLiveService.saveWifiClients(collector, input.wifiClients, receivedAt)
+      : null;
     const devicesOk = input.devices.filter((device) => device.reachable).length;
     const run = {
       version: input.collector.version ?? null,
@@ -252,7 +274,62 @@ export class NetworkLiveService {
       update: run,
     });
 
-    return { devices: input.devices.length, devicesOk, links, ...(endpoints === null ? {} : { endpoints }) };
+    return {
+      devices: input.devices.length,
+      devicesOk,
+      links,
+      ...(endpoints === null ? {} : { endpoints }),
+      ...(wifiClients === null ? {} : { wifiClients }),
+    };
+  }
+
+  /**
+   * Clientes Wi-Fi: una fila por MAC con lo último que dijo UniFi. Llegan cada 5 min y la señal
+   * cambia en cada lectura, así que se reescriben todos (son decenas). Nada se borra.
+   */
+  static async saveWifiClients(collector: string, clients: LiveWifiClientInput[], receivedAt: Date) {
+    if (!clients.length) return 0;
+
+    const aps = await prisma.networkLiveDevice.findMany({
+      where: { collector, key: { in: [...new Set(clients.map((client) => client.ap))] } },
+      select: { id: true, key: true },
+    });
+    const apId = new Map(aps.map((ap) => [ap.key, ap.id]));
+    const stored = await prisma.networkLiveWifiClient.findMany({
+      where: { collector, macAddress: { in: clients.map((client) => client.mac) } },
+      select: { id: true, macAddress: true },
+    });
+    const storedId = new Map(stored.map((client) => [client.macAddress, client.id]));
+
+    const creates: Prisma.NetworkLiveWifiClientCreateManyInput[] = [];
+    const updates: Prisma.PrismaPromise<unknown>[] = [];
+    for (const client of clients) {
+      const apDeviceId = apId.get(client.ap);
+      if (!apDeviceId) continue;
+      const fields = {
+        apDeviceId,
+        ssid: client.ssid ?? null,
+        band: client.band ?? null,
+        channel: client.channel ?? null,
+        signal: client.signal ?? null,
+        txKbps: client.txKbps ?? null,
+        rxKbps: client.rxKbps ?? null,
+        uptimeSeconds: client.uptimeSeconds ?? null,
+        hostname: client.hostname ?? null,
+        ipAddress: client.ip ?? null,
+        vlan: client.vlan ?? null,
+        lastSeenAt: receivedAt,
+      };
+      const id = storedId.get(client.mac);
+      if (id) updates.push(prisma.networkLiveWifiClient.update({ where: { id }, data: fields }));
+      else creates.push({ collector, macAddress: client.mac, ...fields });
+    }
+
+    if (creates.length) await prisma.networkLiveWifiClient.createMany({ data: creates, skipDuplicates: true });
+    for (let index = 0; index < updates.length; index += 50) {
+      await prisma.$transaction(updates.slice(index, index + 50));
+    }
+    return creates.length + updates.length;
   }
 
   /**
@@ -613,7 +690,15 @@ export class NetworkLiveService {
             where: { lastSeenAt: { gte: new Date(newest - ENDPOINT_VISIBLE_MS) } },
             orderBy: [{ deviceId: "asc" }, { portKey: "asc" }, { macAddress: "asc" }],
           });
-    const agents = await NetworkLiveService.agentsFor(endpoints, now);
+    // Clientes Wi-Fi de la última lectura de UniFi (llega cada 5 min).
+    const wifiClients =
+      newest === null
+        ? []
+        : await prisma.networkLiveWifiClient.findMany({
+            where: { lastSeenAt: { gte: new Date(newest - WIFI_VISIBLE_MS) } },
+            orderBy: [{ apDeviceId: "asc" }, { macAddress: "asc" }],
+          });
+    const agents = await NetworkLiveService.agentsFor([...endpoints, ...wifiClients], now);
 
     return {
       generatedAt: now.toISOString(),
@@ -680,6 +765,27 @@ export class NetworkLiveService {
           lastSeenAt: link.lastSeenAt.toISOString(),
         })),
       endpoints: endpoints.map((endpoint) => NetworkLiveService.endpointView(endpoint, agents)),
+      wifiClients: wifiClients.map((client) => {
+        const agent =
+          agents.byMac.get(client.macAddress) ?? (client.ipAddress ? agents.byIp.get(client.ipAddress) : undefined);
+        return {
+          mac: client.macAddress,
+          apDeviceId: client.apDeviceId,
+          ssid: client.ssid,
+          band: client.band,
+          channel: client.channel,
+          signal: client.signal,
+          txKbps: client.txKbps,
+          rxKbps: client.rxKbps,
+          uptimeSeconds: client.uptimeSeconds,
+          hostname: client.hostname,
+          ip: client.ipAddress,
+          vlan: client.vlan,
+          firstSeenAt: client.firstSeenAt.toISOString(),
+          lastSeenAt: client.lastSeenAt.toISOString(),
+          agent: agent ?? null,
+        };
+      }),
       // Incidentes avisados que siguen abiertos (equipo caído, colector mudo).
       alerts: alerts.map((alert) => ({
         id: alert.id,

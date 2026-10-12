@@ -8,7 +8,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <AssemblyName>GRF.NetCollector</AssemblyName>
     <RootNamespace>Grf.NetCollector</RootNamespace>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Authors>GRF IT</Authors>
     <Description>Colector de red de GRF: lee router, switches y APs en sólo lectura y envía el estado al sistema de tickets.</Description>
