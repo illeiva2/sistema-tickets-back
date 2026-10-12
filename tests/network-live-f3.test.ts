@@ -101,7 +101,7 @@ beforeEach(() => {
     secretHash: sha256(SECRET),
     scopes: ["network:ingest"],
   } as any);
-  prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1" }, { id: "admin-2" }] as any);
+  prismaMock.user.findMany.mockResolvedValue([{ id: "agent-7", role: "AGENT" }, { id: "admin-1", role: "ADMIN" }] as any);
   prismaMock.networkLiveAlert.create.mockImplementation(async (args: any) => ({ id: "alert-new", ...args.data }));
   ticketMock.mockResolvedValue({ id: "ticket-1" });
 });
@@ -378,7 +378,9 @@ describe("Red en vivo F3: vigilancia y avisos", () => {
     ]);
     expect(ticketMock).toHaveBeenCalledWith(expect.objectContaining({ category: "RED", priority: "HIGH", title: "Red: SW no responde" }), "admin-1");
     expect(prismaMock.networkLiveAlert.update).toHaveBeenCalledWith({ where: { id: "alert-new" }, data: { ticketId: "ticket-1" } });
-    expect(pushMock.mock.calls.map((call) => call[0])).toEqual(["admin-1", "admin-2"]);
+    // Avisa a todo IT (ADMIN y AGENT); el ticket lo pide el ADMIN aunque no venga primero.
+    expect(pushMock.mock.calls.map((call) => call[0])).toEqual(["agent-7", "admin-1"]);
+    expect(prismaMock.user.findMany.mock.calls[0][0]).toMatchObject({ where: { role: { in: ["ADMIN", "AGENT"] }, isActive: true, deletedAt: null } });
     expect(pushMock.mock.calls[0][1]).toMatchObject({ title: "Red: SW no responde", url: "/it/network-live" });
   });
 
@@ -427,7 +429,7 @@ describe("Red en vivo F3: vigilancia y avisos", () => {
     expect(pushMock.mock.calls[0][1]).toMatchObject({ title: "Red: SW sigue sin responder" });
 
     vi.clearAllMocks();
-    prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1" }] as any);
+    prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1", role: "ADMIN" }] as any);
     setup({ devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", true)], open: [open(ago(MIN))] });
     expect((await NetworkWatchdog.run(at)).actions).toEqual(["cerrado:device_down:sw"]);
     expect(prismaMock.ticket.update).toHaveBeenCalledWith({ where: { id: "t-1" }, data: { status: "RESOLVED", closedAt: at } });
@@ -449,7 +451,7 @@ describe("Red en vivo F3: vigilancia y avisos", () => {
     expect(ticketMock).toHaveBeenCalledWith(expect.objectContaining({ priority: "HIGH" }), "admin-1");
 
     vi.clearAllMocks();
-    prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1" }] as any);
+    prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1", role: "ADMIN" }] as any);
     setup({
       devices: [dev("router", "router", true), dev("sw", "access", true)],
       open: [{ id: "al-c", collector: COLLECTOR, kind: "collector_silent", deviceId: null, openedAt: ago(20 * MIN), resolvedAt: null, lastNotifiedAt: ago(20 * MIN), ticketId: null, detail: "x" }],
@@ -469,5 +471,17 @@ describe("Red en vivo F3: vigilancia y avisos", () => {
 
     expect((await NetworkWatchdog.run(at)).actions).toEqual(["abierto:device_down:sw"]);
     expect(pushMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("sin ningún ADMIN activo, el ticket lo pide alguien de IT y el aviso sale igual", async () => {
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", true), dev("ap", "ap", false)],
+      events: [{ deviceId: "ap", kind: "device_down", at: ago(AP_DOWN_ALERT_MS + MIN) }],
+    });
+    prismaMock.user.findMany.mockResolvedValue([{ id: "agent-7", role: "AGENT" }] as any);
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["abierto:device_down:ap"]);
+    expect(ticketMock).toHaveBeenCalledWith(expect.objectContaining({ priority: "MEDIUM" }), "agent-7");
+    expect(pushMock.mock.calls.map((call) => call[0])).toEqual(["agent-7"]);
   });
 });

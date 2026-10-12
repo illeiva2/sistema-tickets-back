@@ -1,4 +1,4 @@
-import { TicketCategory, TicketPriority, type NetworkLiveAlert, type Prisma } from "@prisma/client";
+import { TicketCategory, TicketPriority, UserRole, type NetworkLiveAlert, type Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
 import { logger } from "../lib/logger";
 import { deriveDeviceStatus } from "./networkLive.service";
@@ -41,7 +41,7 @@ const duration = (from: Date, now: Date) => {
 /**
  * Vigilancia de Red en vivo: avisa cuando se cae un equipo de red o el colector deja de mandar, y
  * cierra el aviso solo cuando vuelve. Mismo criterio que el watchdog del laboratorio: un ticket por
- * incidente, push a los ADMIN y recordatorio cada 6 h.
+ * incidente (también cuando se cae un AP), push a todo IT (ADMIN y AGENT) y recordatorio cada 6 h.
  *
  * - Sólo avisa las caídas que el historial vio empezar (el evento device_down): lo que ya estaba
  *   caído antes de existir el historial (un AP apagado hace semanas) no dispara nada.
@@ -249,17 +249,21 @@ export class NetworkWatchdog {
     return !alert.lastNotifiedAt || now.getTime() - alert.lastNotifiedAt.getTime() >= RE_NOTIFY_MS;
   }
 
-  private static async admins() {
-    return prisma.user.findMany({ where: { role: "ADMIN", isActive: true, deletedAt: null }, select: { id: true } });
+  /** A quién se avisa: todo IT (ADMIN y AGENT) activo. */
+  private static async recipients() {
+    return prisma.user.findMany({
+      where: { role: { in: [UserRole.ADMIN, UserRole.AGENT] }, isActive: true, deletedAt: null },
+      select: { id: true, role: true },
+    });
   }
 
   private static async push(title: string, body: string) {
-    const admins = await this.admins();
-    if (!admins.length) {
-      logger.error({ title }, "Aviso de red sin ningún ADMIN activo a quien mandarlo");
+    const recipients = await this.recipients();
+    if (!recipients.length) {
+      logger.error({ title }, "Aviso de red sin nadie de IT (ADMIN o AGENT) activo a quien mandarlo");
       return;
     }
-    await Promise.allSettled(admins.map((admin) => PushService.sendToUser(admin.id, { title, body, url: NETWORK_URL })));
+    await Promise.allSettled(recipients.map((user) => PushService.sendToUser(user.id, { title, body, url: NETWORK_URL })));
   }
 
   private static async openAlert(
@@ -273,12 +277,14 @@ export class NetworkWatchdog {
       data: { ...alert, detail: alert.detail.slice(0, 500), openedAt: now, lastNotifiedAt: now },
     });
 
-    const admins = await this.admins();
-    if (admins.length) {
+    // El ticket lo "pide" un ADMIN (como el del laboratorio); si no hay ninguno, alguien de IT.
+    const recipients = await this.recipients();
+    const requester = recipients.find((user) => user.role === UserRole.ADMIN) ?? recipients[0];
+    if (requester) {
       try {
         const ticket = await TicketsService.createTicket(
           { title: notice.ticketTitle.slice(0, 200), description: notice.ticketBody, priority: notice.priority, category: TicketCategory.RED },
-          admins[0].id,
+          requester.id,
         );
         await prisma.networkLiveAlert.update({ where: { id: created.id }, data: { ticketId: ticket.id } });
       } catch (error) {
