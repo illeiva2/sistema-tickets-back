@@ -28,7 +28,7 @@ import type { DeepMockProxy } from "vitest-mock-extended";
 import request from "supertest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/lib/database";
-import { deviceEvents, portEvent } from "../src/services/networkLive.events";
+import { deviceEvents, isWifiRoaming, portEvent } from "../src/services/networkLive.events";
 import type { StoredPort } from "../src/services/networkLive.service";
 import NetworkWatchdog, { AP_DOWN_ALERT_MS, RE_NOTIFY_MS } from "../src/services/networkLive.watchdog";
 import PushService from "../src/services/push.service";
@@ -140,6 +140,14 @@ describe("Red en vivo F3: qué cuenta como cambio", () => {
     });
     expect(portEvent("c", "d", storedPort(), port({ name: "ether1-Compras" }) as any, at)).toBeNull();
     expect(portEvent("c", "d", undefined, port() as any, at)).toBeNull();
+  });
+
+  it("pasar de un AP a otro no es mudarse; entre cable y Wi-Fi, o con el mismo AP, sí", () => {
+    expect(isWifiRoaming("ap-1", "ap-2")).toBe(true);
+    expect(isWifiRoaming("ap-1", "ap-1")).toBe(false);
+    expect(isWifiRoaming(null, "ap-1")).toBe(false);
+    expect(isWifiRoaming("ap-1", null)).toBe(false);
+    expect(isWifiRoaming(null, null)).toBe(false);
   });
 });
 
@@ -255,6 +263,51 @@ describe("Red en vivo F3: la ingesta escribe el historial", () => {
         peerPortKey: "ether5",
       }),
       expect.objectContaining({ kind: "endpoint_new", macAddress: "AA:BB:CC:00:00:02", deviceId: "dev-s1", portKey: "ether7" }),
+    ]);
+  });
+
+  it("un celular que pasa de un AP a otro queda en el puerto nuevo sin ir al historial; de Wi-Fi a cable, sí", async () => {
+    prismaMock.networkLiveDevice.findMany.mockResolvedValue([
+      { id: "dev-s1", key: "10.0.0.3" },
+      { id: "dev-ap1", key: "ap-aa" },
+      { id: "dev-ap2", key: "ap-bb" },
+    ] as any);
+    const stored = (id: string, mac: string, portKey: string, viaDeviceId: string) => ({
+      id,
+      macAddress: mac,
+      deviceId: "dev-s1",
+      portKey,
+      vlan: 200,
+      ipAddress: null,
+      hostname: null,
+      viaDeviceId,
+      sharedPort: false,
+      lastSeenAt: ago(MIN),
+    });
+    prismaMock.networkLiveEndpoint.findMany.mockResolvedValue([
+      stored("ep-phone", "AA:BB:CC:00:00:01", "ether10", "dev-ap1"),
+      stored("ep-laptop", "AA:BB:CC:00:00:02", "ether11", "dev-ap2"),
+    ] as any);
+
+    const res = await request(app)
+      .post("/api/network-collector/snapshot")
+      .set(collectorHeaders)
+      .send(
+        snapshot({
+          endpoints: [
+            { mac: "AA:BB:CC:00:00:01", device: "10.0.0.3", port: "ether11", vlan: 200, via: "ap-bb" },
+            { mac: "AA:BB:CC:00:00:02", device: "10.0.0.3", port: "ether5", vlan: 200 },
+          ],
+        }),
+      );
+
+    expect(res.status).toBe(200);
+    expect(prismaMock.networkLiveEndpoint.update).toHaveBeenCalledWith({
+      where: { id: "ep-phone" },
+      data: expect.objectContaining({ portKey: "ether11", viaDeviceId: "dev-ap2", movedAt: expect.any(Date) }),
+    });
+    expect((prismaMock.networkLiveEvent.createMany.mock.calls[0][0] as any).data).toEqual([
+      expect.objectContaining({ kind: "endpoint_moved", macAddress: "AA:BB:CC:00:00:02", portKey: "ether5", peerPortKey: "ether11" }),
     ]);
   });
 });

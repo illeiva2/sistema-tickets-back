@@ -78,5 +78,13 @@ export const portEvent = (
   return null;
 };
 
+/**
+ * Un equipo que pasa de un AP a otro (un celular que se mueve por la planta) no es una mudanza:
+ * son cientos por día y tapaban el resto del historial. Sí cuentan el paso entre cable y Wi-Fi y
+ * los clientes de un AP que cambió de puerto.
+ */
+export const isWifiRoaming = (fromVia: string | null, toVia: string | null) =>
+  fromVia !== null && toVia !== null && fromVia !== toVia;
+
 /** Varios puertos (un LAG) en una sola clave, dentro del largo de la columna. */
 export const portList = (ports: string[]) => (ports.length ? ports.join("+").slice(0, 64) : null);
