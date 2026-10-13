@@ -139,6 +139,10 @@ Notas de campo:
   está conectado pero no a qué puerto: el puerto sale de la tabla MAC.
 - UniFi se lee cada 5 minutos; en las corridas del medio se usan los APs y sus vecinos LLDP de la
   última lectura (en `state.json`), así los enlaces no cambian de una corrida a la otra.
+- El SwOS a veces no contesta SNMP un minuto. Sin sus tablas MAC, todo lo que cuelga de él parecía
+  colgar del router. Desde la 0.3.1 el colector recuerda de quién cuelga cada equipo (`parents` en
+  `state.json`, anotado sólo con los dos respondiendo) y, si ese padre no responde, repite el
+  enlace conocido. El sondeo SNMP también hace un tercer intento antes de darlo por caído.
 
 ## Desinstalar
 

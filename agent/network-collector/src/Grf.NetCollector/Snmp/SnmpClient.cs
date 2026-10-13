@@ -29,8 +29,17 @@ internal sealed class SnmpClient
     public static SnmpClient? Open(IPEndPoint endpoint, string community, int timeoutMs)
     {
         var octets = new OctetString(community);
-        foreach (var version in new[] { VersionCode.V2, VersionCode.V1 })
+        // v2c, v1 y otra vez v2c: el SwOS a veces no contesta un pedido suelto y, sin el tercer
+        // intento, toda la corrida lo daba por caído (y con él, el árbol de lo que cuelga).
+        var attempts = new[] { VersionCode.V2, VersionCode.V1, VersionCode.V2 };
+        for (var attempt = 0; attempt < attempts.Length; attempt++)
         {
+            var version = attempts[attempt];
+            if (attempt == attempts.Length - 1)
+            {
+                Thread.Sleep(500);
+            }
+
             try
             {
                 Messenger.Get(version, endpoint, octets, [new Variable(new ObjectIdentifier(Oids.SysName))], timeoutMs);

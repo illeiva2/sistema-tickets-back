@@ -32,7 +32,8 @@ internal static class Program
             ("Enlaces: un AP de la última lectura de UniFi se ubica igual", LinkInferenceCachedApTest),
             ("Enlaces: el LLDP del AP sin puerto reconocible conserva el de la tabla MAC", LinkInferenceApLldpKeepsFdbPortTest),
             ("Enlaces: entre lecturas de UniFi el AP mantiene su enlace LLDP y sus clientes", LinkInferenceCachedApLldpTest),
-            ("Estado: los vecinos LLDP de los APs se guardan y se leen", CollectorStateCachedNeighborsTest),
+            ("Enlaces: si el switch del medio no responde, se repite el padre conocido", LinkInferenceKnownParentTest),
+            ("Estado: los vecinos LLDP de los APs y los padres se guardan y se leen", CollectorStateCachedNeighborsTest),
             ("Enlaces: MNDP no cuenta como conexión directa", LinkInferenceIgnoresMndpTest),
             ("Enlaces: la VLAN de gestión manda aunque otra VLAN entre por un AP", LinkInferenceManagementVlanTest),
             ("Equipos finales: puerto de acceso, Wi-Fi por AP, compartidos y VLAN excluida", EndpointInferenceTest),
@@ -520,6 +521,35 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task LinkInferenceKnownParentTest()
+    {
+        // Corrida normal: queda anotado de quién cuelga cada uno, con sus puertos.
+        var (_, parents) = LinkInference.InferWithParents(Tree(withAp: false), [], null);
+        Assert.Equal("10.0.0.11", parents["10.0.0.3"].Parent);
+        Assert.SequenceEqual(new[] { "3", "4" }, parents["10.0.0.3"].ParentPorts);
+        Assert.SequenceEqual(new[] { "sfp-sfpplus1", "sfp-sfpplus2" }, parents["10.0.0.3"].ChildPorts);
+
+        // El núcleo no contesta SNMP (caso real del SWT-FO01): sin sus tablas MAC, el switch de
+        // acceso "colgaría" directo del router.
+        var devices = Tree(withAp: false);
+        devices[1] = new PollResult
+        {
+            Snapshot = new DeviceSnapshot { Key = "10.0.0.11", Source = "snmp", Role = "core", Reachable = false, ManagementIp = "10.0.0.11", Error = "sin respuesta SNMP" },
+            Macs = new HashSet<string> { CoreMac },
+        };
+        var guessed = LinkInference.Infer(devices, []);
+        Assert.True(guessed.Any(link => Describe(link) == "10.0.0.1[ether1]-10.0.0.3[sfp-sfpplus1+sfp-sfpplus2]:fdb"), string.Join(" | ", guessed.Select(Describe)));
+
+        // Con lo recordado se repite el enlace conocido y no aparece el atajo por el router.
+        var (kept, after) = LinkInference.InferWithParents(devices, [], parents);
+        Assert.True(kept.Any(link => Describe(link) == "10.0.0.11[3+4]-10.0.0.3[sfp-sfpplus1+sfp-sfpplus2]:fdb"), string.Join(" | ", kept.Select(Describe)));
+        Assert.False(kept.Any(link => link.A.Device == "10.0.0.1" && link.B.Device == "10.0.0.3"), string.Join(" | ", kept.Select(Describe)));
+        // Y lo deducido durante el corte no pisa lo recordado.
+        Assert.Equal("10.0.0.11", after["10.0.0.3"].Parent);
+        Assert.SequenceEqual(new[] { "3", "4" }, after["10.0.0.3"].ParentPorts);
+        return Task.CompletedTask;
+    }
+
     private static Task CollectorStateCachedNeighborsTest()
     {
         var path = Path.Combine(Path.GetTempPath(), $"grf-colector-estado-{Guid.NewGuid():N}.json");
@@ -527,14 +557,20 @@ internal static class Program
         {
             var state = new CollectorState();
             state.UniFi.Aps = [new CachedAp("ap-fc:ec:da:3d:af:54", ApMac, "AP-010", "10.1.1.66", [new CachedNeighbor("eth0", SwitchWideLldp)])];
+            state.Parents["10.0.0.3"] = new CachedParent("10.0.0.11", ["3", "4"], ["sfp-sfpplus1"]);
             state.Save(path);
-            var loaded = CollectorState.Load(path).UniFi.Aps.Single();
+            var reloaded = CollectorState.Load(path);
+            var loaded = reloaded.UniFi.Aps.Single();
             Assert.Equal("eth0", loaded.Neighbors!.Single().Port);
             Assert.Equal(EdgeMac, loaded.Neighbors!.Single().Neighbor.Mac);
+            Assert.Equal("10.0.0.11", reloaded.Parents["10.0.0.3"].Parent);
+            Assert.SequenceEqual(new[] { "3", "4" }, reloaded.Parents["10.0.0.3"].ParentPorts);
 
-            // Un estado de la 0.2.0 (sin vecinos) se sigue leyendo.
+            // Un estado de la 0.2.0 (sin vecinos ni padres) se sigue leyendo.
             File.WriteAllText(path, """{ "pins": {}, "uniFi": { "aps": [ { "key": "ap-x", "mac": "FC:EC:DA:00:00:01", "name": "AP" } ] } }""");
-            Assert.Null(CollectorState.Load(path).UniFi.Aps.Single().Neighbors);
+            var old = CollectorState.Load(path);
+            Assert.Null(old.UniFi.Aps.Single().Neighbors);
+            Assert.Equal(0, old.Parents.Count);
         }
         finally
         {
