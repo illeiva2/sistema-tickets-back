@@ -53,7 +53,8 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
         var (aps, wifiClients, uniFiPolled) = await PollUniFiIfDue(pins, cancellationToken).ConfigureAwait(false);
         results.AddRange(aps);
 
-        var links = LinkInference.Infer(results, state.UniFi.Aps);
+        var (links, parents) = LinkInference.InferWithParents(results, state.UniFi.Aps, state.Parents);
+        state.Parents = parents;
         var endpoints = EndpointInference.Infer(results, state.UniFi.Aps, links, config.Endpoints);
         var payload = new SnapshotPayload(
             new CollectorInfo(Version, Environment.MachineName),

@@ -18,7 +18,22 @@ namespace Grf.NetCollector.Topology;
 /// </summary>
 internal static class LinkInference
 {
-    public static List<LinkSnapshot> Infer(IReadOnlyList<PollResult> devices, IReadOnlyList<CachedAp> cachedAps)
+    public static List<LinkSnapshot> Infer(
+        IReadOnlyList<PollResult> devices,
+        IReadOnlyList<CachedAp> cachedAps,
+        IReadOnlyDictionary<string, CachedParent>? knownParents = null) =>
+        InferWithParents(devices, cachedAps, knownParents).Links;
+
+    /// <summary>
+    /// Los enlaces de esta corrida y, para recordar, de quién cuelga cada equipo. Si el padre de
+    /// siempre de un equipo no respondió (un switch del medio que no contestó SNMP un minuto), sus
+    /// tablas MAC faltan y el equipo "aparece" colgando de uno de más arriba: se repite el enlace
+    /// conocido en vez de inventar uno más corto.
+    /// </summary>
+    public static (List<LinkSnapshot> Links, Dictionary<string, CachedParent> Parents) InferWithParents(
+        IReadOnlyList<PollResult> devices,
+        IReadOnlyList<CachedAp> cachedAps,
+        IReadOnlyDictionary<string, CachedParent>? knownParents)
     {
         var byKey = devices
             .GroupBy(device => device.Snapshot.Key, StringComparer.Ordinal)
@@ -83,6 +98,7 @@ internal static class LinkInference
 
         var links = new Dictionary<string, LinkSnapshot>(StringComparer.Ordinal);
         var fdbParents = AddFdbLinks(devices, owners, known, managementVlan, links);
+        KeepKnownParents(byKey, known, fdbParents, knownParents, links);
         var lldpPeers = AddLldpLinks(NeighborSources(devices, cachedAps, byKey), byKey, owners, byIp, byName, links);
 
         // Un AP con vecino LLDP ya tiene su puerto exacto: el padre por tabla MAC sobra (y si un
@@ -96,10 +112,63 @@ internal static class LinkInference
             }
         }
 
-        return links.Values
+        var ordered = links.Values
             .OrderBy(link => link.A.Device, StringComparer.Ordinal)
             .ThenBy(link => link.B.Device, StringComparer.Ordinal)
             .ToList();
+        return (ordered, NextParents(byKey, fdbParents, knownParents, links));
+    }
+
+    private static void KeepKnownParents(
+        IReadOnlyDictionary<string, PollResult> byKey,
+        IReadOnlySet<string> known,
+        Dictionary<string, string> fdbParents,
+        IReadOnlyDictionary<string, CachedParent>? knownParents,
+        Dictionary<string, LinkSnapshot> links)
+    {
+        foreach (var (child, cached) in knownParents ?? new Dictionary<string, CachedParent>())
+        {
+            // Sólo cuando el padre conocido se sondeó en esta corrida y no respondió.
+            if (!known.Contains(child) || !byKey.TryGetValue(cached.Parent, out var parent) || parent.Snapshot.Reachable)
+            {
+                continue;
+            }
+
+            if (fdbParents.TryGetValue(child, out var computed) && computed != cached.Parent)
+            {
+                links.Remove(PairKey(child, computed));
+            }
+
+            Add(links, cached.Parent, [.. cached.ParentPorts], child, [.. cached.ChildPorts], LinkSources.Fdb);
+            fdbParents[child] = cached.Parent;
+        }
+    }
+
+    /// <summary>
+    /// Qué recordar: lo visto con los dos equipos respondiendo. Lo repetido de memoria (o con un
+    /// extremo sin responder, que no dice sus puertos) deja lo que ya había.
+    /// </summary>
+    private static Dictionary<string, CachedParent> NextParents(
+        IReadOnlyDictionary<string, PollResult> byKey,
+        Dictionary<string, string> fdbParents,
+        IReadOnlyDictionary<string, CachedParent>? knownParents,
+        Dictionary<string, LinkSnapshot> links)
+    {
+        var next = new Dictionary<string, CachedParent>(knownParents ?? new Dictionary<string, CachedParent>(), StringComparer.Ordinal);
+        foreach (var (child, parent) in fdbParents)
+        {
+            if (!byKey.TryGetValue(child, out var childDevice) || !childDevice.Snapshot.Reachable
+                || !byKey.TryGetValue(parent, out var parentDevice) || !parentDevice.Snapshot.Reachable
+                || !links.TryGetValue(PairKey(child, parent), out var link))
+            {
+                continue;
+            }
+
+            var (parentPorts, childPorts) = link.A.Device == parent ? (link.A.Ports, link.B.Ports) : (link.B.Ports, link.A.Ports);
+            next[child] = new CachedParent(parent, [.. parentPorts], [.. childPorts]);
+        }
+
+        return next;
     }
 
     /// <summary>Agrega los enlaces padre → hijo de las tablas MAC y devuelve hijo → padre.</summary>

@@ -12,6 +12,11 @@ internal sealed class CollectorState
 {
     public Dictionary<string, string> Pins { get; set; } = new(StringComparer.Ordinal);
     public UniFiState UniFi { get; set; } = new();
+    /// <summary>
+    /// De quién cuelga cada equipo (y por qué puertos) según la última corrida en que los dos
+    /// respondieron. Sirve para no cambiar el árbol cuando un switch del medio no contesta un rato.
+    /// </summary>
+    public Dictionary<string, CachedParent> Parents { get; set; } = new(StringComparer.Ordinal);
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
@@ -25,6 +30,7 @@ internal sealed class CollectorState
                 if (state is not null)
                 {
                     state.Pins = new Dictionary<string, string>(state.Pins, StringComparer.Ordinal);
+                    state.Parents = new Dictionary<string, CachedParent>(state.Parents ?? [], StringComparer.Ordinal);
                     return state;
                 }
             }
@@ -63,3 +69,6 @@ internal sealed record CachedAp(string Key, string Mac, string Name, string? Ip 
 
 /// <summary>Vecino LLDP que un AP informa en uno de sus puertos.</summary>
 internal sealed record CachedNeighbor(string Port, NeighborSnapshot Neighbor);
+
+/// <summary>Último padre conocido de un equipo en el árbol, con los puertos de cada lado.</summary>
+internal sealed record CachedParent(string Parent, List<string> ParentPorts, List<string> ChildPorts);
