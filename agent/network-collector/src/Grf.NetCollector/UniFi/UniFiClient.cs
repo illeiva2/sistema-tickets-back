@@ -62,9 +62,15 @@ internal sealed class UniFiClient : IDisposable
     }
 
     /// <summary>Equipos del sitio (stat/device). Si la sesión guardada venció, se loguea una vez.</summary>
-    public async Task<JsonElement> GetDevicesAsync(CancellationToken cancellationToken)
+    public Task<JsonElement> GetDevicesAsync(CancellationToken cancellationToken) =>
+        GetDataAsync($"api/s/{_settings.Site}/stat/device", "los equipos", cancellationToken);
+
+    /// <summary>Clientes asociados ahora (stat/sta): cableados e inalámbricos; se filtran al mapear.</summary>
+    public Task<JsonElement> GetClientsAsync(CancellationToken cancellationToken) =>
+        GetDataAsync($"api/s/{_settings.Site}/stat/sta", "los clientes", cancellationToken);
+
+    private async Task<JsonElement> GetDataAsync(string path, string what, CancellationToken cancellationToken)
     {
-        var path = $"api/s/{_settings.Site}/stat/device";
         var (status, body) = await SendAsync(HttpMethod.Get, path, null, cancellationToken).ConfigureAwait(false);
         if (status == HttpStatusCode.Unauthorized)
         {
@@ -74,7 +80,7 @@ internal sealed class UniFiClient : IDisposable
 
         if (status != HttpStatusCode.OK || body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
         {
-            throw new UniFiException($"el controlador respondió HTTP {(int)status} al pedir los equipos");
+            throw new UniFiException($"el controlador respondió HTTP {(int)status} al pedir {what}");
         }
 
         SaveSession();

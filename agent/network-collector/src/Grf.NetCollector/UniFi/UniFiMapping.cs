@@ -86,6 +86,64 @@ internal static class UniFiMapping
         return (results, cache);
     }
 
+    /// <summary>
+    /// Clientes Wi-Fi de stat/sta: los inalámbricos que no son invitados ni están en una VLAN
+    /// excluida (la de invitados, en GRF). Sin datos de uso: lo justo para ubicarlo y ver cómo se
+    /// conecta (red, banda, canal, señal y velocidad).
+    /// </summary>
+    public static List<WifiClientSnapshot> BuildClients(JsonElement clients, IReadOnlySet<int> excludeVlans)
+    {
+        var result = new List<WifiClientSnapshot>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var client in clients.EnumerateArray())
+        {
+            // is_wired ausente: no se sabe si es inalámbrico, se descarta.
+            if (Bool(client, "is_wired") != false || Bool(client, "is_guest") == true)
+            {
+                continue;
+            }
+
+            if (Mac.Normalize(Text(client, "mac")) is not { } mac || !seen.Add(mac) || Mac.Normalize(Text(client, "ap_mac")) is not { } apMac)
+            {
+                continue;
+            }
+
+            int? vlan = Int(client, "vlan") is { } number and > 0 and <= 4094 ? (int)number : null;
+            if (vlan is { } id && excludeVlans.Contains(id))
+            {
+                continue;
+            }
+
+            result.Add(new WifiClientSnapshot
+            {
+                Mac = mac,
+                Ap = "ap-" + apMac.ToLowerInvariant(),
+                Ssid = Text(client, "essid"),
+                Band = Text(client, "radio") switch
+                {
+                    "ng" => "2.4",
+                    "na" => "5",
+                    "6e" => "6",
+                    _ => null,
+                },
+                Channel = Int(client, "channel") is { } channel and > 0 and < 300 ? (int)channel : null,
+                Signal = Int(client, "signal") is { } signal and < 0 and > -130 ? (int)signal : null,
+                TxKbps = Int(client, "tx_rate") is { } tx and >= 0 and <= int.MaxValue ? (int)tx : null,
+                RxKbps = Int(client, "rx_rate") is { } rx and >= 0 and <= int.MaxValue ? (int)rx : null,
+                UptimeSeconds = Int(client, "uptime") is { } uptime and >= 0 ? uptime : null,
+                // El nombre que le pusieron en UniFi y, si no tiene, el que pidió por DHCP.
+                Hostname = Text(client, "name") ?? Text(client, "hostname"),
+                Ip = Text(client, "ip"),
+                Vlan = vlan,
+            });
+        }
+
+        return result
+            .OrderBy(client => client.Ap, StringComparer.Ordinal)
+            .ThenBy(client => client.Mac, StringComparer.Ordinal)
+            .ToList();
+    }
+
     private static List<CachedNeighbor>? CachedNeighbors(List<PortSnapshot> ports)
     {
         var neighbors = ports

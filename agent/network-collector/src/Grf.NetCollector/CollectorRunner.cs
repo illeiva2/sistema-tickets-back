@@ -50,7 +50,7 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
             log.Warn($"{result.Snapshot.Key}: {result.Snapshot.Error}");
         }
 
-        var (aps, uniFiPolled) = await PollUniFiIfDue(pins, cancellationToken).ConfigureAwait(false);
+        var (aps, wifiClients, uniFiPolled) = await PollUniFiIfDue(pins, cancellationToken).ConfigureAwait(false);
         results.AddRange(aps);
 
         var links = LinkInference.Infer(results, state.UniFi.Aps);
@@ -61,7 +61,9 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
             DateTimeOffset.UtcNow,
             results.Select(result => result.Snapshot).ToList(),
             links,
-            config.Endpoints.Enabled ? endpoints : null);
+            config.Endpoints.Enabled ? endpoints : null,
+            // Sólo en las corridas que leen UniFi: en las demás el back conserva lo último.
+            wifiClients);
 
         return new CollectionRun(payload, uniFiPolled, results);
     }
@@ -77,18 +79,20 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
             : PollResult.Failed(entry.Ip, entry.Driver, entry.Role, entry.Ip, $"el sondeo pasó los {config.DeviceTimeoutSeconds} s", clock.ElapsedMilliseconds);
     }
 
-    private async Task<(List<PollResult> Aps, bool Polled)> PollUniFiIfDue(CertificatePins pins, CancellationToken cancellationToken)
+    private async Task<(List<PollResult> Aps, List<WifiClientSnapshot>? WifiClients, bool Polled)> PollUniFiIfDue(
+        CertificatePins pins,
+        CancellationToken cancellationToken)
     {
         var settings = config.UniFi;
         if (settings is null)
         {
-            return ([], false);
+            return ([], null, false);
         }
 
         var due = state.UniFi.PolledAt is not { } last || DateTimeOffset.UtcNow - last >= TimeSpan.FromMinutes(settings.EveryMinutes) - TimeSpan.FromSeconds(20);
         if (!due)
         {
-            return ([], false);
+            return ([], null, false);
         }
 
         var user = readSecret(settings.UserVariable);
@@ -96,7 +100,7 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
         if (user is null || password is null)
         {
             log.Warn($"UniFi: faltan las variables {settings.UserVariable} / {settings.PasswordVariable}");
-            return ([], false);
+            return ([], null, false);
         }
 
         var clock = Stopwatch.StartNew();
@@ -107,14 +111,30 @@ internal sealed class CollectorRunner(CollectorConfig config, CollectorState sta
             var (aps, cache) = UniFiMapping.Build(devices, clock.ElapsedMilliseconds);
             state.UniFi.PolledAt = DateTimeOffset.UtcNow;
             state.UniFi.Aps = cache;
-            return (aps, true);
+
+            List<WifiClientSnapshot>? wifiClients = null;
+            if (settings.ReadClients)
+            {
+                // Que fallen los clientes no tiene que costar los APs: se avisa y se sigue.
+                try
+                {
+                    var clients = await client.GetClientsAsync(cancellationToken).ConfigureAwait(false);
+                    wifiClients = UniFiMapping.BuildClients(clients, config.Endpoints.ExcludeVlans.ToHashSet());
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    log.Warn($"UniFi (clientes): {(exception is UniFiException ? exception.Message : exception.GetType().Name + ": " + exception.Message)}");
+                }
+            }
+
+            return (aps, wifiClients, true);
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Si el controlador no responde, los APs quedan con su último estado y "sin datos" al rato.
             log.Warn($"UniFi: {(exception is UniFiException ? exception.Message : exception.GetType().Name + ": " + exception.Message)}");
             state.UniFi.PolledAt = DateTimeOffset.UtcNow;
-            return ([], false);
+            return ([], null, false);
         }
     }
 }
