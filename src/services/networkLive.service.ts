@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/database";
-import { deviceEvents, portEvent, portList, type LiveEventInput } from "./networkLive.events";
+import { deviceEvents, isWifiRoaming, portEvent, portList, type LiveEventInput } from "./networkLive.events";
 
 // Formas ya validadas por src/validations/networkLive.ts. Se tipan a mano porque
 // el tsconfig no es estricto y la inferencia de Zod no sirve (igual que en lab).
@@ -422,7 +422,8 @@ export class NetworkLiveService {
             data: { ...fields, ipAddress, hostname, lastSeenAt: receivedAt, ...(moved ? { movedAt: receivedAt } : {}) },
           }),
         );
-        if (moved) {
+        // El puerto nuevo (y "llegó a este puerto") se guarda igual; sólo no va al historial.
+        if (moved && !isWifiRoaming(current.viaDeviceId, fields.viaDeviceId)) {
           events.push({
             collector,
             at: receivedAt,
