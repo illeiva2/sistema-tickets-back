@@ -25,6 +25,7 @@ import {
   DEVICE_STALE_AFTER_MS,
   deriveDeviceStatus,
   planPortWrite,
+  retiredDeviceIds,
   type StoredPort,
 } from "../src/services/networkLive.service";
 import { signAccessToken } from "./helpers";
@@ -396,6 +397,79 @@ describe("Pantalla Red en vivo", () => {
     const polled = new Date(now.getTime() - DEVICE_STALE_AFTER_MS - 60_000);
     expect(deriveDeviceStatus({ source: "routeros", reachable: true, lastPolledAt: polled }, now)).toBe("stale");
     expect(deriveDeviceStatus({ source: "unifi", reachable: true, lastPolledAt: polled }, now)).toBe("ok");
+  });
+
+  it("retirado es lo que quedó más de una hora atrás de su fuente; un corte de UniFi no retira a los APs", () => {
+    const now = Date.now();
+    const device = (id: string, source: string, minutesAgo: number) => ({
+      id,
+      collector: COLLECTOR,
+      source,
+      lastPolledAt: new Date(now - minutesAgo * 60_000),
+    });
+    // UniFi sin contestar hace 90 min: los APs quedan "sin datos", pero no retirados.
+    expect([
+      ...retiredDeviceIds([device("sw", "snmp", 1), device("swt-002", "snmp", 62), device("rb", "routeros", 1), device("ap1", "unifi", 90), device("ap2", "unifi", 95)]),
+    ]).toEqual(["swt-002"]);
+    expect([...retiredDeviceIds([device("ap1", "unifi", 4), device("ap-olvidado", "unifi", 70)])]).toEqual(["ap-olvidado"]);
+  });
+
+  it("oculta los equipos retirados con sus enlaces, equipos finales y avisos", async () => {
+    const now = Date.now();
+    const ago = (ms: number) => new Date(now - ms);
+    const device = (id: string, name: string, lastPolledAt: Date) => ({
+      id,
+      collector: COLLECTOR,
+      key: id,
+      source: "snmp",
+      role: "access",
+      name,
+      managementIp: null,
+      macAddress: null,
+      vendor: null,
+      model: null,
+      firmware: null,
+      serialNumber: null,
+      uptimeSeconds: null,
+      clients: null,
+      reachable: false,
+      lastError: null,
+      lastPollMs: 500,
+      lastPolledAt,
+      lastOkAt: null,
+      alertsMuted: false,
+      portKeys: [],
+      ports: [],
+      createdAt: ago(86_400_000),
+      updatedAt: lastPolledAt,
+    });
+    prismaMock.networkCollector.findMany.mockResolvedValue([
+      { slug: COLLECTOR, version: "0.3.1", host: "SRV-TEST", lastStartedAt: ago(35_000), lastFinishedAt: ago(31_000), lastReceivedAt: ago(30_000), devicesTotal: 1, devicesOk: 1, createdAt: ago(86_400_000) },
+    ] as any);
+    prismaMock.networkLiveDevice.findMany.mockResolvedValue([
+      device("swt-013", "SWT-013", ago(30_000)),
+      device("swt-002", "SWT-002", ago(2 * 60 * 60_000)),
+    ] as any);
+    prismaMock.networkLiveLink.findMany.mockResolvedValue([
+      { id: "l-viejo", collector: COLLECTOR, aDeviceId: "swt-013", aPorts: ["1"], bDeviceId: "swt-002", bPorts: ["49"], source: "fdb", firstSeenAt: ago(86_400_000), lastSeenAt: ago(60_000) },
+    ] as any);
+    prismaMock.networkLiveEndpoint.findMany.mockResolvedValue([
+      { id: "ep-1", collector: COLLECTOR, macAddress: "AA:BB:CC:00:00:01", deviceId: "swt-002", portKey: "3", vlan: 200, ipAddress: null, hostname: null, viaDeviceId: null, sharedPort: false, firstSeenAt: ago(86_400_000), lastSeenAt: ago(60_000), movedAt: null },
+    ] as any);
+    prismaMock.networkLiveWifiClient.findMany.mockResolvedValue([]);
+    prismaMock.agentDevice.findMany.mockResolvedValue([]);
+    prismaMock.networkLiveAlert.findMany.mockResolvedValue([
+      { id: "al-1", collector: COLLECTOR, kind: "device_down", deviceId: "swt-002", openedAt: ago(3 * 60 * 60_000), resolvedAt: null, lastNotifiedAt: null, ticketId: null, detail: "x" },
+    ] as any);
+
+    const res = await request(app).get("/api/it/network/live").set(auth("ADMIN"));
+
+    expect(res.status).toBe(200);
+    const { devices, links, endpoints, alerts } = res.body.data;
+    expect(devices.map((d: any) => d.name)).toEqual(["SWT-013"]);
+    expect(links).toEqual([]);
+    expect(endpoints).toEqual([]);
+    expect(alerts).toEqual([]);
   });
 });
 

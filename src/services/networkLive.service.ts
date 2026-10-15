@@ -112,6 +112,30 @@ export const ENDPOINT_VISIBLE_MS = 10 * 60_000;
 export const AGENT_IP_MATCH_MS = 24 * 60 * 60_000;
 /** Los clientes Wi-Fi llegan con UniFi cada 5 min: se muestran mientras sigan en la última lectura. */
 export const WIFI_VISIBLE_MS = 12 * 60_000;
+/**
+ * Un equipo que el colector dejó de informar (lo sacaron de la configuración o del controlador
+ * UniFi) se oculta pasada una hora. No se borra: si vuelve a aparecer, se muestra de nuevo.
+ */
+export const RETIRED_AFTER_MS = 60 * 60_000;
+
+/**
+ * Equipos retirados: los que quedaron más de una hora atrás del más reciente de su misma fuente
+ * (UniFi o sondeo directo). No se compara contra el reloj para que un corte del colector o del
+ * controlador no esconda a todos.
+ */
+export const retiredDeviceIds = (devices: { id: string; collector: string; source: string; lastPolledAt: Date }[]) => {
+  const group = (device: { collector: string; source: string }) =>
+    `${device.collector}|${device.source === "unifi" ? "unifi" : "sondeo"}`;
+  const newest = new Map<string, number>();
+  for (const device of devices) {
+    newest.set(group(device), Math.max(newest.get(group(device)) ?? 0, device.lastPolledAt.getTime()));
+  }
+  return new Set(
+    devices
+      .filter((device) => (newest.get(group(device)) ?? 0) - device.lastPolledAt.getTime() > RETIRED_AFTER_MS)
+      .map((device) => device.id),
+  );
+};
 export const SEARCH_LIMIT = 25;
 
 const TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
@@ -670,7 +694,7 @@ export class NetworkLiveService {
   // ─── Lectura (pantalla "Red en vivo") ───────────────────────────────────────
 
   static async liveView(now = new Date()) {
-    const [collectors, devices, links, alerts] = await Promise.all([
+    const [collectors, allDevices, links, alerts] = await Promise.all([
       prisma.networkCollector.findMany({ orderBy: { slug: "asc" } }),
       prisma.networkLiveDevice.findMany({
         orderBy: { name: "asc" },
@@ -681,6 +705,9 @@ export class NetworkLiveService {
     ]);
 
     const lastReceived = new Map(collectors.map((c) => [c.slug, c.lastReceivedAt.getTime()]));
+    // Lo retirado (un switch reemplazado, un AP olvidado en UniFi) no se muestra ni con sus enlaces.
+    const retired = retiredDeviceIds(allDevices);
+    const devices = allDevices.filter((device) => !retired.has(device.id));
 
     // Equipos finales conectados ahora: vistos en el último rato respecto del último envío.
     const newest = collectors.length ? Math.max(...collectors.map((c) => c.lastReceivedAt.getTime())) : null;
@@ -755,7 +782,12 @@ export class NetworkLiveService {
       links: links
         .filter((link) => {
           const last = lastReceived.get(link.collector);
-          return last !== undefined && link.lastSeenAt.getTime() >= last - LINK_VISIBLE_MS;
+          return (
+            last !== undefined &&
+            link.lastSeenAt.getTime() >= last - LINK_VISIBLE_MS &&
+            !retired.has(link.aDeviceId) &&
+            !retired.has(link.bDeviceId)
+          );
         })
         .map((link) => ({
           id: link.id,
@@ -765,30 +797,34 @@ export class NetworkLiveService {
           firstSeenAt: link.firstSeenAt.toISOString(),
           lastSeenAt: link.lastSeenAt.toISOString(),
         })),
-      endpoints: endpoints.map((endpoint) => NetworkLiveService.endpointView(endpoint, agents)),
-      wifiClients: wifiClients.map((client) => {
-        const agent =
-          agents.byMac.get(client.macAddress) ?? (client.ipAddress ? agents.byIp.get(client.ipAddress) : undefined);
-        return {
-          mac: client.macAddress,
-          apDeviceId: client.apDeviceId,
-          ssid: client.ssid,
-          band: client.band,
-          channel: client.channel,
-          signal: client.signal,
-          txKbps: client.txKbps,
-          rxKbps: client.rxKbps,
-          uptimeSeconds: client.uptimeSeconds,
-          hostname: client.hostname,
-          ip: client.ipAddress,
-          vlan: client.vlan,
-          firstSeenAt: client.firstSeenAt.toISOString(),
-          lastSeenAt: client.lastSeenAt.toISOString(),
-          agent: agent ?? null,
-        };
-      }),
+      endpoints: endpoints
+        .filter((endpoint) => !retired.has(endpoint.deviceId))
+        .map((endpoint) => NetworkLiveService.endpointView(endpoint, agents)),
+      wifiClients: wifiClients
+        .filter((client) => !retired.has(client.apDeviceId))
+        .map((client) => {
+          const agent =
+            agents.byMac.get(client.macAddress) ?? (client.ipAddress ? agents.byIp.get(client.ipAddress) : undefined);
+          return {
+            mac: client.macAddress,
+            apDeviceId: client.apDeviceId,
+            ssid: client.ssid,
+            band: client.band,
+            channel: client.channel,
+            signal: client.signal,
+            txKbps: client.txKbps,
+            rxKbps: client.rxKbps,
+            uptimeSeconds: client.uptimeSeconds,
+            hostname: client.hostname,
+            ip: client.ipAddress,
+            vlan: client.vlan,
+            firstSeenAt: client.firstSeenAt.toISOString(),
+            lastSeenAt: client.lastSeenAt.toISOString(),
+            agent: agent ?? null,
+          };
+        }),
       // Incidentes avisados que siguen abiertos (equipo caído, colector mudo).
-      alerts: alerts.map((alert) => ({
+      alerts: alerts.filter((alert) => !alert.deviceId || !retired.has(alert.deviceId)).map((alert) => ({
         id: alert.id,
         kind: alert.kind,
         deviceId: alert.deviceId,
