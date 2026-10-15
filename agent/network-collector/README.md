@@ -19,8 +19,17 @@ Cada minuto, por cada equipo: nombre, modelo, firmware, serie, uptime y sus puer
 la lista de APs del controlador UniFi (estado, modelo y cantidad de clientes) y, desde la 0.3, los
 **clientes Wi-Fi**: a qué AP y red están asociados, banda, canal, señal, velocidad, hace cuánto,
 nombre e IP. Nunca los invitados (`is_guest`) ni los de las VLANs excluidas en `Endpoints`, y nada
-de uso (bytes, sitios, aplicaciones). Se apaga con `"UniFi": { "ReadClients": false }`. También
-envía los **enlaces** entre equipos, que deduce así:
+de uso (bytes, sitios, aplicaciones). Se apaga con `"UniFi": { "ReadClients": false }`.
+
+Desde la 0.4, en los switches **PoE**: si cada puerto alimenta algo, cuántos W entrega y la clase
+del equipo, y la potencia nominal y en uso del switch.
+- El estado y la clase salen de POWER-ETHERNET-MIB (RFC 3621).
+- La potencia por puerto sale de la MIB de cada marca:
+  - HPE 1920S: en mW (`1.3.6.1.4.1.11.5.7.5.7.1.1.15.1.1.1.2`). El consumo total también lo informa en mW, aunque la RFC dice W.
+  - TP-Link JetStream: en décimas de W (`1.3.6.1.4.1.11863.6.56`). No implementa RFC 3621.
+- Los dos numeran los puertos PoE como el frente del switch, que es la posición del puerto en el envío.
+
+También envía los **enlaces** entre equipos, que deduce así:
 
 1. **Tablas MAC.** El colector consulta a cada equipo desde el servidor, así que la respuesta de
    cada uno sube por todos los switches que tiene arriba hasta el router. Cada switch aprende la

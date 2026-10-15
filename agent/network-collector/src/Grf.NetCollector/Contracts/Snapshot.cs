@@ -34,6 +34,9 @@ internal sealed record DeviceSnapshot
     public string? SerialNumber { get; init; }
     public long? UptimeSeconds { get; init; }
     public int? Clients { get; init; }
+    /// <summary>Switches PoE: potencia total disponible y la que se está entregando, en W.</summary>
+    public double? PoeBudgetW { get; init; }
+    public double? PoeUsedW { get; init; }
     public IReadOnlyList<PortSnapshot>? Ports { get; init; }
 }
 
@@ -50,6 +53,21 @@ internal sealed record PortSnapshot
     public bool? FullDuplex { get; init; }
     public int? Pvid { get; init; }
     public IReadOnlyList<NeighborSnapshot>? Neighbors { get; init; }
+    public PortPoeSnapshot? Poe { get; init; }
+}
+
+/// <summary>PoE de un puerto: si alimenta algo, cuánto entrega (W) y la clase del equipo.</summary>
+internal sealed record PortPoeSnapshot
+{
+    public const string On = "on";
+    public const string Off = "off";
+    public const string Disabled = "disabled";
+    public const string Fault = "fault";
+
+    /// <summary>on (entrega), off (habilitado sin equipo), disabled (apagado a mano) o fault.</summary>
+    public required string Status { get; init; }
+    public double? PowerW { get; init; }
+    public int? Class { get; init; }
 }
 
 internal sealed record NeighborSnapshot

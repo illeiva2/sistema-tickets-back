@@ -93,6 +93,7 @@ internal static partial class SnmpMapping
         }
 
         var neighbors = BuildNeighbors(readout, physicalSet, names, descr, ifIndexByBasePort);
+        var poe = ReadPoe(readout, sysObjectId);
 
         var ports = new List<PortSnapshot>();
         var number = 0;
@@ -134,6 +135,7 @@ internal static partial class SnmpMapping
                 FullDuplex = fullDuplex,
                 Pvid = pvids.TryGetValue(ifIndex, out var pvid) ? pvid : null,
                 Neighbors = neighbors.TryGetValue(ifIndex, out var list) ? list : null,
+                Poe = poe.ByPort.GetValueOrDefault(number),
             });
         }
 
@@ -178,6 +180,8 @@ internal static partial class SnmpMapping
             Firmware = firmware,
             SerialNumber = FirstText(readout.Column(Oids.EntSerial)),
             UptimeSeconds = readout.Scalars.GetValueOrDefault(Oids.SysUpTime) is TimeTicks ticks ? ticks.ToUInt32() / 100 : null,
+            PoeBudgetW = poe.BudgetW,
+            PoeUsedW = poe.UsedW,
             Ports = ports,
         };
 

@@ -1163,6 +1163,9 @@ model NetworkLiveDevice {
   serialNumber  String?   @db.VarChar(80)
   uptimeSeconds Int?
   clients       Int? // APs: clientes Wi-Fi asociados
+  // Switches PoE: potencia nominal y la que se está entregando (W).
+  poeBudgetW    Float?
+  poeUsedW      Float?
   // Puertos del último envío: los que dejan de aparecer no se borran, se ocultan.
   portKeys      String[]  @default([])
   reachable     Boolean   @default(false)
@@ -1204,6 +1207,10 @@ model NetworkLivePort {
   fullDuplex    Boolean?
   pvid          Int?
   neighbors     Json? // vecinos LLDP/MNDP vistos en el puerto
+  // PoE (colector 0.4+): on | off | disabled | fault, potencia entregada (W) y clase del equipo.
+  poeStatus     String?   @db.VarChar(12)
+  poePowerW     Float?
+  poeClass      Int?
   linkChangedAt DateTime?
   updatedAt     DateTime  @updatedAt
 

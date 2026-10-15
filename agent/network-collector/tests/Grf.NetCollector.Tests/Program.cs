@@ -25,6 +25,7 @@ internal static class Program
             ("SNMP HPE: puertos físicos, LLDP por puerto de bridge, LAG y modelo", SnmpHpeTest),
             ("SNMP TP-Link: LLDP por nombre, índice sin timeMark y FDB por número de puerto", SnmpTpLinkTest),
             ("SNMP SwOS: la tabla MAC sobre agregados queda como lagNNN", SnmpSwOsLagTest),
+            ("SNMP PoE: HPE en mW y TP-Link en décimas de W, por posición del puerto", SnmpPoeTest),
             ("Modelo y firmware de SwOS, HPE y TP-Link", DescribeModelTest),
             ("UniFi: APs, estado, modelo comercial y vecino LLDP", UniFiMappingTest),
             ("UniFi: clientes Wi-Fi sin cableados, invitados ni VLAN excluida", UniFiClientsTest),
@@ -251,6 +252,76 @@ internal static class Program
         Assert.SequenceEqual(new[] { "49" }, routerEntry.Ports);
         Assert.Equal(999, routerEntry.Vlan);
         Assert.Equal(0, result.PortByMac.Count);
+        // Un switch sin PoE no informa nada de PoE.
+        Assert.True(ports.All(port => port.Poe is null));
+        Assert.Null(snapshot.PoeBudgetW);
+        return Task.CompletedTask;
+    }
+
+    private static Task SnmpPoeTest()
+    {
+        static Dictionary<string, Dictionary<string, ISnmpData>> Interfaces(params int[] ifIndexes) => new()
+        {
+            [Oids.IfDescr] = ifIndexes.ToDictionary(index => index.ToString(), index => (ISnmpData)new OctetString($"puerto {index}")),
+            [Oids.IfType] = ifIndexes.ToDictionary(index => index.ToString(), _ => (ISnmpData)new Integer32(6)),
+            [Oids.IfOperStatus] = ifIndexes.ToDictionary(index => index.ToString(), _ => (ISnmpData)new Integer32(1)),
+        };
+
+        // HPE 1920S PoE: RFC 3621 para estado y clase, su MIB para la potencia (mW), consumo total en mW.
+        var hpe = Interfaces(1, 2, 3);
+        hpe[Oids.PethPortDetectionStatus] = Column(("1.1", new Integer32(3)), ("1.2", new Integer32(2)), ("1.3", new Integer32(1)));
+        hpe[Oids.PethPortClassification] = Column(("1.1", new Integer32(5)), ("1.2", new Integer32(1)), ("1.3", new Integer32(1)));
+        hpe[Oids.HpePoePortPowerMw] = Column(("1.1", new Gauge32(3300)), ("1.2", new Gauge32(0)), ("1.3", new Gauge32(0)));
+        hpe[Oids.PethMainPower] = Column(("1", new Gauge32(390)));
+        hpe[Oids.PethMainConsumption] = Column(("1", new Gauge32(15000)));
+        var hpeResult = SnmpMapping.Build(
+            new DeviceEntry { Ip = "10.0.0.13", Driver = "snmp", Role = "access" },
+            new SnmpReadout
+            {
+                Scalars = new Dictionary<string, ISnmpData> { [Oids.SysObjectId] = new ObjectIdentifier("1.3.6.1.4.1.11.2.3.7.11.188") },
+                Columns = hpe,
+            },
+            700).Snapshot;
+        var hpePorts = hpeResult.Ports!;
+        Assert.Equal("on", hpePorts[0].Poe!.Status);
+        Assert.Equal(3.3, hpePorts[0].Poe!.PowerW);
+        Assert.Equal(4, hpePorts[0].Poe!.Class);
+        Assert.Equal("off", hpePorts[1].Poe!.Status);
+        Assert.Null(hpePorts[1].Poe!.PowerW);
+        Assert.Equal("disabled", hpePorts[2].Poe!.Status);
+        Assert.Equal(390.0, hpeResult.PoeBudgetW);
+        Assert.Equal(15.0, hpeResult.PoeUsedW);
+
+        // TP-Link: su MIB con la tabla por número de puerto (1 = 49153) y todo en décimas de W.
+        var tpLink = Interfaces(49153, 49154);
+        tpLink[Oids.TpLinkPoePortStatus] = Column(("1", new Integer32(2)), ("2", new Integer32(1)));
+        tpLink[Oids.TpLinkPoePortEnable] = Column(("1", new Integer32(1)), ("2", new Integer32(1)));
+        tpLink[Oids.TpLinkPoePortPower] = Column(("1", new Integer32(36)), ("2", new Integer32(0)));
+        tpLink[Oids.TpLinkPoePortClass] = Column(("1", new Integer32(4)), ("2", new Integer32(7)));
+        tpLink[Oids.TpLinkPoeLimit] = Column(("0", new Integer32(2500)));
+        tpLink[Oids.TpLinkPoeConsumption] = Column(("0", new Integer32(36)));
+        var tpResult = SnmpMapping.Build(
+            new DeviceEntry { Ip = "10.0.0.15", Driver = "snmp", Role = "access" },
+            new SnmpReadout
+            {
+                Scalars = new Dictionary<string, ISnmpData> { [Oids.SysObjectId] = new ObjectIdentifier("1.3.6.1.4.1.11863.5.98") },
+                Columns = tpLink,
+            },
+            9000).Snapshot;
+        var tpPorts = tpResult.Ports!;
+        Assert.SequenceEqual(new[] { "49153", "49154" }, tpPorts.Select(port => port.Key));
+        Assert.Equal("on", tpPorts[0].Poe!.Status);
+        Assert.Equal(3.6, tpPorts[0].Poe!.PowerW);
+        Assert.Equal(4, tpPorts[0].Poe!.Class);
+        Assert.Equal("off", tpPorts[1].Poe!.Status);
+        Assert.Null(tpPorts[1].Poe!.Class);
+        Assert.Equal(250.0, tpResult.PoeBudgetW);
+        Assert.Equal(3.6, tpResult.PoeUsedW);
+
+        // Qué columnas se piden según la marca.
+        Assert.True(Oids.PoeColumns("1.3.6.1.4.1.11.2.3.7.11.188").Contains(Oids.HpePoePortPowerMw));
+        Assert.False(Oids.PoeColumns("1.3.6.1.4.1.11863.5.98").Contains(Oids.PethPortDetectionStatus));
+        Assert.False(Oids.PoeColumns("1.3.6.1.4.1.14988.2").Contains(Oids.HpePoePortPowerMw));
         return Task.CompletedTask;
     }
 

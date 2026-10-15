@@ -26,6 +26,7 @@ export interface LivePortInput {
   fullDuplex?: boolean | null;
   pvid?: number | null;
   neighbors?: LiveNeighborInput[] | null;
+  poe?: { status: string; powerW?: number | null; class?: number | null } | null;
 }
 
 export interface LiveDeviceInput {
@@ -44,6 +45,8 @@ export interface LiveDeviceInput {
   serialNumber?: string | null;
   uptimeSeconds?: number | null;
   clients?: number | null;
+  poeBudgetW?: number | null;
+  poeUsedW?: number | null;
   ports?: LivePortInput[] | null;
 }
 
@@ -201,7 +204,16 @@ export interface StoredPort {
   fullDuplex: boolean | null;
   pvid: number | null;
   neighbors: Prisma.JsonValue | null;
+  poeStatus: string | null;
+  poePowerW: number | null;
+  poeClass: number | null;
 }
+
+/** La potencia PoE de un puerto varía décimas minuto a minuto: se reescribe recién al cambiar medio watt. */
+export const POE_POWER_STEP_W = 0.5;
+
+const samePower = (stored: number | null, incoming: number | null) =>
+  stored === incoming || (stored !== null && incoming !== null && Math.abs(stored - incoming) < POE_POWER_STEP_W);
 
 /**
  * Qué escribir para un puerto: nada si no cambió (lo normal minuto a minuto),
@@ -226,22 +238,31 @@ export const planPortWrite = (
     pvid: incoming.pvid ?? null,
   };
   const neighborsValue = neighbors ?? Prisma.DbNull;
+  const poe = {
+    poeStatus: incoming.poe?.status ?? null,
+    poePowerW: incoming.poe?.powerW ?? null,
+    poeClass: incoming.poe?.class ?? null,
+  };
 
   if (!current) {
-    return { kind: "create", data: { key: incoming.key, ...fields, neighbors: neighborsValue } };
+    return { kind: "create", data: { key: incoming.key, ...fields, ...poe, neighbors: neighborsValue } };
   }
 
   const sameFields = (Object.keys(fields) as (keyof typeof fields)[]).every(
     (field) => (current[field] ?? null) === fields[field],
   );
   const sameNeighbors = canonicalJson(current.neighbors) === canonicalJson(neighbors);
-  if (sameFields && sameNeighbors) return null;
+  const samePoe =
+    (current.poeStatus ?? null) === poe.poeStatus &&
+    (current.poeClass ?? null) === poe.poeClass &&
+    samePower(current.poePowerW ?? null, poe.poePowerW);
+  if (sameFields && sameNeighbors && samePoe) return null;
 
   const linkChanged =
     current.linkUp !== fields.linkUp || (current.speedMbps ?? null) !== fields.speedMbps;
   return {
     kind: "update",
-    data: { ...fields, neighbors: neighborsValue, ...(linkChanged ? { linkChangedAt: now } : {}) },
+    data: { ...fields, ...poe, neighbors: neighborsValue, ...(linkChanged ? { linkChangedAt: now } : {}) },
   };
 };
 
@@ -258,6 +279,9 @@ const PORT_SELECT = {
   fullDuplex: true,
   pvid: true,
   neighbors: true,
+  poeStatus: true,
+  poePowerW: true,
+  poeClass: true,
 } as const;
 
 export class NetworkLiveService {
@@ -554,6 +578,8 @@ export class NetworkLiveService {
           serialNumber: device.serialNumber ?? null,
           uptimeSeconds: device.uptimeSeconds ?? null,
           clients: device.clients ?? null,
+          poeBudgetW: device.poeBudgetW ?? null,
+          poeUsedW: device.poeUsedW ?? null,
           ...(device.ports ? { portKeys: device.ports.map((port) => port.key) } : {}),
         }
       : {};
@@ -761,6 +787,10 @@ export class NetworkLiveService {
           lastPolledAt: device.lastPolledAt.toISOString(),
           lastOkAt: device.lastOkAt?.toISOString() ?? null,
           alertsMuted: device.alertsMuted,
+          poe:
+            device.poeBudgetW != null || device.poeUsedW != null
+              ? { budgetW: device.poeBudgetW ?? null, usedW: device.poeUsedW ?? null }
+              : null,
           ports: device.ports
             .filter((port) => current.has(port.key))
             .map((port) => ({
@@ -776,6 +806,7 @@ export class NetworkLiveService {
               pvid: port.pvid,
               neighbors: Array.isArray(port.neighbors) ? port.neighbors : [],
               linkChangedAt: port.linkChangedAt?.toISOString() ?? null,
+              poe: port.poeStatus ? { status: port.poeStatus, powerW: port.poePowerW, class: port.poeClass } : null,
             })),
         };
       }),
