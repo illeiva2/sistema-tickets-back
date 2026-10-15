@@ -526,6 +526,132 @@ describe("Red en vivo F3: vigilancia y avisos", () => {
     expect(pushMock).toHaveBeenCalledTimes(2);
   });
 
+  // Dos switches que cuelgan del núcleo sin depender uno del otro.
+  const twoSwitches = [...tree, { aDeviceId: "core", bDeviceId: "sw2" }];
+  const openAlert = (id: string, deviceId: string, openedAt: Date, ticketId: string | null, lastNotifiedAt = openedAt) => ({
+    id, collector: COLLECTOR, kind: "device_down", deviceId, openedAt, resolvedAt: null, lastNotifiedAt, ticketId, detail: "x",
+  });
+
+  it("dos caídas en la misma vuelta van en un solo ticket y un solo push", async () => {
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", false), dev("sw2", "access", false)],
+      events: [
+        { deviceId: "sw", kind: "device_down", at: ago(5 * MIN) },
+        { deviceId: "sw2", kind: "device_down", at: ago(4 * MIN) },
+      ],
+    });
+    prismaMock.networkLiveLink.findMany.mockResolvedValue(twoSwitches as any);
+    prismaMock.networkLiveAlert.create.mockImplementation(async (args: any) => ({ id: `alert-${args.data.deviceId}`, ...args.data }));
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["abierto:device_down:sw", "abierto:device_down:sw2"]);
+    expect(ticketMock).toHaveBeenCalledTimes(1);
+    expect(ticketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Red: 2 equipos sin respuesta", priority: "HIGH", description: expect.stringContaining("- SW2 no responde") }),
+      "admin-1",
+    );
+    expect(prismaMock.networkLiveAlert.update).toHaveBeenCalledWith({ where: { id: "alert-sw" }, data: { ticketId: "ticket-1" } });
+    expect(prismaMock.networkLiveAlert.update).toHaveBeenCalledWith({ where: { id: "alert-sw2" }, data: { ticketId: "ticket-1" } });
+    // Un push por persona de IT (son dos), no uno por equipo.
+    expect(pushMock).toHaveBeenCalledTimes(2);
+    expect(pushMock.mock.calls[0][1]).toMatchObject({ title: "Red: 2 equipos sin respuesta" });
+  });
+
+  it("una caída a menos de 15 min de la última del incidente se suma a su ticket, sin otro push", async () => {
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", false), dev("sw2", "access", false)],
+      events: [
+        { deviceId: "sw", kind: "device_down", at: ago(12 * MIN) },
+        { deviceId: "sw2", kind: "device_down", at: ago(4 * MIN) },
+      ],
+      open: [openAlert("al-1", "sw", ago(8 * MIN), "t-1")],
+    });
+    prismaMock.networkLiveLink.findMany.mockResolvedValue(twoSwitches as any);
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["sumado:device_down:sw2"]);
+    expect(created()).toEqual([expect.objectContaining({ deviceId: "sw2", ticketId: "t-1" })]);
+    expect(prismaMock.comment.create).toHaveBeenCalledWith({
+      data: { ticketId: "t-1", authorId: "admin-1", message: expect.stringContaining("SW2 no responde") },
+    });
+    expect(ticketMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("pasados los 15 min desde la última caída, la nueva es otro incidente", async () => {
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", false), dev("sw2", "access", false)],
+      events: [
+        { deviceId: "sw", kind: "device_down", at: ago(40 * MIN) },
+        { deviceId: "sw2", kind: "device_down", at: ago(4 * MIN) },
+      ],
+      open: [openAlert("al-1", "sw", ago(36 * MIN), "t-1")],
+    });
+    prismaMock.networkLiveLink.findMany.mockResolvedValue(twoSwitches as any);
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["abierto:device_down:sw2"]);
+    expect(ticketMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Red: SW2 no responde" }), "admin-1");
+  });
+
+  it("el ticket del incidente se cierra cuando vuelve el último, con un solo aviso", async () => {
+    const both = [openAlert("al-1", "sw", ago(30 * MIN), "t-1"), openAlert("al-2", "sw2", ago(25 * MIN), "t-1")];
+    // Vuelve SW y SW2 sigue caído: se cierra su aviso, pero no el ticket, y no se avisa.
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", true), dev("sw2", "access", false)],
+      events: [{ deviceId: "sw2", kind: "device_down", at: ago(25 * MIN) }],
+      open: both,
+    });
+    prismaMock.networkLiveLink.findMany.mockResolvedValue(twoSwitches as any);
+    prismaMock.networkLiveAlert.count.mockResolvedValueOnce(1);
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["cerrado:device_down:sw"]);
+    expect(prismaMock.ticket.update).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+
+    // Vuelve SW2, el último: se cierra el ticket con un aviso por todo el incidente.
+    vi.clearAllMocks();
+    prismaMock.user.findMany.mockResolvedValue([{ id: "admin-1", role: "ADMIN" }] as any);
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", true), dev("sw2", "access", true)],
+      open: [both[1]],
+    });
+    prismaMock.networkLiveAlert.count.mockResolvedValueOnce(0).mockResolvedValueOnce(2);
+    prismaMock.networkLiveAlert.findFirst.mockResolvedValue({ openedAt: ago(30 * MIN) } as any);
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["cerrado:device_down:sw2"]);
+    expect(prismaMock.ticket.update).toHaveBeenCalledWith({ where: { id: "t-1" }, data: { status: "RESOLVED", closedAt: at } });
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(pushMock.mock.calls[0][1]).toMatchObject({
+      title: "Red: volvieron los 2 equipos del incidente",
+      body: "Todos vuelven a responder después de 30 min.",
+    });
+  });
+
+  it("el recordatorio de un incidente sale una vez para todos sus equipos", async () => {
+    const late = ago(RE_NOTIFY_MS + MIN);
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", false), dev("sw2", "access", false)],
+      events: [
+        { deviceId: "sw", kind: "device_down", at: ago(7 * 60 * MIN) },
+        { deviceId: "sw2", kind: "device_down", at: ago(7 * 60 * MIN) },
+      ],
+      open: [openAlert("al-1", "sw", late, "t-1"), openAlert("al-2", "sw2", late, "t-1")],
+    });
+    prismaMock.networkLiveLink.findMany.mockResolvedValue(twoSwitches as any);
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["recordado:device_down:sw", "recordado:device_down:sw2"]);
+    expect(pushMock).toHaveBeenCalledTimes(2);
+    expect(pushMock.mock.calls[0][1]).toMatchObject({ title: "Red: 2 equipos siguen sin responder", body: "SW, SW2." });
+  });
+
+  it("un equipo que el colector dejó de informar está retirado: no se vigila y su aviso se cierra sin avisar", async () => {
+    setup({
+      devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", false, { lastPolledAt: ago(2 * 60 * MIN) })],
+      events: [{ deviceId: "sw", kind: "device_down", at: ago(3 * 60 * MIN) }],
+      open: [openAlert("al-1", "sw", ago(3 * 60 * MIN), "t-1")],
+    });
+
+    expect((await NetworkWatchdog.run(at)).actions).toEqual(["cerrado:device_down:sw"]);
+    expect(prismaMock.ticket.update).toHaveBeenCalledWith({ where: { id: "t-1" }, data: { status: "RESOLVED", closedAt: at } });
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it("sin ningún ADMIN activo, el ticket lo pide alguien de IT y el aviso sale igual", async () => {
     setup({
       devices: [dev("router", "router", true), dev("core", "core", true), dev("sw", "access", true), dev("ap", "ap", false)],
