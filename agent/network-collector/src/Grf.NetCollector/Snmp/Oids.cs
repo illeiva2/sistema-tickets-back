@@ -43,6 +43,40 @@ internal static class Oids
     public const string EntSerial = "1.3.6.1.2.1.47.1.1.1.1.11";
     public const string EntModelName = "1.3.6.1.2.1.47.1.1.1.1.13";
 
+    // POWER-ETHERNET-MIB (RFC 3621): estado y clase por puerto (índice grupo.puerto), potencia
+    // nominal y consumo del equipo (índice grupo). No trae la potencia por puerto.
+    public const string PethPortDetectionStatus = "1.3.6.1.2.1.105.1.1.1.6";
+    public const string PethPortClassification = "1.3.6.1.2.1.105.1.1.1.10";
+    public const string PethMainPower = "1.3.6.1.2.1.105.1.3.1.1.2";
+    public const string PethMainConsumption = "1.3.6.1.2.1.105.1.3.1.1.4";
+
+    // HPE OfficeConnect 1920S: potencia entregada por puerto en mW (índice grupo.puerto).
+    public const string HpePoePortPowerMw = "1.3.6.1.4.1.11.5.7.5.7.1.1.15.1.1.1.2";
+
+    // TP-Link JetStream (TPLINK-POWER-OVER-ETHERNET-MIB, no implementa RFC 3621). Potencias en
+    // décimas de W; la tabla de puertos va por número de puerto.
+    public const string TpLinkPoeLimit = "1.3.6.1.4.1.11863.6.56.1.1.1.1";
+    public const string TpLinkPoeConsumption = "1.3.6.1.4.1.11863.6.56.1.1.1.3";
+    public const string TpLinkPoePortEnable = "1.3.6.1.4.1.11863.6.56.1.1.2.1.1.2";
+    public const string TpLinkPoePortPower = "1.3.6.1.4.1.11863.6.56.1.1.2.1.1.7";
+    public const string TpLinkPoePortClass = "1.3.6.1.4.1.11863.6.56.1.1.2.1.1.10";
+    public const string TpLinkPoePortStatus = "1.3.6.1.4.1.11863.6.56.1.1.2.1.1.11";
+
+    public const string HpeEnterprise = "1.3.6.1.4.1.11.";
+    public const string TpLinkEnterprise = "1.3.6.1.4.1.11863.";
+
+    /// <summary>Columnas PoE según la marca: el estándar siempre, la potencia por puerto de cada fabricante.</summary>
+    public static string[] PoeColumns(string? sysObjectId)
+    {
+        if (sysObjectId?.StartsWith(TpLinkEnterprise, StringComparison.Ordinal) == true)
+        {
+            return [TpLinkPoeLimit, TpLinkPoeConsumption, TpLinkPoePortEnable, TpLinkPoePortPower, TpLinkPoePortClass, TpLinkPoePortStatus];
+        }
+
+        string[] standard = [PethPortDetectionStatus, PethPortClassification, PethMainPower, PethMainConsumption];
+        return sysObjectId?.StartsWith(HpeEnterprise, StringComparison.Ordinal) == true ? [.. standard, HpePoePortPowerMw] : standard;
+    }
+
     /// <summary>Columnas que se recorren en cada sondeo (la FDB de BRIDGE-MIB sólo si falta la de Q-BRIDGE).</summary>
     public static readonly string[] Columns =
     [

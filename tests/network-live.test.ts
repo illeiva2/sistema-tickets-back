@@ -102,6 +102,9 @@ const storedPort = (overrides: Partial<StoredPort> = {}): StoredPort => ({
   fullDuplex: true,
   pvid: 200,
   neighbors: null,
+  poeStatus: null,
+  poePowerW: null,
+  poeClass: null,
   ...overrides,
 });
 
@@ -196,6 +199,37 @@ describe("Colector de red: ingesta", () => {
         create: expect.objectContaining({ devicesTotal: 1, devicesOk: 1, version: "0.1.0" }),
       }),
     );
+  });
+
+  it("guarda el PoE del switch y de cada puerto; lo que no es válido queda en null", async () => {
+    withCollector();
+    prismaMock.networkLiveDevice.findUnique.mockResolvedValue(null);
+    prismaMock.networkLiveDevice.create.mockResolvedValue({ id: "dev-1" } as any);
+    prismaMock.networkLivePort.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .post(URL_SNAPSHOT)
+      .set(collectorHeaders)
+      .send(
+        snapshot({
+          devices: [
+            device({
+              poeBudgetW: 390,
+              poeUsedW: 17.7,
+              ports: [
+                port({ poe: { status: "on", powerW: 5, class: 4 } }),
+                port({ key: "ether2", name: "ether2", position: 2, poe: { status: "raro", powerW: -5, class: 99 } }),
+              ],
+            }),
+          ],
+        }),
+      );
+
+    expect(res.status).toBe(200);
+    expect(prismaMock.networkLiveDevice.create.mock.calls[0][0].data).toMatchObject({ poeBudgetW: 390, poeUsedW: 17.7 });
+    const ports = prismaMock.networkLivePort.createMany.mock.calls[0][0].data as any[];
+    expect(ports[0]).toMatchObject({ poeStatus: "on", poePowerW: 5, poeClass: 4 });
+    expect(ports[1]).toMatchObject({ poeStatus: "off", poePowerW: null, poeClass: null });
   });
 
   it("un equipo que no respondió conserva su identidad y sus puertos", async () => {
@@ -303,6 +337,23 @@ describe("Colector de red: escritura de puertos", () => {
     expect(renamed?.kind).toBe("update");
     expect(renamed?.data).not.toHaveProperty("linkChangedAt");
   });
+
+  it("PoE: guarda estado, potencia y clase; la potencia se reescribe recién al cambiar medio watt", () => {
+    const created = planPortWrite(undefined, port({ poe: { status: "on", powerW: 3.6, class: 4 } }) as any, now);
+    expect(created?.data).toMatchObject({ poeStatus: "on", poePowerW: 3.6, poeClass: 4 });
+
+    const stored = storedPort({ poeStatus: "on", poePowerW: 3.6, poeClass: 4 });
+    expect(planPortWrite(stored, port({ poe: { status: "on", powerW: 3.9, class: 4 } }) as any, now)).toBeNull();
+    expect(planPortWrite(stored, port({ poe: { status: "on", powerW: 4.2, class: 4 } }) as any, now)).toMatchObject({
+      kind: "update",
+      data: { poePowerW: 4.2 },
+    });
+
+    // Se desenchufó el equipo: deja de entregar, sin tocar el enlace.
+    const unplugged = planPortWrite(stored, port({ poe: { status: "off" } }) as any, now);
+    expect(unplugged).toMatchObject({ kind: "update", data: { poeStatus: "off", poePowerW: null, poeClass: null } });
+    expect(unplugged?.data).not.toHaveProperty("linkChangedAt");
+  });
 });
 
 describe("Pantalla Red en vivo", () => {
@@ -362,7 +413,7 @@ describe("Pantalla Red en vivo", () => {
       },
     ] as any);
     prismaMock.networkLiveDevice.findMany.mockResolvedValue([
-      { ...base, id: "d1", key: "10.0.0.3", source: "routeros", role: "access", name: "SW", reachable: true, lastPolledAt: ago(30_000), portKeys: ["ether1"], ports: [livePort("ether1"), livePort("ether99")] },
+      { ...base, id: "d1", key: "10.0.0.3", source: "routeros", role: "access", name: "SW", reachable: true, lastPolledAt: ago(30_000), poeBudgetW: 250, poeUsedW: 4.7, portKeys: ["ether1"], ports: [{ ...livePort("ether1"), poeStatus: "on", poePowerW: 3.4, poeClass: 0 }, livePort("ether99")] },
       { ...base, id: "d2", key: "10.0.0.6", source: "snmp", role: "access", name: "HPE", reachable: false, lastError: "timeout", lastPolledAt: ago(30_000), portKeys: [], ports: [] },
       { ...base, id: "d3", key: "ap-x", source: "unifi", role: "ap", name: "AP", reachable: true, lastPolledAt: ago(AP_STALE_AFTER_MS + 60_000), portKeys: [], ports: [] },
     ] as any);
@@ -385,6 +436,9 @@ describe("Pantalla Red en vivo", () => {
     expect(devices[0].ports.map((p: any) => p.key)).toEqual(["ether1"]);
     expect(devices[0].ports[0].neighbors).toEqual([]);
     expect(devices[0].alertsMuted).toBe(false);
+    expect(devices[0].poe).toEqual({ budgetW: 250, usedW: 4.7 });
+    expect(devices[0].ports[0].poe).toEqual({ status: "on", powerW: 3.4, class: 0 });
+    expect(devices[1].poe).toBeNull();
     expect(links.map((l: any) => l.id)).toEqual(["l1"]);
     expect(alerts).toEqual([
       expect.objectContaining({ id: "al-1", kind: "device_down", deviceId: "d2", ticketId: "t-1", detail: "HPE no responde desde hace 8 min." }),

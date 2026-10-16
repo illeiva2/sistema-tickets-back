@@ -57,6 +57,17 @@ const neighborSchema = z.object({
   platform: optionalText(120),
 });
 
+/** Potencia en W: lo que no es un número razonable queda en null en vez de rechazar el envío. */
+const optionalWatts = (max: number) => z.number().min(0).max(max).nullish().catch(null);
+
+export const LIVE_POE_STATUSES = ["on", "off", "disabled", "fault"] as const;
+
+const portPoeSchema = z.object({
+  status: z.enum(LIVE_POE_STATUSES).catch("off"),
+  powerW: optionalWatts(200),
+  class: optionalInt(0, 8).catch(null),
+});
+
 const portSchema = z.object({
   key: requiredText(64),
   name: requiredText(120),
@@ -69,6 +80,7 @@ const portSchema = z.object({
   fullDuplex: z.boolean().nullish(),
   pvid: optionalInt(1, 4094),
   neighbors: z.array(neighborSchema).max(16).nullish(),
+  poe: portPoeSchema.nullish(),
 });
 
 const deviceSchema = z.object({
@@ -87,6 +99,8 @@ const deviceSchema = z.object({
   serialNumber: optionalText(80),
   uptimeSeconds: optionalInt(0, 2_000_000_000),
   clients: optionalInt(0, 100_000),
+  poeBudgetW: optionalWatts(100_000),
+  poeUsedW: optionalWatts(100_000),
   ports: z
     .array(portSchema)
     .max(MAX_LIVE_PORTS)

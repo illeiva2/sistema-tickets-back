@@ -58,6 +58,12 @@ internal sealed class SnmpPoller(SnmpSection settings, Func<string, string?> rea
                 columns[Oids.FdbStatus] = client.Walk(Oids.FdbStatus);
             }
 
+            // PoE: un equipo sin PoE contesta vacío y no cuesta más que una consulta por columna.
+            foreach (var column in Oids.PoeColumns(scalars.GetValueOrDefault(Oids.SysObjectId)?.ToString()))
+            {
+                columns[column] = client.Walk(column);
+            }
+
             foreach (var failure in client.Failures)
             {
                 warn?.Invoke($"{entry.Ip}: {failure}");

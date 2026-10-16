@@ -77,6 +77,9 @@ const storedPort = (overrides: Partial<StoredPort> = {}): StoredPort => ({
   fullDuplex: true,
   pvid: 200,
   neighbors: null,
+  poeStatus: null,
+  poePowerW: null,
+  poeClass: null,
   ...overrides,
 });
 
