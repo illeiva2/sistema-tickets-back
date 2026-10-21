@@ -30,7 +30,7 @@ const col = (
 ): AnalysisColumn => ({ key: analysisKey(source, code), source, code, label, decimals, unit });
 
 /**
- * Análisis que se hacen con equipos sin conexión (termobalanza, estufa,
+ * Análisis que se hacen con equipos sin conexión (termobalanza, estufa, mufla,
  * colorímetro, balanza) y se cargan a mano desde la ficha de la muestra. Los
  * códigos son fijos: son las columnas del reporte diario en papel
  * (M.M.LC.P.02), y así se llaman también en la grilla y para el asistente.
@@ -44,17 +44,24 @@ export interface ManualParam {
   max: number;
   /** Ayuda corta para el formulario. */
   hint?: string;
+  /**
+   * valor: se tipea en el formulario. calculado: sale de los pesos de la
+   * cápsula (ver labManual.ts). anterior: lo pedía el formulario anterior a las
+   * cápsulas; queda para mostrar y corregir lo que ya se cargó, no para cargas nuevas.
+   */
+  kind: "valor" | "calculado" | "anterior";
 }
 
 export const MANUAL_PARAMS: ManualParam[] = [
-  { code: "Humedad termobalanza", label: "Humedad (termobalanza)", unit: "%", decimals: 1, min: 0, max: 100 },
-  { code: "Cenizas cápsula", label: "Cenizas: cápsula", decimals: 2, min: 0, max: 1000, hint: "Como en la planilla" },
-  { code: "Cenizas estufa", label: "Cenizas (estufa)", unit: "%", decimals: 2, min: 0, max: 100 },
-  { code: "Cenizas cápsula ensayo", label: "Cenizas: cápsula ensayo", decimals: 2, min: 0, max: 1000, hint: "Como en la planilla" },
-  { code: "Color L", label: "Color L", decimals: 1, min: 0, max: 100 },
-  { code: "Color a", label: "Color a", decimals: 1, min: -100, max: 100 },
-  { code: "Color b", label: "Color b", decimals: 1, min: -100, max: 100 },
-  { code: "Peso de mil granos", label: "Peso de mil granos", unit: "g", decimals: 1, min: 0, max: 100, hint: "Solo trigo" },
+  { code: "Humedad termobalanza", label: "Humedad (termobalanza)", unit: "%", decimals: 3, min: 0, max: 100, kind: "valor" },
+  { code: "Humedad estufa", label: "Humedad (estufa)", unit: "%", decimals: 2, min: 0, max: 100, kind: "calculado" },
+  { code: "Cenizas estufa", label: "Cenizas (mufla, b.s.)", unit: "%", decimals: 3, min: 0, max: 100, kind: "calculado" },
+  { code: "Cenizas cápsula", label: "Cenizas: cápsula", decimals: 2, min: 0, max: 1000, kind: "anterior" },
+  { code: "Cenizas cápsula ensayo", label: "Cenizas: cápsula ensayo", decimals: 2, min: 0, max: 1000, kind: "anterior" },
+  { code: "Color L", label: "Color L", decimals: 3, min: 0, max: 100, kind: "valor" },
+  { code: "Color a", label: "Color a", decimals: 3, min: -100, max: 100, kind: "valor" },
+  { code: "Color b", label: "Color b", decimals: 3, min: -100, max: 100, kind: "valor" },
+  { code: "Peso de mil granos", label: "Peso de mil granos", unit: "g", decimals: 1, min: 0, max: 100, hint: "Solo trigo", kind: "valor" },
 ];
 
 export const MANUAL_PARAM_BY_CODE = new Map(MANUAL_PARAMS.map((p) => [p.code, p]));

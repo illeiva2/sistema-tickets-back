@@ -204,9 +204,8 @@ describe("LabReportService.diario", () => {
     ]);
     expect(COLUMNAS.filter((c) => c.manual).map((c) => c.code)).toEqual([
       "Humedad termobalanza",
-      "Cenizas cápsula",
+      "Humedad estufa",
       "Cenizas estufa",
-      "Cenizas cápsula ensayo",
       "Color L",
       "Color a",
       "Color b",
