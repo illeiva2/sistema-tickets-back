@@ -53,14 +53,14 @@ export interface ManualParam {
 }
 
 export const MANUAL_PARAMS: ManualParam[] = [
-  { code: "Humedad termobalanza", label: "Humedad (termobalanza)", unit: "%", decimals: 1, min: 0, max: 100, kind: "valor" },
+  { code: "Humedad termobalanza", label: "Humedad (termobalanza)", unit: "%", decimals: 3, min: 0, max: 100, kind: "valor" },
   { code: "Humedad estufa", label: "Humedad (estufa)", unit: "%", decimals: 2, min: 0, max: 100, kind: "calculado" },
   { code: "Cenizas estufa", label: "Cenizas (mufla, b.s.)", unit: "%", decimals: 3, min: 0, max: 100, kind: "calculado" },
   { code: "Cenizas cápsula", label: "Cenizas: cápsula", decimals: 2, min: 0, max: 1000, kind: "anterior" },
   { code: "Cenizas cápsula ensayo", label: "Cenizas: cápsula ensayo", decimals: 2, min: 0, max: 1000, kind: "anterior" },
-  { code: "Color L", label: "Color L", decimals: 1, min: 0, max: 100, kind: "valor" },
-  { code: "Color a", label: "Color a", decimals: 1, min: -100, max: 100, kind: "valor" },
-  { code: "Color b", label: "Color b", decimals: 1, min: -100, max: 100, kind: "valor" },
+  { code: "Color L", label: "Color L", decimals: 3, min: 0, max: 100, kind: "valor" },
+  { code: "Color a", label: "Color a", decimals: 3, min: -100, max: 100, kind: "valor" },
+  { code: "Color b", label: "Color b", decimals: 3, min: -100, max: 100, kind: "valor" },
   { code: "Peso de mil granos", label: "Peso de mil granos", unit: "g", decimals: 1, min: 0, max: 100, hint: "Solo trigo", kind: "valor" },
 ];
 
