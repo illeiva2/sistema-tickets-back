@@ -194,7 +194,8 @@ describe("POST /assistant/ask", () => {
     const msgs = data.messages;
     expect(msgs[0].role).toBe("system");
     expect(msgs[0].content).toContain("CATALOGO DE PRUEBA");
-    expect(msgs[0].content).toMatch(/Hoy es \w+ \d{4}-\d{2}-\d{2}/);
+    // \p{L} y no \w: "miércoles" y "sábado" llevan tilde (con \w el test fallaba esos días).
+    expect(msgs[0].content).toMatch(/Hoy es \p{L}+ \d{4}-\d{2}-\d{2}/u);
     expect(msgs[0].content).toMatch(/Nunca inventes/);
     expect(msgs[0].content).toMatch(/buscar_muestras con texto=/);
     // Sin ejemplos de accesión realistas: en la prueba el modelo copió uno del prompt.
