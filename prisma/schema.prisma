@@ -1633,6 +1633,13 @@ model LabMeasurement {
   createdById String?
   createdBy   User?   @relation("LabMeasurementCreator", fields: [createdById], references: [id], onDelete: SetNull)
 
+  /// Solo en las cargadas a mano: lo que se tipeó en el formulario, tal cual
+  /// (textos decimales y números de cápsula; ver src/lib/labManual.ts). Sirve
+  /// para mostrarlo y volver a editarlo con los mismos decimales. Los valores,
+  /// y la humedad y las cenizas calculadas con las cápsulas, van además en
+  /// `params`, que es lo que usan la grilla, el reporte y el asistente.
+  manualInput Json?
+
   deletedAt DateTime?
 
   params LabParameter[]

@@ -647,6 +647,8 @@ export class LabSamplesService {
       sampleRef: m.sampleRef,
       analyzedAt: m.analyzedAt,
       createdBy: m.createdBy ? { id: m.createdBy.id, name: m.createdBy.name } : null,
+      // Solo las manuales: lo tipeado tal cual, para mostrarlo sin redondear y volver a editarlo.
+      manualInput: m.manualInput ?? null,
       params: m.params.map((p) => ({
         code: p.code,
         value: p.value,

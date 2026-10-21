@@ -95,10 +95,10 @@ const c = (
 /** Columnas en el orden y con los grupos de la planilla. `code` tal como lo guarda cada equipo. */
 export const COLUMNAS: ColumnaReporte[] = [
   c("fq", "% Humedad", "MANUAL", "Humedad termobalanza", "Termobalanza", 1, "%"),
+  c("fq", "% Humedad", "MANUAL", "Humedad estufa", "Estufa", 2, "%"),
   c("fq", "% Humedad", "NIR", "Humedad AsIs", "NIR", 1, "%"),
-  c("fq", "% Cenizas", "MANUAL", "Cenizas cápsula", "Cápsula", 2),
-  c("fq", "% Cenizas", "MANUAL", "Cenizas estufa", "Estufa", 2, "%"),
-  c("fq", "% Cenizas", "MANUAL", "Cenizas cápsula ensayo", "Cápsula ensayo", 2),
+  // Las cenizas por cápsula se calculan en base seca con la humedad de la estufa (labManual.ts).
+  c("fq", "% Cenizas", "MANUAL", "Cenizas estufa", "Mufla (b.s.)", 3, "%"),
   c("fq", "% Cenizas", "NIR", "Cenizas DryBasis", "NIR", 2, "%"),
   c("fq", "% Proteínas", "NIR", "Proteína DryBasis", "NIR", 1, "%"),
   c("fq", "PH", "NIR", "Peso específico", "NIR", 1, "kg/hl"),
